@@ -3,48 +3,54 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
 	"golang-clean-architecture/internal/repository"
 	"time"
 )
 
 type TriggerSOSUseCase struct {
-	locations    *LocationStore
-	finder       *NearbyFinder
-	alerts       *repository.AlertRepository
-	notifier     *AlertNotifier
-	radiusMeters float64
-	now          func() time.Time
-	newID        func() string
+	Locations    *LocationStore
+	Finder       *NearbyFinder
+	Alerts       *repository.AlertRepository
+	Notifier     *AlertNotifier
+	RadiusMeters float64
+	Now          func() time.Time
+	NewID        func() string
 }
 
 func NewTriggerSOSUseCase(locations *LocationStore, finder *NearbyFinder, alerts *repository.AlertRepository, notifier *AlertNotifier, radiusMeters float64, now func() time.Time, newID func() string) *TriggerSOSUseCase {
 	return &TriggerSOSUseCase{
-		locations:    locations,
-		finder:       finder,
-		alerts:       alerts,
-		notifier:     notifier,
-		radiusMeters: radiusMeters,
-		now:          now,
-		newID:        newID,
+		Locations:    locations,
+		Finder:       finder,
+		Alerts:       alerts,
+		Notifier:     notifier,
+		RadiusMeters: radiusMeters,
+		Now:          now,
+		NewID:        newID,
 	}
 }
 
-func (uc *TriggerSOSUseCase) Execute(ctx context.Context, senderID string, loc model.Location) (*model.TriggerSOSResult, error) {
+func (uc *TriggerSOSUseCase) Execute(ctx context.Context, senderID string, loc entity.UserLocation) (*model.TriggerSOSResult, error) {
 	if senderID == "" {
 		return nil, model.ErrInvalidSender
 	}
-	if loc.Lat < -90 || loc.Lat > 90 || loc.Lng < -180 || loc.Lng > 180 {
+	if loc.Latitude < -90 || loc.Latitude > 90 || loc.Longitude < -180 || loc.Longitude > 180 {
 		return nil, model.ErrInvalidLocation
 	}
 
+	request := model.UpdateLocationRequest{
+		UserId:    loc.UserId,
+		Latitude:  loc.Latitude,
+		Longitude: loc.Longitude,
+	}
 	// 1. Update lokasi terbaru si pengirim.
-	if err := uc.locations.Save(ctx, senderID, loc); err != nil {
+	if err := uc.Locations.Save(ctx, &request); err != nil {
 		return nil, fmt.Errorf("save sender location: %w", err)
 	}
 
 	// 2. Cari user dalam radius (hasil bisa ikut memuat si pengirim).
-	nearby, err := uc.finder.FindNearby(ctx, loc, uc.radiusMeters)
+	nearby, err := uc.Finder.FindNearby(ctx, loc, uc.RadiusMeters)
 	if err != nil {
 		return nil, fmt.Errorf("find nearby users: %w", err)
 	}
@@ -59,12 +65,12 @@ func (uc *TriggerSOSUseCase) Execute(ctx context.Context, senderID string, loc m
 
 	// 4. Simpan alert (riwayat/audit) sebelum kirim notifikasi.
 	alert := model.Alert{
-		ID:          uc.newID(),
-		SenderID:    senderID,
-		Location:    loc,
-		TriggeredAt: uc.now(),
+		ID:          uc.NewID(),
+		SenderId:    senderID,
+		Location:    model.LocationResponse(request),
+		TriggeredAt: uc.Now(),
 	}
-	if err := uc.alerts.Create(ctx, alert); err != nil {
+	if err := uc.Alerts.Create(ctx, alert); err != nil {
 		return nil, fmt.Errorf("create alert: %w", err)
 	}
 
@@ -74,7 +80,7 @@ func (uc *TriggerSOSUseCase) Execute(ctx context.Context, senderID string, loc m
 	if len(recipients) == 0 {
 		return result, nil
 	}
-	if err := uc.notifier.Notify(ctx, recipients, alert); err != nil {
+	if err := uc.Notifier.Notify(ctx, recipients, alert); err != nil {
 		return result, fmt.Errorf("notify recipients: %w", err)
 	}
 

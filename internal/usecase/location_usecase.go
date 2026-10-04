@@ -12,6 +12,6 @@ func NewLocationStoreUseCase() *LocationStore {
 	return &LocationStore{}
 }
 
-func (ls *LocationStore) Save(ctx context.Context, userID string, loc model.Location) error {
+func (ls *LocationStore) Save(ctx context.Context, request *model.UpdateLocationRequest) error {
 	return nil
 }
