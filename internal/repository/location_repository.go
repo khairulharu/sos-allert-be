@@ -57,3 +57,34 @@ func (l *LocationRepository) Delete(ctx context.Context, userId string) (bool, e
 	}
 	return true, nil
 }
+
+func (r *LocationRepository) GetAll(ctx context.Context) ([]*entity.UserLocation, error) {
+	userIDs, err := r.Client.ZRange(ctx, userLocationKey, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis zrange: %w", err)
+	}
+
+	if len(userIDs) == 0 {
+		return nil, nil
+	}
+
+	positions, err := r.Client.GeoPos(ctx, userLocationKey, userIDs...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis geopos: %w", err)
+	}
+
+	result := make([]*entity.UserLocation, 0, len(userIDs))
+	for i, pos := range positions {
+		if pos == nil {
+			continue
+		}
+
+		result = append(result, &entity.UserLocation{
+			UserId:    userIDs[i],
+			Longitude: pos.Latitude,
+			Latitude:  pos.Latitude,
+		})
+	}
+
+	return result, nil
+}
