@@ -81,7 +81,7 @@ func (r *LocationRepository) GetAll(ctx context.Context) ([]*entity.UserLocation
 
 		result = append(result, &entity.UserLocation{
 			UserId:    userIDs[i],
-			Longitude: pos.Latitude,
+			Longitude: pos.Longitude,
 			Latitude:  pos.Latitude,
 		})
 	}
