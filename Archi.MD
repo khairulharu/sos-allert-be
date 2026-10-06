@@ -37,3 +37,6 @@ Firebase
 Svelte
 Redis
 SMTP
+
+## TEST HOW TO RUN THE TEST
+`` go test ./test/init.go ./test/location_test.go -v -count=1``
