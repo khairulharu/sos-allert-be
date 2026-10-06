@@ -8,7 +8,7 @@ import (
 
 func TestSave(t *testing.T) {
 	dummyUser := entity.UserLocation{
-		UserId:    "user-A",
+		UserId:    "user-B",
 		Longitude: 108.8272,
 		Latitude:  -6.1754,
 	}
@@ -43,7 +43,18 @@ func TestGetAll(t *testing.T) {
 
 	t.Log(len(results), cap(results))
 
-	for i := 0; i < len(results); i++ {
+	for i := range results {
 		t.Logf("user: %s, long: %f, lat: %f", results[i].UserId, results[i].Longitude, results[i].Latitude)
+	}
+}
+
+func TestDelete(t *testing.T) {
+	result, err := locationRepository.Delete(context.Background(), "user-B")
+	if err != nil {
+		t.Fatalf("failed to delete user-A; %v", err)
+	}
+
+	if result == false {
+		t.Fatalf("failed to delete user-A; %b", err)
 	}
 }
