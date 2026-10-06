@@ -21,6 +21,12 @@
       "lifetime": 300
     }
   },
+  "redis": {
+    "addr": "redis-15164.c295.ap-southeast-1-1.ec2.cloud.redislabs.com:15164",
+    "pass": "a4OGyg5atUeylmXpew1PHnVKqRanWMyO",
+    "user": "default",
+    "db": 0
+  },
   "kafka": {
     "bootstrap": {
       "servers": "localhost:9092"
