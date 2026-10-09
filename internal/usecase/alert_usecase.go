@@ -10,7 +10,7 @@ import (
 )
 
 type TriggerSOSUseCase struct {
-	Locations    *LocationStore
+	Locations    *LocationUsecase
 	Finder       *NearbyFinder
 	Alerts       *repository.AlertRepository
 	Notifier     *AlertNotifier
@@ -19,7 +19,7 @@ type TriggerSOSUseCase struct {
 	NewID        func() string
 }
 
-func NewTriggerSOSUseCase(locations *LocationStore, finder *NearbyFinder, alerts *repository.AlertRepository, notifier *AlertNotifier, radiusMeters float64, now func() time.Time, newID func() string) *TriggerSOSUseCase {
+func NewTriggerSOSUseCase(locations *LocationUsecase, finder *NearbyFinder, alerts *repository.AlertRepository, notifier *AlertNotifier, radiusMeters float64, now func() time.Time, newID func() string) *TriggerSOSUseCase {
 	return &TriggerSOSUseCase{
 		Locations:    locations,
 		Finder:       finder,

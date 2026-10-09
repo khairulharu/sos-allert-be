@@ -11,10 +11,10 @@ import (
 
 type LocationController struct {
 	Log     *logrus.Logger
-	UseCase *usecase.LocationStore
+	UseCase *usecase.LocationUsecase
 }
 
-func NewLocationController(useCase *usecase.LocationStore, log *logrus.Logger) *LocationController {
+func NewLocationController(useCase *usecase.LocationUsecase, log *logrus.Logger) *LocationController {
 	return &LocationController{
 		Log:     log,
 		UseCase: useCase,
@@ -32,7 +32,7 @@ func (l *LocationController) Update(ctx *fiber.Ctx) error {
 
 	request.UserId = auth.ID
 
-	err := l.UseCase.Save(ctx.UserContext(), request)
+	err := l.UseCase.UpdateLocation(ctx.UserContext(), request)
 	if err != nil {
 		l.Log.WithError(err).Error("error updating location")
 		return err
