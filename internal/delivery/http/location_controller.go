@@ -32,11 +32,11 @@ func (l *LocationController) Update(ctx *fiber.Ctx) error {
 
 	request.UserId = auth.ID
 
-	err := l.UseCase.UpdateLocation(ctx.UserContext(), request)
+	response, err := l.UseCase.UpdateLocation(ctx.UserContext(), request)
 	if err != nil {
 		l.Log.WithError(err).Error("error updating location")
 		return err
 	}
 
-	return ctx.JSON(model.WebResponse[bool]{Data: true})
+	return ctx.JSON(model.WebResponse[bool]{Data: response})
 }
