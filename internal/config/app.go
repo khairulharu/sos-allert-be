@@ -11,18 +11,20 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 	"gorm.io/gorm"
 )
 
 type BootstrapConfig struct {
-	DB       *gorm.DB
-	App      *fiber.App
-	Log      *logrus.Logger
-	Validate *validator.Validate
-	Config   *viper.Viper
-	Producer sarama.SyncProducer
+	DB          *gorm.DB
+	App         *fiber.App
+	Log         *logrus.Logger
+	Validate    *validator.Validate
+	Config      *viper.Viper
+	Producer    sarama.SyncProducer
+	RedisClient *redis.Client
 }
 
 func Bootstrap(config *BootstrapConfig) {
@@ -30,6 +32,7 @@ func Bootstrap(config *BootstrapConfig) {
 	userRepository := repository.NewUserRepository(config.Log)
 	contactRepository := repository.NewContactRepository(config.Log)
 	addressRepository := repository.NewAddressRepository(config.Log)
+	locationRepository := repository.NewLocationRepository(config.RedisClient, config.Log)
 
 	// setup producer
 	var userProducer *messaging.UserProducer
@@ -46,21 +49,24 @@ func Bootstrap(config *BootstrapConfig) {
 	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
 	addressUseCase := usecase.NewAddressUseCase(config.DB, config.Log, config.Validate, contactRepository, addressRepository, addressProducer)
+	locationUseCase := usecase.NewLocationUseCase(locationRepository, config.Validate, config.Log)
 
 	// setup controller
 	userController := http.NewUserController(userUseCase, config.Log)
 	contactController := http.NewContactController(contactUseCase, config.Log)
 	addressController := http.NewAddressController(addressUseCase, config.Log)
+	locationController := http.NewLocationController(locationUseCase, config.Log)
 
 	// setup middleware
 	authMiddleware := middleware.NewAuth(userUseCase)
 
 	routeConfig := route.RouteConfig{
-		App:               config.App,
-		UserController:    userController,
-		ContactController: contactController,
-		AddressController: addressController,
-		AuthMiddleware:    authMiddleware,
+		App:                config.App,
+		UserController:     userController,
+		ContactController:  contactController,
+		AddressController:  addressController,
+		AuthMiddleware:     authMiddleware,
+		LocationController: locationController,
 	}
 	routeConfig.Setup()
 }

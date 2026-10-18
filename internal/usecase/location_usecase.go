@@ -17,10 +17,11 @@ type LocationUsecase struct {
 	Log                *logrus.Logger
 }
 
-func NewLocationUseCase(locationRepository *repository.LocationRepository, log *logrus.Logger) *LocationUsecase {
+func NewLocationUseCase(locationRepository *repository.LocationRepository, validate *validator.Validate, log *logrus.Logger) *LocationUsecase {
 	return &LocationUsecase{
 		LocationRepository: locationRepository,
 		Log:                log,
+		Validate:           validate,
 	}
 }
 

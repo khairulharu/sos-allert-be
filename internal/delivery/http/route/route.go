@@ -7,11 +7,12 @@ import (
 )
 
 type RouteConfig struct {
-	App               *fiber.App
-	UserController    *http.UserController
-	ContactController *http.ContactController
-	AddressController *http.AddressController
-	AuthMiddleware    fiber.Handler
+	App                *fiber.App
+	UserController     *http.UserController
+	ContactController  *http.ContactController
+	AddressController  *http.AddressController
+	LocationController *http.LocationController
+	AuthMiddleware     fiber.Handler
 }
 
 func (c *RouteConfig) Setup() {
@@ -41,4 +42,6 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Put("/api/contacts/:contactId/addresses/:addressId", c.AddressController.Update)
 	c.App.Get("/api/contacts/:contactId/addresses/:addressId", c.AddressController.Get)
 	c.App.Delete("/api/contacts/:contactId/addresses/:addressId", c.AddressController.Delete)
+
+	c.App.Put("/api/location", c.LocationController.Update)
 }
