@@ -2,28 +2,27 @@ package usecase
 
 import (
 	"golang-clean-architecture/internal/repository"
-	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 )
 
-type TriggerSOSUseCase struct {
-	Locations    *LocationUsecase
-	Finder       *NearbyFinder
-	Alerts       *repository.AlertRepository
-	Notifier     *AlertNotifier
-	RadiusMeters float64
-	Now          func() time.Time
-	NewID        func() string
+type AllertUseCase struct {
+	DB                 *gorm.DB
+	Log                *logrus.Logger
+	Validate           *validator.Validate
+	UserRepository     *repository.UserRepository
+	LocationRepository *repository.LocationRepository
 }
 
-func NewTriggerSOSUseCase(locations *LocationUsecase, finder *NearbyFinder, alerts *repository.AlertRepository, notifier *AlertNotifier, radiusMeters float64, now func() time.Time, newID func() string) *TriggerSOSUseCase {
-	return &TriggerSOSUseCase{
-		Locations:    locations,
-		Finder:       finder,
-		Alerts:       alerts,
-		Notifier:     notifier,
-		RadiusMeters: radiusMeters,
-		Now:          now,
-		NewID:        newID,
+func NewAllertUseCase(db *gorm.DB, log *logrus.Logger, validate *validator.Validate, userRepository *repository.UserRepository, locationRepository *repository.LocationRepository) *AllertUseCase {
+	return &AllertUseCase{
+		DB:                 db,
+		Log:                log,
+		Validate:           validate,
+		UserRepository:     userRepository,
+		LocationRepository: locationRepository,
 	}
 }
 

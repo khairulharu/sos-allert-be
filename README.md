@@ -19,7 +19,20 @@ Kerjakan Dari sini Dahulu Logicnya dan coba buat test case
 	UserId    string
 	Longitude float64
 	Latitude  float64
-}
+    }
+    2. UpdateLocation
+        Usecase Untuk Update Location yaitu kirim posisi user sekarang, endpoint ini nantinya akan dijadikan sebagai patokan untuk realtime location dari user itu sendiri, yang akan update data lokasi di redis, karna di simpen sebagai data Geospatial tidak punya TTL maka harus implementasi lagu untuk data/user yang bergerak, atau data mati < 2 Min Implementasi sebenarnya di Trigger SOS untuk filtering user yang tidak aktif, fungsi UpdateLocation cuman buat gimana caraanya data lokasi user itu realtime
+    3. Usecase TriggerSOS
+        Trigger sos, isisnya fitur filtering dan daftar lokasi terdekat + saring data yang mati
+        Allert
+            akan nyimpen lokasi user tepat dimana dia trigger, dan itu butuh di record ke databse jadi schemanya, harus buatin data sendiri di database tapi data yang tersimpan hanya saat user trigger allert jika tidak maka datanya tetap di handle di redis, gak harus hit database,
+            untuk user yang masuk 1km allert mungkin akan di buatin data terpisah juga untuk audit kedepanya
+    4. Entity dan repository Alert (MySQL)
+        di Allert simpan data pengirim, Lokasi Pengirim, Dan Kapan
+    4. Gateway buat kirim notifikasi
+        Realtime Notification bagian bawah
+
+Di diagram lu, itu kotak Gateway (manggil service luar, yaitu FCM/APNs). Mulai dari versi palsu yang cuma nge-log penerima (“kirim alert ke C dan D”), supaya alur TriggerSOS utuh dulu. FCM asli belakangan.
 
 
 2. Notification
