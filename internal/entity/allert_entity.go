@@ -5,8 +5,8 @@ import (
 )
 
 type Alert struct {
-	ID           string
-	SenderID     string
-	UserLocation UserLocation
-	TriggeredAt  time.Time
+	ID          string
+	SenderID    string
+	Location    Location
+	TriggeredAt time.Time
 }
