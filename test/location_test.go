@@ -7,19 +7,19 @@ import (
 )
 
 func TestSave(t *testing.T) {
-	dummyUser := entity.UserLocation{
-		UserId:    "user-B",
+	dummyUser := entity.LocationCache{
+		UserId:    "user-A",
 		Longitude: 108.8272,
 		Latitude:  -6.1754,
 	}
 
-	if err := locationRepository.Save(context.Background(), &dummyUser); err != nil {
+	if err := locationCacheRepository.Save(context.Background(), &dummyUser); err != nil {
 		t.Fatalf("failed to save: %v", err)
 	}
 }
 
 func TestGet(t *testing.T) {
-	result, err := locationRepository.Get(context.Background(), "user-B")
+	result, err := locationCacheRepository.Get(context.Background(), "user-B")
 	if err != nil {
 		t.Fatalf("failed to get user-B: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestGet(t *testing.T) {
 }
 
 func TestGetAll(t *testing.T) {
-	results, err := locationRepository.GetAll(context.Background())
+	results, err := locationCacheRepository.GetAll(context.Background())
 	if err != nil {
 		t.Fatalf("failed to get all user location: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestGetAll(t *testing.T) {
 }
 
 func TestDelete(t *testing.T) {
-	result, err := locationRepository.Delete(context.Background(), "user-B")
+	result, err := locationCacheRepository.Delete(context.Background(), "user-B")
 	if err != nil {
 		t.Fatalf("failed to delete user-A; %v", err)
 	}

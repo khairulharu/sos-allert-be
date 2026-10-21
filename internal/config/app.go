@@ -32,7 +32,7 @@ func Bootstrap(config *BootstrapConfig) {
 	userRepository := repository.NewUserRepository(config.Log)
 	contactRepository := repository.NewContactRepository(config.Log)
 	addressRepository := repository.NewAddressRepository(config.Log)
-	locationRepository := repository.NewLocationRepository(config.RedisClient, config.Log)
+	locationCacheRepository := repository.NewLocationCacheRepository(config.RedisClient, config.Log)
 
 	// setup producer
 	var userProducer *messaging.UserProducer
@@ -49,7 +49,7 @@ func Bootstrap(config *BootstrapConfig) {
 	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
 	addressUseCase := usecase.NewAddressUseCase(config.DB, config.Log, config.Validate, contactRepository, addressRepository, addressProducer)
-	locationUseCase := usecase.NewLocationUseCase(locationRepository, config.Validate, config.Log)
+	locationUseCase := usecase.NewLocationUseCase(locationCacheRepository, config.Validate, config.Log)
 
 	// setup controller
 	userController := http.NewUserController(userUseCase, config.Log)

@@ -15,12 +15,12 @@ var redisClient *redis.Client
 
 var log *logrus.Logger
 
-var locationRepository *repository.LocationRepository
+var locationCacheRepository *repository.LocationCacheRepository
 
 func init() {
 	viperConfig = config.NewViper()
 	redisClient = config.NewRedisClient(viperConfig)
 	log = config.NewLogger(viperConfig)
 
-	locationRepository = repository.NewLocationRepository(redisClient, log)
+	locationCacheRepository = repository.NewLocationCacheRepository(redisClient, log)
 }
