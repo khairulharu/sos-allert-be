@@ -51,10 +51,10 @@ func TestGetAll(t *testing.T) {
 func TestDelete(t *testing.T) {
 	result, err := locationCacheRepository.Delete(context.Background(), "user-B")
 	if err != nil {
-		t.Fatalf("failed to delete user-A; %v", err)
+		t.Fatalf("failed to delete user-B: %v", err)
 	}
 
-	if result == false {
-		t.Fatalf("failed to delete user-A; %b", err)
+	if !result {
+		t.Fatalf("failed to delete user-B: got false, want true")
 	}
 }
