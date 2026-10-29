@@ -50,6 +50,12 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 - `AllertUseCase` and `AlertNotifier` in `internal/usecase/` are legacy stubs — not wired, not used. `alert_usecase.go` and `alert_notifier_usecase.go` can be removed when FCM is implemented.
 - Migration `20261027000000_create_table_alerts.up.sql` adds the `alerts` table; must be run before `POST /api/sos` works.
 
+## Runtime Cloud
+
+- `deploy/runtime/` runs the project on Runtime Cloud with the `withruntime` SDK. `npm run verify` builds and unit-tests in a sandbox; `npm run deploy` builds, starts the API and web app, and prints private preview URLs. See `deploy/runtime/README.md`.
+- The API needs MySQL (port 18770) and Redis (15164). A sandbox without credit reaches only ports 80 and 443 outbound, so starting the API needs paid credit; the build/test job does not.
+- `config.json` and `ca.pem` are uploaded to the sandbox from the working tree, never committed.
+
 ## Tests
 
 - `test/init.go` connects to the real Redis from `config.json` in package `init` (and `log.Fatalf`s if unreachable), so every test in `./test` needs live Redis/network, even `TestCalculateDistance`.
