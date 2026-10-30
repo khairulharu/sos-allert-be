@@ -101,6 +101,8 @@ type TriggerSOSDeps struct {
 	Metrics           SOSMetrics
 	EmergencyContacts EmergencyContactStore
 	MediaStore        MediaStorage
+	AITriager         AITriager
+	AITimeout         time.Duration
 	GracePeriod       time.Duration
 	MaxRecipients     int
 	MinRecipients     int
@@ -201,7 +203,16 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		return nil, err
 	}
 
+	// AI triage runs before the alert is stored, but never blocks it:
+	// runTriage fails open (nil) on any triage error, and the LLM
+	// call itself is capped by triageTimeout. The triage result
+	// decides the emergency type and the dispatch plan below.
+	triage := u.runTriage(ctx, req)
+
 	emergencyType := req.EmergencyType
+	if triage != nil {
+		emergencyType = triage.EmergencyType
+	}
 	if emergencyType == "" {
 		emergencyType = entity.EmergencyTypeDanger
 	}
@@ -216,12 +227,28 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		AccuracyMeters:    req.AccuracyMeters,
 		BatteryPercentage: req.BatteryPercentage,
 	}
+	if triage != nil {
+		alert.AICategory = triage.Category
+		alert.AISeverity = triage.Severity
+		alert.AIConfidence = triage.Confidence
+		alert.AILanguage = triage.Language
+		alert.AISummaryID = triage.SummaryID
+		alert.AISummaryEN = triage.SummaryEN
+		alert.AIOriginalText = req.Message
+		alert.AISource = triage.Source
+		alert.AINeedsClarification = triage.NeedsClarification
+	}
 	if err := u.Deps.Alerts.Create(ctx, u.DB, alert); err != nil {
 		return nil, fmt.Errorf("save alert: %w", err)
 	}
 	u.Log.Infof("alert %s saved for sender %s at (%.6f, %.6f)", alert.ID, senderID, longitude, latitude)
 
-	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude)
+	severity := 0
+	if triage != nil {
+		severity = triage.Severity
+	}
+	plan := DispatchPlanForSeverity(severity, u.Deps.Radii, u.Deps.MinRecipients, u.Deps.MaxRecipients)
+	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +266,14 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 			Latitude:  alert.Latitude,
 		},
 	}
+	if triage != nil {
+		alertModel.AICategory = triage.Category
+		alertModel.AISeverity = triage.Severity
+		alertModel.AIConfidence = triage.Confidence
+		alertModel.AISummaryID = triage.SummaryID
+		alertModel.AISummaryEN = triage.SummaryEN
+		alertModel.AISource = triage.Source
+	}
 
 	if idempotencyKey != "" && u.Deps.Idempotency != nil {
 		value := alert.ID + "|" + strconv.Itoa(len(recipients))
@@ -253,6 +288,10 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		RadiusMeters:       radius,
 		GracePeriodSeconds: int(u.Deps.GracePeriod.Seconds()),
 	}
+	if triage != nil {
+		result.Triage = triageResponseFromResult(*triage, req.Message)
+		result.Guide = guideResponseFromCategory(triage.Category)
+	}
 
 	dispatch := func(dispatchCtx context.Context) {
 		if u.Deps.Publisher != nil {
@@ -266,6 +305,11 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				Status:        alert.Status,
 				Recipients:    recipients,
 				TriggeredAt:   alert.TriggeredAt,
+			}
+			if triage != nil {
+				event.AICategory = triage.Category
+				event.AISeverity = triage.Severity
+				event.AISummaryID = triage.SummaryID
 			}
 			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
 				u.recordDispatch(startedAt)
@@ -332,7 +376,7 @@ func (u *TriggerSOSUseCase) replayIfExists(ctx context.Context, key string) (*mo
 		count, _ = strconv.Atoi(parts[1])
 	}
 	recipients := make([]string, count)
-	return &model.TriggerSOSResult{
+	result := &model.TriggerSOSResult{
 		Alert: model.Alert{
 			ID:            alert.ID,
 			SenderId:      alert.SenderID,
@@ -343,10 +387,21 @@ func (u *TriggerSOSUseCase) replayIfExists(ctx context.Context, key string) (*mo
 				Longitude: alert.Longitude,
 				Latitude:  alert.Latitude,
 			},
+			AICategory:   alert.AICategory,
+			AISeverity:   alert.AISeverity,
+			AIConfidence: alert.AIConfidence,
+			AISummaryID:  alert.AISummaryID,
+			AISummaryEN:  alert.AISummaryEN,
+			AISource:     alert.AISource,
 		},
 		Recipients:         recipients,
 		GracePeriodSeconds: 0,
-	}, true, nil
+	}
+	if triage := triageResponseFromAlert(alert); triage != nil {
+		result.Triage = triage
+		result.Guide = guideResponseFromCategory(alert.AICategory)
+	}
+	return result, true, nil
 }
 
 // resolveCoordinates prefers explicit body coordinates (and refreshes
@@ -371,14 +426,30 @@ func (u *TriggerSOSUseCase) resolveCoordinates(ctx context.Context, senderID str
 	return sender.Latitude, sender.Longitude, nil
 }
 
-// findRecipients runs adaptive-radius GeoSearch: start at 1 km and
-// expand to 2 km / 5 km until at least MinRecipients fresh users are
-// found, capping the fan-out at MaxRecipients (nearest first).
-func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string, longitude, latitude float64) ([]string, float64, error) {
+// findRecipients runs adaptive-radius GeoSearch with a severity
+// plan: start at the first radius and expand until at least
+// MinRecipients fresh users are found, capping the fan-out at
+// MaxRecipients (nearest first).
+func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string, longitude, latitude float64, plan DispatchPlan) ([]string, float64, error) {
+	radii := plan.Radii
+	if len(radii) == 0 {
+		radii = u.Deps.Radii
+	}
+	if len(radii) == 0 {
+		radii = []float64{1000, 2000, 5000}
+	}
+	maxRecipients := plan.MaxRecipients
+	if maxRecipients <= 0 {
+		maxRecipients = u.Deps.MaxRecipients
+	}
+	minRecipients := plan.MinRecipients
+	if minRecipients <= 0 {
+		minRecipients = u.Deps.MinRecipients
+	}
 	now := time.Now().UnixMilli()
 	var recipients []string
-	usedRadius := u.Deps.Radii[len(u.Deps.Radii)-1]
-	for _, radius := range u.Deps.Radii {
+	usedRadius := radii[len(radii)-1]
+	for _, radius := range radii {
 		usedRadius = radius
 		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius)
 		if err != nil {
@@ -404,11 +475,11 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 				continue
 			}
 			recipients = append(recipients, userID)
-			if len(recipients) >= u.Deps.MaxRecipients {
+			if len(recipients) >= maxRecipients {
 				break
 			}
 		}
-		if len(recipients) >= u.Deps.MinRecipients {
+		if len(recipients) >= minRecipients {
 			break
 		}
 	}

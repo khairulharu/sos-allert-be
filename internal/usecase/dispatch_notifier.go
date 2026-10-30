@@ -55,12 +55,23 @@ func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, ale
 	if alert.EmergencyType == "" {
 		body = "Emergency alert nearby. Open the app for the live location."
 	}
+	// When triage ran, responders get the bilingual summary instead
+	// of a bare category: it is the point of the AI layer. The
+	// reporter's original words are not included in push payloads.
+	if alert.AISummaryID != "" {
+		body = alert.AISummaryID
+	}
 	data := map[string]string{
 		"alert_id":       alert.ID,
 		"sender_id":      alert.SenderId,
 		"emergency_type": alert.EmergencyType,
 		"latitude":       fmt.Sprintf("%f", alert.Location.Latitude),
 		"longitude":      fmt.Sprintf("%f", alert.Location.Longitude),
+	}
+	if alert.AICategory != "" {
+		data["ai_category"] = alert.AICategory
+		data["ai_severity"] = fmt.Sprintf("%d", alert.AISeverity)
+		data["ai_summary_en"] = alert.AISummaryEN
 	}
 
 	pushFailed := false

@@ -58,6 +58,7 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Put("/api/location", c.LocationController.Update)
 
 	c.App.Post("/api/sos", c.SOSController.Trigger)
+	c.App.Post("/api/ai/triage", c.SOSController.PreviewTriage)
 	c.App.Get("/api/sos/active", c.SOSController.ListActive)
 	c.App.Get("/api/sos/:alertId", c.SOSController.Get)
 	c.App.Post("/api/sos/:alertId/cancel", c.SOSController.Cancel)

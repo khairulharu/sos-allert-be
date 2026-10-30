@@ -70,6 +70,11 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 		ResolvedAt:    alert.ResolvedAt,
 		CancelledAt:   alert.CancelledAt,
 	}
+	if triage := triageResponseFromAlert(alert); triage != nil {
+		detail.Triage = triage
+		detail.Guide = guideResponseFromCategory(alert.AICategory)
+		detail.OriginalMessage = alert.AIOriginalText
+	}
 	if u.Deps.Users != nil {
 		if sender, err := u.Deps.Users.GetByID(ctx, alert.SenderID); err == nil && sender != nil {
 			detail.Sender.Name = sender.Name

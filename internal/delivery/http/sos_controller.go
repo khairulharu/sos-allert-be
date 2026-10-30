@@ -68,8 +68,24 @@ func (s *SOSController) Trigger(ctx *fiber.Ctx) error {
 		GracePeriodSeconds: result.GracePeriodSeconds,
 		RecipientsNotified: len(result.Recipients),
 		TriggeredAt:        result.Alert.TriggeredAt.UnixMilli(),
+		Triage:             result.Triage,
+		Guide:              result.Guide,
 	}
 	return ctx.Status(fiber.StatusCreated).JSON(model.WebResponse[*model.SOSCreatedResponse]{Data: data})
+}
+
+// PreviewTriage classifies a report without creating an alert.
+func (s *SOSController) PreviewTriage(ctx *fiber.Ctx) error {
+	request := new(model.TriagePreviewRequest)
+	if err := ctx.BodyParser(request); err != nil {
+		return fiber.ErrBadRequest
+	}
+	result, err := s.UseCase.PreviewTriage(ctx.UserContext(), request)
+	if err != nil {
+		s.Log.WithError(err).Error("error previewing AI triage")
+		return mapSOSError(err)
+	}
+	return ctx.JSON(model.WebResponse[*model.TriagePreviewResponse]{Data: result})
 }
 
 func (s *SOSController) Get(ctx *fiber.Ctx) error {

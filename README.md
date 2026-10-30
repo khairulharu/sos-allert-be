@@ -355,7 +355,12 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
     "enabled": false, "account_sid": "...",
     "auth_token": "...", "from_number": "+1..."
   },
-  "storage": { "backend": "local", "local_dir": "./uploads" }
+  "storage": { "backend": "local", "local_dir": "./uploads" },
+  "ai": {
+    "enabled": false, "provider": "openai-compatible",
+    "base_url": "https://api.example.com/v1", "api_key": "...",
+    "model": "your-triage-model", "timeout_seconds": 3
+  }
 }
 ```
 
@@ -389,7 +394,27 @@ tracking + breadcrumbs + telemetri breadcrumb (baterai/speed/heading/altitude/ac
 retensi breadcrumb 30 hari, dan klien FCM v1 / APNs Critical Alert /
 Twilio SMS dengan fallback log-only saat kredensial belum diisi.
 
+**AI triage (MVP lomba, branch `feat/ai-triage-mvp`):** `POST /api/ai/triage`
+mengklasifikasi laporan singkat menjadi kategori, tingkat urgensi
+1–5, ringkasan dua bahasa (Indonesia/Inggris), dan panduan
+pertolongan pertama, tanpa membuat alert. `POST /api/sos` menerima
+`message` (+ `area_label` dan koreksi `triage_override` dari hasil
+preview) dan menyimpan hasil triage di kolom `ai_*` tabel `alerts`
+(migrasi `20261031000001_alerts_ai`); urgensi menentukan rencana
+dispatch (laporan ringan tetap di radius 1 km / maks 10 penerima,
+kritis diperluas sampai 5 km). Tanpa konfigurasi AI, triage berjalan
+dengan classifier aturan deterministik (Indonesia/Inggris) dan SOS
+tidak pernah diblokir oleh kegagalan AI (timeout 3 detik, fallback
+aturan, laporan ambigu dinaikkan urgensinya). Koordinat presisi
+tidak pernah dikirim ke penyedia AI, hanya teks laporan dan label
+area kasar. Jalankan migrasi AI setelah migrasi v2.
+
 Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
+- **AI LLM**: classifier aturan dan klien HTTP OpenAI-compatible sudah
+  ada dan dites dengan server tiruan, tapi belum pernah memanggil
+  penyedia AI sungguhan. Butuh `ai.base_url` + `ai.api_key` +
+  `ai.model` (atau variabel env `AI_API_KEY`/`AI_BASE_URL`/`AI_MODEL`);
+  tanpa itu triage berjalan rule-only.
 - **FCM/APNs/Twilio**: klien HTTP sudah ada dan dites dengan server
   tiruan, tapi belum pernah mengirim push/SMS sungguhan. Butuh
   `fcm.project_id` + access token OAuth2, `.p8` APNs + bundle id, dan
@@ -406,7 +431,8 @@ Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
   pesan gagal di-redelivery oleh consumer group.
 
 Jalankan migrasi `20261031000000_alerts_v2` sebelum memakai endpoint
-baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
+baru, lalu migrasi AI `20261031000001_alerts_ai` sebelum memakai
+triage, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
 `{"safe_pin": "1234"}`) agar cancel bisa diverifikasi.
 
 ---

@@ -1,0 +1,11 @@
+ALTER TABLE alerts
+    DROP INDEX idx_alerts_ai_category,
+    DROP COLUMN ai_needs_clarification,
+    DROP COLUMN ai_source,
+    DROP COLUMN ai_original_text,
+    DROP COLUMN ai_summary_en,
+    DROP COLUMN ai_summary_id,
+    DROP COLUMN ai_language,
+    DROP COLUMN ai_confidence,
+    DROP COLUMN ai_severity,
+    DROP COLUMN ai_category;

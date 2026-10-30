@@ -44,6 +44,9 @@ func (c *SOSConsumer) Consume(message *sarama.ConsumerMessage) error {
 			Latitude:  event.Latitude,
 			Longitude: event.Longitude,
 		},
+		AICategory:  event.AICategory,
+		AISeverity:  event.AISeverity,
+		AISummaryID: event.AISummaryID,
 	}
 	if err := c.Notifier.Notify(context.Background(), event.Recipients, alert); err != nil {
 		c.Log.WithError(err).Error("SOS dispatch from worker failed")

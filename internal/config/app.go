@@ -1,6 +1,7 @@
 package config
 
 import (
+	"golang-clean-architecture/internal/ai"
 	"golang-clean-architecture/internal/delivery/http"
 	"golang-clean-architecture/internal/delivery/http/middleware"
 	"golang-clean-architecture/internal/delivery/http/route"
@@ -65,6 +66,18 @@ func Bootstrap(config *BootstrapConfig) {
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
 	storageConfig := NewStorageConfig(config.Config)
 
+	// AI triage: LLM provider when configured, rule classifier
+	// otherwise (rule-only mode is the demo/offline default and
+	// never blocks an SOS). See internal/config/ai.go.
+	aiConfig := NewAIConfig(config.Config, config.Log)
+	var aiProvider ai.LLMProvider
+	if aiConfig.Enabled {
+		aiProvider = &ai.HTTPChatProvider{
+			BaseURL: aiConfig.BaseURL, APIKey: aiConfig.APIKey, Model: aiConfig.Model,
+		}
+	}
+	aiTriager := ai.NewService(aiProvider, config.Log)
+
 	// multi-channel dispatcher: FCM / APNs / Twilio, config-gated.
 	// Without credentials it degrades to the previous log-only behaviour.
 	fcmNotifier := &usecase.FCMNotifier{
@@ -110,6 +123,8 @@ func Bootstrap(config *BootstrapConfig) {
 		Metrics:           appMetrics,
 		EmergencyContacts: emergencyContactRepository,
 		MediaStore:        mediaStore,
+		AITriager:         aiTriager,
+		AITimeout:         aiConfig.Timeout,
 		GracePeriod:       sosConfig.GracePeriod,
 		MaxRecipients:     sosConfig.MaxRecipients,
 		MinRecipients:     sosConfig.MinRecipients,

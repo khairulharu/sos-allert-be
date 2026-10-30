@@ -19,7 +19,7 @@ const (
 	EmergencyTypeAccident = "ACCIDENT"
 )
 
-// Alert is the MySQL `alerts` table (alerts v2 schema).
+// Alert is the MySQL `alerts` table (alerts v2 schema + AI triage columns).
 type Alert struct {
 	ID                 string   `gorm:"column:id;primaryKey"`
 	SenderID           string   `gorm:"column:sender_id"`
@@ -33,6 +33,18 @@ type Alert struct {
 	CancellationReason *string  `gorm:"column:cancellation_reason"`
 	ResolvedAt         *int64   `gorm:"column:resolved_at"`
 	CancelledAt        *int64   `gorm:"column:cancelled_at"`
+	// AI triage (migration 20261031000001). OriginalText is the
+	// reporter's own words, kept so responders are never shown only
+	// an AI summary. AISource is "llm", "rules", "override", or "".
+	AICategory           string  `gorm:"column:ai_category"`
+	AISeverity           int     `gorm:"column:ai_severity"`
+	AIConfidence         float64 `gorm:"column:ai_confidence"`
+	AILanguage           string  `gorm:"column:ai_language"`
+	AISummaryID          string  `gorm:"column:ai_summary_id"`
+	AISummaryEN          string  `gorm:"column:ai_summary_en"`
+	AIOriginalText       string  `gorm:"column:ai_original_text"`
+	AISource             string  `gorm:"column:ai_source"`
+	AINeedsClarification bool    `gorm:"column:ai_needs_clarification"`
 }
 
 func (a *Alert) TableName() string {
