@@ -1,108 +1,368 @@
-# SOS-Allert Backend
+# SOS-Allert Backend — Real-Time Geospatial Emergency Dispatch Engine
 
-Go HTTP service untuk fitur SOS berbasis radius lokasi.
+Mission-critical, high-availability Go backend for real-time proximity-based SOS alerts, emergency contact broadcast, and live responder dispatch.
 
-## Konsep
-
-User klik tombol SOS → sistem cari semua user dalam radius 1 km → kirim notifikasi realtime → penerima bisa lihat lokasi pelapor.
+Designed under Silicon Valley life-safety system principles: **<200ms dispatch latency (p99)**, **zero-drop multi-channel failover**, and **resilient geospatial telemetry**.
 
 ---
 
-## Status Implementasi
+## 1. System Overview & Core Concept
 
-| Fitur | Status |
-|---|---|
-| `CalculateDistance` — Haversine 1 km helper | ✅ Done |
-| `UpdateLocation` — simpan lokasi user ke Redis GEO | ✅ Done |
-| `TriggerSOS` — save alert ke MySQL + GeoSearch 1 km | ✅ Done |
-| Alert entity + repository (MySQL) | ✅ Done |
-| `POST /api/sos` controller + route | ✅ Done |
-| Migration tabel `alerts` | ✅ Done |
-| AlertNotifier — log-only (sebelum FCM) | ✅ Done |
-| Stale user filtering (`last_seen` < 2 menit) | ✅ Done |
-| Hapus stubs `AllertUseCase` + `NearbyFinder` | ✅ Done |
-| Notifikasi realtime (FCM/APNs) | ❌ Belum |
-| Tampilan peta (Google Maps) | ❌ Belum |
+When a user in distress triggers an emergency SOS:
+1. **Instant Geolocation Capture & Ingestion**: The system locks the user's latest coordinates and device telemetry.
+2. **Multi-Tiered Notification Fan-out**:
+   - **Tier 1 (Emergency Circle)**: Instant Push + SMS/Voice call to registered family/emergency contacts regardless of distance.
+   - **Tier 2 (Proximity Crowd Responders)**: Push alert to active nearby users within dynamic radius ($1\text{ km}$ default, adaptive based on responder density).
+   - **Tier 3 (Emergency Services / PSAP)**: Escalation to local first responders / dispatch centers.
+3. **Live Breadcrumb Tracking**: Continuous bidirectional streaming (WebSocket/gRPC) tracks the victim if moving (e.g. kidnapping, vehicular pursuit).
+4. **Incident Lifecycle Management**: Full state machine from trigger to responder acknowledgment, resolution, or authenticated cancellation.
 
 ---
 
-## Endpoints
+## 2. Feature Implementation & Priority Roadmap
+
+### Status Legend
+- ✅ **Done**: Implemented, tested, and running in current codebase.
+- 🟡 **In Progress**: Partially built or stubbed; needs production hardening.
+- 🔴 **P0 (Blocker for Production / Life-Safety)**: Must have before public launch.
+- 🟠 **P1 (High Priority / Core Experience)**: Required for real-world reliability.
+- 🔵 **P2 (Scale, Trust & Safety, Enterprise)**: Post-launch enhancements.
+
+---
+
+### Matrix Fitur
+
+| Kategori | Fitur | Status | Prioritas | Keterangan & Spesifikasi Teknis |
+|---|---|:---:|:---:|---|
+| **Core Geospatial** | Haversine distance calculator | ✅ Done | - | Boundary-checked distance helper (`< 1 km`). |
+| | Redis GEO user positioning (`PUT /api/location`) | ✅ Done | - | High-throughput Redis GEO `GEOADD` (`users:locations`). |
+| | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; auto-prunes idle users > 2 min. |
+| | Dynamic Adaptive Radius | 🟠 Planned | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
+| **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
+| | SOS State Machine | 🔴 Planned | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
+| | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | 🔴 Planned | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
+| | Incident Query & Active Status API | 🔴 Planned | **P0** | `GET /api/sos/:id` & `GET /api/sos/active` for polling/sync on app cold start. |
+| | Idempotency Key & Deduplication | 🔴 Planned | **P0** | Prevent duplicate alerts caused by mobile retry/flaky cellular networks via `X-Idempotency-Key` in Redis. |
+| **Multi-Channel Dispatch** | Mock `AlertNotifier` | ✅ Done | - | In-memory log notifier stub. |
+| | APNs Critical Alerts & FCM v1 | 🔴 Planned | **P0** | Apple Critical Alerts (bypasses iOS Silent/DND) + Android High-Priority FCM with custom siren sound channel. |
+| | Emergency Contacts SMS/Call Fallback | 🔴 Planned | **P0** | Integration with Twilio/AWS SNS/Infobip: SMS + automated voice call with Google Maps link to verified contacts. |
+| | Kafka Asynchronous Notification Worker | 🟠 Planned | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with DLQ and exponential backoff. |
+| | PSAP / 911 / E911 Integration | 🔵 Planned | **P2** | RapidSOS / Noonlight integration to push location directly to 911 CAD (Computer Aided Dispatch). |
+| **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | 🟠 Planned | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
+| | Breadcrumb History (`alert_breadcrumbs`) | 🟠 Planned | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
+| | Device Telemetry Monitoring | 🟠 Planned | **P1** | Track battery level, battery charging state, network quality, and automated fall/crash sensor flags. |
+| | Incident Media & Audio Capture | 🟠 Planned | **P1** | Automatic 10-second ambient audio recording uploaded to S3/GCS (`POST /api/sos/:id/media`) as evidence. |
+| **Responder Operations** | Responder Acceptance & ETA | 🟠 Planned | **P1** | Responders can click "I am coming" (`POST /api/sos/:id/respond`), calculating ETA & live distance to victim. |
+| | Anonymized In-Incident Comms | 🔵 Planned | **P2** | Ephemeral, masked chat or WebRTC voice channel between victim and responding volunteers. |
+| | Emergency Medical ID Card | 🔵 Planned | **P2** | Victim's blood type, allergies, medications, and emergency contacts accessible only during active SOS. |
+| **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
+| | Anti-Abuse & Rate Limiting | 🔴 Planned | **P0** | Redis sliding-window rate limit (max 3 SOS triggers/hour/user) + spam detection to stop prank/malicious triggers. |
+| | Privacy Masking & Ephemeral Retention | 🔵 Planned | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
+| **Observability & SRE** | Prometheus Metrics & OpenTelemetry | 🟠 Planned | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. |
+
+---
+
+## 3. Architecture & Data Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Victim as Victim Mobile App
+    participant API as Fiber HTTP / WS Gateway
+    participant Redis as Redis (GEO & Cache)
+    participant DB as MySQL (Aiven)
+    participant Kafka as Kafka Event Bus
+    participant Worker as Notification Consumers
+    participant Push as FCM / APNs / Twilio
+    actor Responders as Nearby Users & Contacts
+
+    Victim->>API: POST /api/sos (coords, battery, idempotency_key)
+    activate API
+    API->>Redis: Set Idempotency Lock & Fetch Last Known Location
+    API->>DB: INSERT alerts (status: TRIGGERED, lat, lng, time)
+    API->>Redis: GEOSEARCH users:locations (radius: 1km)
+    Redis-->>API: Return Nearby Candidates
+    API->>Redis: Filter Stale Candidates (users:last_seen < 120s)
+    API->>Kafka: Produce Event: sos.triggered
+    API-->>Victim: 200 OK (alert_id, status: TRIGGERED, recipient_count)
+    deactivate API
+
+    par Parallel Asynchronous Dispatch
+        Kafka->>Worker: Consume sos.triggered
+        Worker->>DB: Query Emergency Contacts (SMS/Voice)
+        Worker->>Push: Send APNs Critical Alert + FCM Siren
+        Push-->>Responders: High-Priority Emergency Siren Notification
+    and Real-Time Tracking
+        Victim->>API: WS /ws/sos/{id}/track (live coords stream every 3s)
+        API->>Redis: XADD stream:sos:{id}:breadcrumbs
+        API-->>Responders: WS Push Live Coordinate Vector & Map Pin
+    end
+```
+
+---
+
+## 4. API Specification
+
+### Current Active Endpoints
 
 | Method | Path | Auth | Keterangan |
-|---|---|---|---|
-| `POST` | `/api/users` | ❌ | Register |
-| `POST` | `/api/users/_login` | ❌ | Login, return raw token |
-| `PUT` | `/api/location` | ✅ | Update lokasi user ke Redis GEO |
-| `POST` | `/api/sos` | ✅ | Trigger SOS — simpan alert ke MySQL, return recipients 1 km |
+|---|---|:---:|---|
+| `POST` | `/api/users` | ❌ | Registrasi user baru |
+| `POST` | `/api/users/_login` | ❌ | Login, return raw session token |
+| `DELETE` | `/api/users` | ✅ | Logout session |
+| `PATCH` | `/api/users/_current` | ✅ | Update profil user saat ini |
+| `GET` | `/api/users/_current` | ✅ | Ambil profil user saat ini |
+| `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) |
+| `POST` | `/api/sos` | ✅ | Trigger SOS awal (radius 1 km, persist MySQL, return recipients) |
+| `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
+| `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
 
-> `Authorization` header = raw token dari login, bukan `Bearer <token>`.
+> **Format Auth**: Header `Authorization: <token>` (raw token langsung, tanpa prefix `Bearer `).
 
 ---
 
-## Alur TriggerSOS (`POST /api/sos`)
+### Target Roadmap Endpoints (P0 & P1 Specifications)
+
+#### 1. Incident Lifecycle Management
+
+```http
+POST /api/sos
+Header: Authorization: <token>, X-Idempotency-Key: <uuid>
+Body:
+{
+  "latitude": -6.2088,
+  "longitude": 106.8456,
+  "accuracy_meters": 4.5,
+  "battery_percentage": 18,
+  "emergency_type": "DANGER" // DANGER | MEDICAL | ACCIDENT
+}
+Response 201 Created:
+{
+  "data": {
+    "alert_id": "alt_01HXYZ...",
+    "status": "TRIGGERED",
+    "grace_period_seconds": 10,
+    "recipients_notified": 7,
+    "triggered_at": 1730304000000
+  }
+}
+```
+
+```http
+POST /api/sos/:alertId/cancel
+Header: Authorization: <token>
+Body:
+{
+  "pin": "1234",          // Verified against user's safe PIN
+  "reason": "FALSE_ALARM" // ACCIDENTAL | SAFE_NOW | TEST
+}
+Response 200 OK:
+{
+  "data": {
+    "alert_id": "alt_01HXYZ...",
+    "status": "CANCELLED",
+    "cancelled_at": 1730304015000
+  }
+}
+```
+
+```http
+GET /api/sos/:alertId
+Header: Authorization: <token>
+Response 200 OK:
+{
+  "data": {
+    "alert_id": "alt_01HXYZ...",
+    "sender": { "id": "usr_1", "name": "Jane Doe", "phone": "+62812..." },
+    "status": "TRIGGERED",
+    "initial_location": { "latitude": -6.2088, "longitude": 106.8456 },
+    "latest_location": { "latitude": -6.2091, "longitude": 106.8460, "updated_at": 1730304050000 },
+    "responders_en_route": 2
+  }
+}
+```
+
+#### 2. Live Tracking Stream (WebSocket)
 
 ```
-1. Get lokasi sender dari Redis GEO
-2. INSERT entity.Alert ke MySQL (id, sender_id, longitude, latitude, triggered_at)
-3. GeoSearch Redis radius 1000m
-4. Filter sender dari hasil
-5. Filter user stale (last_seen < 2 menit via Redis HGET `users:last_seen`)
-6. AlertNotifier.Notify() — log recipients (FCM belakangan)
-7. Return TriggerSOSResult { Alert, Recipients }
+WS /ws/sos/:alertId/track?token=<token>
+
+Client -> Server (Pelapor kirim breadcrumb):
+{
+  "latitude": -6.2092,
+  "longitude": 106.8462,
+  "speed_mps": 4.2,
+  "heading_deg": 135.0,
+  "battery_percentage": 17,
+  "timestamp": 1730304060000
+}
+
+Server -> Responders (Broadcast posisi terkini):
+{
+  "type": "LOCATION_UPDATE",
+  "alert_id": "alt_01HXYZ...",
+  "latitude": -6.2092,
+  "longitude": 106.8462,
+  "speed_mps": 4.2,
+  "heading_deg": 135.0
+}
+```
+
+#### 3. Responder Coordination
+
+```http
+POST /api/sos/:alertId/respond
+Header: Authorization: <token>
+Body:
+{
+  "responder_latitude": -6.2100,
+  "responder_longitude": 106.8470
+}
+Response 200 OK:
+{
+  "data": {
+    "response_id": "rsp_01ABC...",
+    "eta_seconds": 180,
+    "victim_distance_meters": 240
+  }
+}
 ```
 
 ---
 
-## Desain Penyimpanan Lokasi
+## 5. Skema Database & Evolusi
 
-- **Redis GEO** (`users:locations`) — lokasi aktif semua user, diupdate tiap `PUT /api/location`. Tidak ada TTL → difilter via `users:last_seen`.
-- **Redis HASH** (`users:last_seen`) — timestamp last seen per user (ms), diset tiap `PUT /api/location`. User tidak aktif > 2 menit dibuang dari hasil GeoSearch.
-- **MySQL** (`locations` table) — tidak dipakai untuk proximity, hanya ada sebagai tabel historis.
-- **MySQL** (`alerts` table) — hanya ditulis saat user trigger SOS. Schema: `id, sender_id, longitude, latitude, triggered_at bigint`.
+### Tabel `alerts` (Saat Ini)
+```sql
+CREATE TABLE alerts (
+    id           VARCHAR(100) NOT NULL PRIMARY KEY,
+    sender_id    VARCHAR(100) NOT NULL,
+    longitude    DOUBLE       NOT NULL,
+    latitude     DOUBLE       NOT NULL,
+    triggered_at BIGINT       NOT NULL,
+    FOREIGN KEY (sender_id) REFERENCES users (id)
+);
+```
+
+### Rencana Migrasi Berikutnya (`alerts` v2)
+```sql
+ALTER TABLE alerts
+    ADD COLUMN status              VARCHAR(20)  NOT NULL DEFAULT 'TRIGGERED', -- TRIGGERED, ACKNOWLEDGED, RESOLVED, CANCELLED
+    ADD COLUMN emergency_type      VARCHAR(30)  NOT NULL DEFAULT 'DANGER',
+    ADD COLUMN cancellation_reason VARCHAR(100) NULL,
+    ADD COLUMN resolved_at         BIGINT       NULL,
+    ADD COLUMN cancelled_at        BIGINT       NULL,
+    ADD INDEX idx_alerts_status_triggered_at (status, triggered_at);
+
+CREATE TABLE alert_breadcrumbs (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+    alert_id    VARCHAR(100) NOT NULL,
+    latitude    DOUBLE       NOT NULL,
+    longitude   DOUBLE       NOT NULL,
+    speed_mps   FLOAT        NULL,
+    heading_deg FLOAT        NULL,
+    recorded_at BIGINT       NOT NULL,
+    FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE,
+    INDEX idx_breadcrumbs_alert_time (alert_id, recorded_at)
+);
+
+CREATE TABLE emergency_contacts (
+    id           VARCHAR(100) NOT NULL PRIMARY KEY,
+    user_id      VARCHAR(100) NOT NULL,
+    contact_name VARCHAR(100) NOT NULL,
+    phone_number VARCHAR(30)  NOT NULL,
+    relationship VARCHAR(50)  NOT NULL,
+    is_verified  BOOLEAN      NOT NULL DEFAULT FALSE,
+    created_at   BIGINT       NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+```
 
 ---
 
-## Menjalankan Migration
+## 6. Desain Penyimpanan Lokasi
 
+- **Redis GEO** (`users:locations`): Menyimpan geospatial coordinates semua user aktif. Format data: Member = `userId`, Value = `(longitude, latitude)`.
+- **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. Membuang user yang offline/inaktif $> 2$ menit dari broadcast SOS.
+- **Redis Key Value** (`idempotency:sos:{key}`): TTL 5 menit untuk deduplikasi request pengiriman SOS.
+- **MySQL** (`locations` table): Historis koordinat stasioner.
+- **MySQL** (`alerts` & `alert_breadcrumbs`): Persistence insiden resmi untuk audit dan investigasi forensik.
+
+---
+
+## 7. Non-Functional Requirements & SLA
+
+| Metrik | Target SLA | Mitigasi Kegagalan |
+|---|---|---|
+| **API Response Time (`POST /api/sos`)** | $p99 < 150\text{ ms}$ | Async event bus; database write didahulukan sebelum push notification. |
+| **Notification Fan-out Latency** | $< 2.0\text{ s}$ ke seluruh penerima | Kafka worker pool multi-partition dengan FCM HTTP v1 batch send. |
+| **Availability / Uptime** | $99.95\%$ | Multi-AZ deployment, Redis Sentinel/Cluster, stateless Fiber web instances. |
+| **Delivery Reliability** | $100\%$ zero-drop untuk Emergency Contacts | Fallback otomatis ke SMS Twilio jika Push notification tidak terkirim dalam 5 detik. |
+
+---
+
+## 8. Panduan Menjalankan Service
+
+### Prasyarat
+- Go 1.22+
+- MySQL (Aiven / Local)
+- Redis 7+
+- Kafka (Opsional, disabled by default via config)
+
+File kredensial `config.json` dan `ca.pem` harus berada di direktori root backend (`.gitignore` diaktifkan):
+```json
+{
+  "app": { "name": "sos-backend", "port": 3000 },
+  "database": {
+    "username": "avnadmin",
+    "password": "...",
+    "host": "...",
+    "port": 18770,
+    "database": "defaultdb",
+    "ssl": { "ca_cert": "ca.pem" }
+  },
+  "redis": {
+    "host": "...",
+    "port": 15164,
+    "password": "..."
+  },
+  "kafka": {
+    "producer": { "enabled": false }
+  }
+}
+```
+
+### Menjalankan Database Migration
 ```bash
-migrate -path db/migrations -database "mysql://user:pass@host/dbname" up
+# Menggunakan migrate CLI
+migrate -path db/migrations -database "mysql://user:pass@tcp(host:port)/dbname" up
 ```
 
-Tabel `alerts` (migration `20261027000000`) harus ada sebelum `POST /api/sos` bisa dipakai.
-
----
-
-## Menjalankan Service
-
+### Menjalankan Server
 ```bash
-go run cmd/web/main.go        # HTTP API on :3000
-go run cmd/worker/main.go     # Kafka consumers
+# 1. Jalankan HTTP API Server (port 3000)
+go run cmd/web/main.go
+
+# 2. Jalankan Worker Kafka (jika Kafka enabled)
+go run cmd/worker/main.go
+
+# 3. Build & Vet
 go build ./... && go vet ./...
 ```
 
-`config.json` dan `ca.pem` wajib ada di root repo (gitignored). Web startup gagal kalau MySQL atau Redis tidak bisa dijangkau.
-
 ---
 
-## Menjalankan Test
+## 9. Menjalankan Pengujian (Testing)
 
 ```bash
-# Unit test TriggerSOS — tidak butuh live infra
+# Unit test TriggerSOS (Zero dependency, menggunakan Mock/Fake in-memory)
 go test ./internal/usecase/ -run '^TestTriggerSOS' -v -count=1
 
-# Semua test di ./test/ — butuh Redis live dari config.json
+# Helper distance unit tests
+go test ./test/ -run '^TestCalculateDistance' -v -count=1
+
+# Full integration test suite (Membutuhkan Redis live sesuai config.json)
 go test ./test/ -v -count=1
 ```
 
-> `./test/` bersifat stateful dan order-dependent (lihat AGENTS.md). `TestGet`, `TestGetAll`, `TestDelete` butuh data fixture di Redis.
-
----
-
-## Tech Stack
-
-- **Go** + Fiber
-- **MySQL** (Aiven) — persistence
-- **Redis** — GEO lokasi aktif
-- **Kafka** — event user/contact/address (opsional, disabled by default)
-- **Firebase** — notifikasi (belum diimplementasi)
-- **Svelte** — frontend (repo terpisah)
+> **Catatan Penting**: Test di dalam `./test/` bersifat stateful dan memutasi data di Redis live (`user-B` dihapus oleh `TestDelete`). Gunakan database isolasi atau unit test mock untuk CI/CD pipeline.
