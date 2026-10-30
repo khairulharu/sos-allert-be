@@ -23,6 +23,15 @@ async function request(path, token, options = {}) {
 }
 
 export const api = {
+  // Unauthenticated probe. The frontend uses it to say, in plain
+  // words, whether the backend is reachable and which triage mode
+  // is active (llm or rules). It returns the probe payload as-is,
+  // not a wrapped `data` object.
+  health: async () => {
+    const res = await fetch(`${API_URL}/healthz`);
+    if (!res.ok) throw new Error(`Backend tidak merespons (${res.status})`);
+    return res.json();
+  },
   register: (payload) => request('/api/users', null, { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload) => request('/api/users/_login', null, { method: 'POST', body: JSON.stringify(payload) }),
   current: (token) => request('/api/users/_current', token),

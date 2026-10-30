@@ -1,0 +1,70 @@
+{
+  "ai": {
+    "api_key": "",
+    "base_url": "",
+    "enabled": false,
+    "model": "",
+    "provider": "openai-compatible",
+    "timeout_seconds": 3
+  },
+  "apns": {
+    "bundle_id": "",
+    "enabled": false,
+    "key_id": "",
+    "private_key_path": "",
+    "production": false,
+    "team_id": ""
+  },
+  "app": {
+    "name": "sos-backend"
+  },
+  "database": {
+    "host": "127.0.0.1",
+    "name": "sos_alert",
+    "password": "sos-dev-only",
+    "pool": {
+      "idle": 5,
+      "lifetime": 300,
+      "max": 10
+    },
+    "port": 3306,
+    "username": "sos"
+  },
+  "fcm": {
+    "access_token": "",
+    "enabled": false,
+    "project_id": ""
+  },
+  "kafka": {
+    "producer": {
+      "enabled": false
+    }
+  },
+  "log": {
+    "level": 4
+  },
+  "redis": {
+    "addr": "127.0.0.1:6379",
+    "db": 0,
+    "password": "",
+    "user": ""
+  },
+  "sos": {
+    "grace_period_seconds": 10,
+    "max_recipients": 50,
+    "rate_limit_per_hour": 3
+  },
+  "storage": {
+    "backend": "local",
+    "local_dir": "./uploads"
+  },
+  "twilio": {
+    "account_sid": "",
+    "auth_token": "",
+    "enabled": false,
+    "from_number": ""
+  },
+  "web": {
+    "port": 3000
+  }
+}

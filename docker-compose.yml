@@ -1,0 +1,46 @@
+# Local development infrastructure only. This file starts MySQL
+# and Redis for running the API and web MVP on a developer machine.
+# It is NOT a production deployment: the MySQL credentials below are
+# dev-only defaults, the ports are exposed on localhost, and the
+# API itself is started separately with `go run cmd/web/main.go`
+# (see README section 8 and config.example.json).
+#
+#   docker compose up -d
+#   cp config.example.json config.json   # only if you have no config.json yet
+#   # apply db/migrations in order, then start the API and the web app
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: sos-alert-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: sos-dev-only
+      MYSQL_DATABASE: sos_alert
+      MYSQL_USER: sos
+      MYSQL_PASSWORD: sos-dev-only
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-psos-dev-only"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: sos-alert-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql-data:
+  redis-data:

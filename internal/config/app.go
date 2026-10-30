@@ -139,6 +139,11 @@ func Bootstrap(config *BootstrapConfig) {
 	contactController := http.NewContactController(contactUseCase, config.Log)
 	addressController := http.NewAddressController(addressUseCase, config.Log)
 	locationController := http.NewLocationController(locationUseCase, config.Log)
+	healthAIMode := "rules"
+	if aiConfig.Enabled {
+		healthAIMode = "llm"
+	}
+	healthController := http.NewHealthController(healthAIMode)
 	sosController := http.NewSOSController(triggerSOSUseCase, config.Log)
 	emergencyContactController := http.NewEmergencyContactController(triggerSOSUseCase, config.Log)
 	sosTrackController := http.NewSOSTrackController(triggerSOSUseCase, userUseCase, trackHub, config.Log)
@@ -156,6 +161,7 @@ func Bootstrap(config *BootstrapConfig) {
 		SOSController:              sosController,
 		EmergencyContactController: emergencyContactController,
 		SOSTrackController:         sosTrackController,
+		HealthController:           healthController,
 		MetricsHandler:             appMetrics.Handler(),
 	}
 	routeConfig.Setup()

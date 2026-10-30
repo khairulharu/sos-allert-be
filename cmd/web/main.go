@@ -24,7 +24,16 @@ func main() {
 		RedisClient: redisClient,
 	})
 
+	// Port precedence: web.port, then the README example's app.port,
+	// then 3000. Without the fallback, a config that only sets
+	// app.port would start on a random port (":0").
 	webPort := viperConfig.GetInt("web.port")
+	if webPort == 0 {
+		webPort = viperConfig.GetInt("app.port")
+	}
+	if webPort == 0 {
+		webPort = 3000
+	}
 	err := app.Listen(fmt.Sprintf(":%d", webPort))
 	if err != nil {
 		log.Fatalf("Failed to start server: %v", err)

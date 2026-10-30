@@ -3,9 +3,11 @@
   let { children } = $props();
 </script>
 
-<header class="top">
-  <strong>SOS Alert</strong>
-  <span>AI triage darurat untuk Bali — Build with AI, Solve for Bali</span>
+<header class="masthead">
+  <div class="mast-inner">
+    <p class="wordmark"><span class="dot" aria-hidden="true"></span>SOS Alert</p>
+    <p class="mast-tag">AI triage darurat untuk Bali</p>
+  </div>
 </header>
 
 <main>
@@ -13,6 +15,7 @@
 </main>
 
 <footer>
-  MVP lomba. AI membantu memahami laporan dan menentukan prioritas, tetapi bukan pengganti
-  layanan darurat resmi. Lokasi presisi hanya terlihat oleh pelapor dan responder yang terlibat.
+  MVP lomba AI Web Innovation Challenge, bidang Bali Smart Society. AI membantu memahami
+  laporan dan menentukan prioritas, tetapi bukan pengganti layanan darurat resmi. Lokasi
+  presisi hanya terlihat oleh pelapor dan responder yang terlibat.
 </footer>

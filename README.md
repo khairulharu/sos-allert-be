@@ -364,6 +364,25 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
 }
 ```
 
+### Pengembangan lokal (MySQL + Redis via Docker)
+
+Untuk menjalankan stack lokal dari nol, tanpa Aiven:
+
+```bash
+docker compose up -d
+cp config.example.json config.json
+# Terapkan migrasi di db/migrations secara berurutan, lalu:
+go run cmd/web/main.go
+```
+
+`config.example.json` berisi kredensial dev-only yang sama dengan
+`docker-compose.yml` dan port API 3000. Jangan dipakai untuk
+deployment bersama. Port API diambil dari `web.port`, lalu
+`app.port`, lalu 3000 bila keduanya kosong. Setelah server jalan,
+`GET /healthz` mengembalikan `{"status":"ok","ai_mode":"llm"|"rules"}`
+tanpa autentikasi; frontend memakai endpoint ini untuk menampilkan
+status backend apa adanya.
+
 ### Menjalankan Database Migration
 ```bash
 # Menggunakan migrate CLI

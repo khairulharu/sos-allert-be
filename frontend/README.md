@@ -34,4 +34,32 @@ npm run preview
 Backend harus jalan dan migrasi `20261031000000_alerts_v2` +
 `20261031000001_alerts_ai` sudah diterapkan. Tanpa konfigurasi AI
 di backend, triage berjalan dengan classifier aturan (mode
-rule-only) dan demo tetap bisa jalan.
+rule-only) dan demo tetap bisa jalan. Halaman memeriksa
+`GET /healthz` saat dimuat dan menampilkan status backend serta mode
+AI apa adanya, supaya demo tidak berpura-pura memakai model bahasa
+saat sedang memakai aturan.
+
+Untuk menjalankan backend secara lokal dari nol, lihat README utama
+bagian 8: `docker compose up -d` di root repo, salin
+`config.example.json` menjadi `config.json`, terapkan migrasi, lalu
+`go run cmd/web/main.go`.
+
+## Desain
+
+Desain mengikuti skill `frontend-design`: satu identitas yang
+berakar pada dunia produknya, bukan template umum.
+
+- **Konsep:** konsol sinyal darurat. Yang dibuka pertama adalah
+  konsolnya sendiri, bukan halaman pemasaran. Langkah 01 sampai 04
+  memang berurutan, jadi penomoran langkah dipakai dengan sengaja.
+- **Warna:** Abyss `#081C26` (laut malam), Mist `#EEF3F1`, Signal
+  `#E63B1F` (hanya untuk SOS dan urgensi tertinggi), Buoy `#F2A93B`,
+  Reef `#0E7C6B` (aman/terhubung).
+- **Tipografi:** Barlow Condensed untuk judul gaya rambu, Barlow
+  untuk isi. Judul besar memakai huruf kapital sebagai rambu;
+  label dan tombol memakai kalimat biasa.
+- **Satu momen gerak:** cincin denyut pada panel sinyal saja,
+  dimatikan bila pengguna memilih reduced motion. Fokus keyboard
+  selalu terlihat.
+
+Naskah demo 4 menit ada di halaman, di bawah bagian responder.

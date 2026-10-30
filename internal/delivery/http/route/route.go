@@ -15,6 +15,7 @@ type RouteConfig struct {
 	SOSController              *http.SOSController
 	EmergencyContactController *http.EmergencyContactController
 	SOSTrackController         *http.SOSTrackController
+	HealthController           *http.HealthController
 	MetricsHandler             fiber.Handler
 	AuthMiddleware             fiber.Handler
 }
@@ -27,6 +28,9 @@ func (c *RouteConfig) Setup() {
 func (c *RouteConfig) SetupGuestRoute() {
 	c.App.Post("/api/users", c.UserController.Register)
 	c.App.Post("/api/users/_login", c.UserController.Login)
+	if c.HealthController != nil {
+		c.App.Get("/healthz", c.HealthController.Status)
+	}
 	if c.MetricsHandler != nil {
 		c.App.Get("/metrics", c.MetricsHandler)
 	}

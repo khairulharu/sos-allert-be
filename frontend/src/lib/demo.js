@@ -27,3 +27,15 @@ export const CATEGORIES = [
   'NATURAL_DISASTER',
   'OTHER'
 ];
+
+// Plain-language labels shown to reporters and responders. The
+// category code itself stays in the payload and on the result card.
+export const CATEGORY_LABELS = {
+  ACCIDENT_TRAFFIC: 'Kecelakaan lalu lintas',
+  MEDICAL: 'Medis',
+  DROWNING: 'Tenggelam',
+  FIRE: 'Kebakaran',
+  DANGER: 'Bahaya',
+  NATURAL_DISASTER: 'Bencana alam',
+  OTHER: 'Lainnya'
+};
