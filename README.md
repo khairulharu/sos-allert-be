@@ -37,28 +37,28 @@ When a user in distress triggers an emergency SOS:
 | **Core Geospatial** | Haversine distance calculator | ✅ Done | - | Boundary-checked distance helper (`< 1 km`). |
 | | Redis GEO user positioning (`PUT /api/location`) | ✅ Done | - | High-throughput Redis GEO `GEOADD` (`users:locations`). |
 | | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; auto-prunes idle users > 2 min. |
-| | Dynamic Adaptive Radius | 🟠 Planned | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
+| | Dynamic Adaptive Radius | ✅ Done | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
 | **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
-| | SOS State Machine | 🔴 Planned | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
-| | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | 🔴 Planned | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
-| | Incident Query & Active Status API | 🔴 Planned | **P0** | `GET /api/sos/:id` & `GET /api/sos/active` for polling/sync on app cold start. |
-| | Idempotency Key & Deduplication | 🔴 Planned | **P0** | Prevent duplicate alerts caused by mobile retry/flaky cellular networks via `X-Idempotency-Key` in Redis. |
-| **Multi-Channel Dispatch** | Mock `AlertNotifier` | ✅ Done | - | In-memory log notifier stub. |
-| | APNs Critical Alerts & FCM v1 | 🔴 Planned | **P0** | Apple Critical Alerts (bypasses iOS Silent/DND) + Android High-Priority FCM with custom siren sound channel. |
-| | Emergency Contacts SMS/Call Fallback | 🔴 Planned | **P0** | Integration with Twilio/AWS SNS/Infobip: SMS + automated voice call with Google Maps link to verified contacts. |
-| | Kafka Asynchronous Notification Worker | 🟠 Planned | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with DLQ and exponential backoff. |
+| | SOS State Machine | ✅ Done | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
+| | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | ✅ Done | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
+| | Incident Query & Active Status API | ✅ Done | **P0** | `GET /api/sos/:id` & `GET /api/sos/active` for polling/sync on app cold start. |
+| | Idempotency Key & Deduplication | ✅ Done | **P0** | Prevent duplicate alerts caused by mobile retry/flaky cellular networks via `X-Idempotency-Key` in Redis. |
+| **Multi-Channel Dispatch** | Composite `AlertDispatcher` | ✅ Done | - | FCM/APNs/Twilio when configured; log-only fallback when a channel has no credentials. |
+| | APNs Critical Alerts & FCM v1 | 🟡 In Progress | **P0** | Apple Critical Alerts (bypasses iOS Silent/DND) + Android High-Priority FCM with custom siren sound channel. |
+| | Emergency Contacts SMS/Call Fallback | 🟡 In Progress | **P0** | Integration with Twilio/AWS SNS/Infobip: SMS + automated voice call with Google Maps link to verified contacts. |
+| | Kafka Asynchronous Notification Worker | ✅ Done | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with DLQ and exponential backoff. |
 | | PSAP / 911 / E911 Integration | 🔵 Planned | **P2** | RapidSOS / Noonlight integration to push location directly to 911 CAD (Computer Aided Dispatch). |
-| **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | 🟠 Planned | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
-| | Breadcrumb History (`alert_breadcrumbs`) | 🟠 Planned | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
-| | Device Telemetry Monitoring | 🟠 Planned | **P1** | Track battery level, battery charging state, network quality, and automated fall/crash sensor flags. |
-| | Incident Media & Audio Capture | 🟠 Planned | **P1** | Automatic 10-second ambient audio recording uploaded to S3/GCS (`POST /api/sos/:id/media`) as evidence. |
-| **Responder Operations** | Responder Acceptance & ETA | 🟠 Planned | **P1** | Responders can click "I am coming" (`POST /api/sos/:id/respond`), calculating ETA & live distance to victim. |
+| **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | ✅ Done | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
+| | Breadcrumb History (`alert_breadcrumbs`) | ✅ Done | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
+| | Device Telemetry Monitoring | 🟡 In Progress | **P1** | Track battery level, battery charging state, network quality, and automated fall/crash sensor flags. |
+| | Incident Media & Audio Capture | 🟡 In Progress | **P1** | Automatic 10-second ambient audio recording uploaded to S3/GCS (`POST /api/sos/:id/media`) as evidence. |
+| **Responder Operations** | Responder Acceptance & ETA | ✅ Done | **P1** | Responders can click "I am coming" (`POST /api/sos/:id/respond`), calculating ETA & live distance to victim. |
 | | Anonymized In-Incident Comms | 🔵 Planned | **P2** | Ephemeral, masked chat or WebRTC voice channel between victim and responding volunteers. |
 | | Emergency Medical ID Card | 🔵 Planned | **P2** | Victim's blood type, allergies, medications, and emergency contacts accessible only during active SOS. |
 | **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
-| | Anti-Abuse & Rate Limiting | 🔴 Planned | **P0** | Redis sliding-window rate limit (max 3 SOS triggers/hour/user) + spam detection to stop prank/malicious triggers. |
-| | Privacy Masking & Ephemeral Retention | 🔵 Planned | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
-| **Observability & SRE** | Prometheus Metrics & OpenTelemetry | 🟠 Planned | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. |
+| | Anti-Abuse & Rate Limiting | ✅ Done | **P0** | Redis sliding-window rate limit (max 3 SOS triggers/hour/user) + spam detection to stop prank/malicious triggers. |
+| | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
+| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. |
 
 ---
 
@@ -110,10 +110,21 @@ sequenceDiagram
 | `POST` | `/api/users` | ❌ | Registrasi user baru |
 | `POST` | `/api/users/_login` | ❌ | Login, return raw session token |
 | `DELETE` | `/api/users` | ✅ | Logout session |
-| `PATCH` | `/api/users/_current` | ✅ | Update profil user saat ini |
+| `PATCH` | `/api/users/_current` | ✅ | Update profil user saat ini; kirim `safe_pin` (4 digit, disimpan sebagai hash), `fcm_token`, atau `apns_token` untuk mengaturnya |
 | `GET` | `/api/users/_current` | ✅ | Ambil profil user saat ini |
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) |
-| `POST` | `/api/sos` | ✅ | Trigger SOS awal (radius 1 km, persist MySQL, return recipients) |
+| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam) |
+| `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
+| `GET` | `/api/sos/:alertId` | ✅ | Detail insiden; lokasi dimask untuk viewer yang bukan sender/responder |
+| `POST` | `/api/sos/:alertId/cancel` | ✅ | Batalkan false alarm (PIN 4 digit + alasan) |
+| `POST` | `/api/sos/:alertId/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED` |
+| `POST` | `/api/sos/:alertId/resolve` | ✅ | `TRIGGERED`/`ACKNOWLEDGED` → `RESOLVED` (sender saja) |
+| `POST` | `/api/sos/:alertId/respond` | ✅ | Responder menjawab, hitung ETA & jarak |
+| `GET/POST` | `/api/sos/:alertId/breadcrumbs` | ✅ | Riwayat breadcrumb / kirim satu titik tracking |
+| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal) |
+| `WS` | `/ws/sos/:alertId/track?token=<token>` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`) |
+| `GET/POST` | `/api/emergency-contacts` | ✅ | CRUD Tier-1 emergency contacts untuk SMS fallback |
+| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`) |
 | `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
 | `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
 
@@ -244,7 +255,7 @@ CREATE TABLE alerts (
 );
 ```
 
-### Rencana Migrasi Berikutnya (`alerts` v2)
+### Migrasi `alerts` v2 (diterapkan di `db/migrations/20261031000000_alerts_v2.*.sql`, termasuk tabel `alert_breadcrumbs`, `emergency_contacts`, `alert_responses`, `alert_media`, dan kolom `safe_pin_hash`/`fcm_token`/`apns_token` di `users`)
 ```sql
 ALTER TABLE alerts
     ADD COLUMN status              VARCHAR(20)  NOT NULL DEFAULT 'TRIGGERED', -- TRIGGERED, ACKNOWLEDGED, RESOLVED, CANCELLED
@@ -285,6 +296,7 @@ CREATE TABLE emergency_contacts (
 - **Redis GEO** (`users:locations`): Menyimpan geospatial coordinates semua user aktif. Format data: Member = `userId`, Value = `(longitude, latitude)`.
 - **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. Membuang user yang offline/inaktif $> 2$ menit dari broadcast SOS.
 - **Redis Key Value** (`idempotency:sos:{key}`): TTL 5 menit untuk deduplikasi request pengiriman SOS.
+- **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, max 3 trigger SOS per jam per user.
 - **MySQL** (`locations` table): Historis koordinat stasioner.
 - **MySQL** (`alerts` & `alert_breadcrumbs`): Persistence insiden resmi untuk audit dan investigasi forensik.
 
@@ -328,7 +340,22 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
   },
   "kafka": {
     "producer": { "enabled": false }
-  }
+  },
+  "sos": {
+    "grace_period_seconds": 10,
+    "rate_limit_per_hour": 3,
+    "max_recipients": 50
+  },
+  "fcm": { "enabled": false, "project_id": "...", "access_token": "..." },
+  "apns": {
+    "enabled": false, "key_id": "...", "team_id": "...",
+    "bundle_id": "...", "private_key_path": "AuthKey.p8", "production": false
+  },
+  "twilio": {
+    "enabled": false, "account_sid": "...",
+    "auth_token": "...", "from_number": "+1..."
+  },
+  "storage": { "backend": "local", "local_dir": "./uploads" }
 }
 ```
 
@@ -352,10 +379,47 @@ go build ./... && go vet ./...
 
 ---
 
-## 9. Menjalankan Pengujian (Testing)
+## 9. Status Implementasi & Yang Belum Live
+
+Yang sudah diimplementasi di branch ini (P0 + P1, lihat matriks §2):
+state machine, cancel + PIN + grace period 10 detik, query/active API,
+idempotency & rate limit, adaptive radius (1/2/5 km, cap 50), WebSocket
+tracking + breadcrumbs + telemetri breadcrumb (baterai/speed/heading/altitude/accuracy; flag fall/crash & kualitas jaringan belum), responder & ETA, Kafka producer
+`sos.dispatched` + worker consumer, metrik `/metrics`, masking lokasi,
+retensi breadcrumb 30 hari, dan klien FCM v1 / APNs Critical Alert /
+Twilio SMS dengan fallback log-only saat kredensial belum diisi.
+
+Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
+- **FCM/APNs/Twilio**: klien HTTP sudah ada dan dites dengan server
+  tiruan, tapi belum pernah mengirim push/SMS sungguhan. Butuh
+  `fcm.project_id` + access token OAuth2, `.p8` APNs + bundle id, dan
+  SID/token/nomor Twilio, plus device token per user (`fcm_token` /
+  `apns_token` via `PATCH /api/users/_current`; tanpa token, FCM
+  memakai topic `user_<id>`).
+- **PSAP / 911 (RapidSOS/Noonlight)**, **komunikasi anonim WebRTC**,
+  **Emergency Medical ID Card**, dan **Geofenced Safe Zones**: belum
+  diimplementasi (integrasi eksternal / keputusan produk).
+- **Media S3/GCS**: upload tersimpan lokal (`storage.local_dir`);
+  backend S3 belum di-wire.
+- **OpenTelemetry**: hanya metrik Prometheus manual; tracing OTEL
+  belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) belum di-wire;
+  pesan gagal di-redelivery oleh consumer group.
+
+Jalankan migrasi `20261031000000_alerts_v2` sebelum memakai endpoint
+baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
+`{"safe_pin": "1234"}`) agar cancel bisa diverifikasi.
+
+---
+
+## 10. Menjalankan Pengujian (Testing)
 
 ```bash
-# Unit test TriggerSOS (Zero dependency, menggunakan Mock/Fake in-memory)
+# Unit test SOS (Zero dependency, menggunakan Mock/Fake in-memory):
+# trigger, idempotency, rate limit, cancel/PIN, respond/ETA, breadcrumbs,
+# adaptive radius, FCM/APNs/Twilio clients (httptest), hub & metrics
+go test ./internal/usecase/ ./internal/tracking/ ./internal/metrics/ -v -count=1
+
+# Unit test TriggerSOS (subset lama)
 go test ./internal/usecase/ -run '^TestTriggerSOS' -v -count=1
 
 # Helper distance unit tests

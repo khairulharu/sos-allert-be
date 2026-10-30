@@ -33,7 +33,9 @@ type fakeLocationRepository struct {
 	gotLongitude   float64
 	gotLatitude    float64
 	gotRadius      float64
+	radii          []float64
 	geoSearchCalls int
+	saved          []*entity.LocationCache
 }
 
 func (f *fakeLocationRepository) Get(ctx context.Context, userId string) (*entity.LocationCache, error) {
@@ -44,11 +46,17 @@ func (f *fakeLocationRepository) Get(ctx context.Context, userId string) (*entit
 	return f.sender, nil
 }
 
+func (f *fakeLocationRepository) Save(ctx context.Context, loc *entity.LocationCache) error {
+	f.saved = append(f.saved, loc)
+	return nil
+}
+
 func (f *fakeLocationRepository) GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error) {
 	f.geoSearchCalls++
 	f.gotLongitude = longitude
 	f.gotLatitude = latitude
 	f.gotRadius = radiusMeters
+	f.radii = append(f.radii, radiusMeters)
 	if f.nearbyErr != nil {
 		return nil, f.nearbyErr
 	}
@@ -66,17 +74,149 @@ func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string)
 	return ts, nil
 }
 
-// fakeAlertRepository satisfies AlertSaver without a real DB.
+// fakeAlertRepository satisfies AlertStore with in-memory state.
 type fakeAlertRepository struct {
 	createErr    error
 	createCalled bool
 	lastAlert    *entity.Alert
+	alerts       map[string]*entity.Alert
+	breadcrumbs  map[string][]*entity.AlertBreadcrumb
+	responses    map[string][]*entity.AlertResponse
+}
+
+func (f *fakeAlertRepository) ensure() {
+	if f.alerts == nil {
+		f.alerts = make(map[string]*entity.Alert)
+	}
+	if f.breadcrumbs == nil {
+		f.breadcrumbs = make(map[string][]*entity.AlertBreadcrumb)
+	}
+	if f.responses == nil {
+		f.responses = make(map[string][]*entity.AlertResponse)
+	}
 }
 
 func (f *fakeAlertRepository) Create(ctx context.Context, db *gorm.DB, alert *entity.Alert) error {
 	f.createCalled = true
 	f.lastAlert = alert
-	return f.createErr
+	if f.createErr != nil {
+		return f.createErr
+	}
+	f.ensure()
+	cp := *alert
+	f.alerts[alert.ID] = &cp
+	return nil
+}
+
+func (f *fakeAlertRepository) GetByID(ctx context.Context, db *gorm.DB, id string) (*entity.Alert, error) {
+	f.ensure()
+	if a, ok := f.alerts[id]; ok {
+		cp := *a
+		return &cp, nil
+	}
+	return nil, model.ErrAlertNotFound
+}
+
+func (f *fakeAlertRepository) ListActiveBySender(ctx context.Context, db *gorm.DB, senderID string, limit int) ([]*entity.Alert, error) {
+	f.ensure()
+	var out []*entity.Alert
+	for _, a := range f.alerts {
+		if a.SenderID == senderID && a.IsActive() {
+			cp := *a
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAlertRepository) Transition(ctx context.Context, db *gorm.DB, id string, fromStatuses []string, updates map[string]any) (bool, error) {
+	f.ensure()
+	a, ok := f.alerts[id]
+	if !ok {
+		return false, nil
+	}
+	allowed := false
+	for _, s := range fromStatuses {
+		if a.Status == s {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return false, nil
+	}
+	if v, ok := updates["status"]; ok {
+		a.Status = v.(string)
+	}
+	if v, ok := updates["cancellation_reason"]; ok {
+		s := v.(string)
+		a.CancellationReason = &s
+	}
+	if v, ok := updates["cancelled_at"]; ok {
+		n := v.(int64)
+		a.CancelledAt = &n
+	}
+	if v, ok := updates["resolved_at"]; ok {
+		n := v.(int64)
+		a.ResolvedAt = &n
+	}
+	return true, nil
+}
+
+func (f *fakeAlertRepository) ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error) {
+	return 0, nil
+}
+
+func (f *fakeAlertRepository) CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error {
+	f.ensure()
+	f.breadcrumbs[b.AlertID] = append(f.breadcrumbs[b.AlertID], b)
+	return nil
+}
+
+func (f *fakeAlertRepository) ListBreadcrumbs(ctx context.Context, db *gorm.DB, alertID string, limit int) ([]*entity.AlertBreadcrumb, error) {
+	f.ensure()
+	return f.breadcrumbs[alertID], nil
+}
+
+func (f *fakeAlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID string) (*entity.AlertBreadcrumb, error) {
+	f.ensure()
+	list := f.breadcrumbs[alertID]
+	if len(list) == 0 {
+		return nil, nil
+	}
+	return list[len(list)-1], nil
+}
+
+func (f *fakeAlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
+	f.ensure()
+	f.responses[r.AlertID] = append(f.responses[r.AlertID], r)
+	return nil
+}
+
+func (f *fakeAlertRepository) CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error) {
+	f.ensure()
+	seen := map[string]struct{}{}
+	for _, r := range f.responses[alertID] {
+		seen[r.ResponderID] = struct{}{}
+	}
+	return len(seen), nil
+}
+
+func (f *fakeAlertRepository) IsResponder(ctx context.Context, db *gorm.DB, alertID, userID string) (bool, error) {
+	f.ensure()
+	for _, r := range f.responses[alertID] {
+		if r.ResponderID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeAlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
+	return nil
+}
+
+func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
+	return 0, nil
 }
 
 // fakeNotifier satisfies Notifier without real push infra.
@@ -104,8 +244,14 @@ func staleLastSeen() int64 {
 	return time.Now().UnixMilli() - 3*60*1000 // 3 minutes ago
 }
 
-func newUseCase(locRepo LocationRepository, alertRepo AlertSaver, notifier Notifier) *TriggerSOSUseCase {
-	return NewTriggerSOSUseCase(nil, noopLogger(), locRepo, alertRepo, notifier)
+func newUseCase(locRepo LocationRepository, alertRepo AlertStore, notifier Notifier) *TriggerSOSUseCase {
+	return NewTriggerSOSUseCase(nil, noopLogger(), TriggerSOSDeps{
+		Location: locRepo, Alerts: alertRepo, Notifier: notifier,
+	})
+}
+
+func newUseCaseWithDeps(deps TriggerSOSDeps) *TriggerSOSUseCase {
+	return NewTriggerSOSUseCase(nil, noopLogger(), deps)
 }
 
 func TestTriggerSOSUseCaseExecute(t *testing.T) {
@@ -160,8 +306,10 @@ func TestTriggerSOSUseCaseExecute(t *testing.T) {
 				t.Errorf("GeoSearch() center = (%v, %v), want (%v, %v)",
 					locRepo.gotLongitude, locRepo.gotLatitude, sender.Longitude, sender.Latitude)
 			}
-			if locRepo.gotRadius != sosRadiusMeters {
-				t.Errorf("GeoSearch() radius = %v, want %v", locRepo.gotRadius, sosRadiusMeters)
+			// Adaptive radius: first probe is always 1 km; with fewer
+			// than 3 recipients it expands through all radii.
+			if len(locRepo.radii) == 0 || locRepo.radii[0] != 1000 {
+				t.Errorf("first GeoSearch radius = %v, want 1000", locRepo.radii)
 			}
 			if !alertRepo.createCalled {
 				t.Error("AlertRepository.Create() was not called")
@@ -172,6 +320,9 @@ func TestTriggerSOSUseCaseExecute(t *testing.T) {
 			if alertRepo.lastAlert.Longitude != sender.Longitude || alertRepo.lastAlert.Latitude != sender.Latitude {
 				t.Errorf("alert location = (%v, %v), want (%v, %v)",
 					alertRepo.lastAlert.Longitude, alertRepo.lastAlert.Latitude, sender.Longitude, sender.Latitude)
+			}
+			if alertRepo.lastAlert.Status != entity.AlertStatusTriggered {
+				t.Errorf("alert.Status = %s, want TRIGGERED", alertRepo.lastAlert.Status)
 			}
 			if !notifier.notifyCalled {
 				t.Error("Notifier.Notify() was not called")

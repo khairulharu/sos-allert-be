@@ -4,6 +4,7 @@ import (
 	"context"
 	"golang-clean-architecture/internal/config"
 	"golang-clean-architecture/internal/delivery/messaging"
+	"golang-clean-architecture/internal/usecase"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,7 @@ func main() {
 	go RunUserConsumer(logger, viperConfig, ctx)
 	go RunContactConsumer(logger, viperConfig, ctx)
 	go RunAddressConsumer(logger, viperConfig, ctx)
+	go RunSOSConsumer(logger, viperConfig, ctx)
 
 	terminateSignals := make(chan os.Signal, 1)
 	signal.Notify(terminateSignals, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
@@ -59,4 +61,20 @@ func RunUserConsumer(logger *logrus.Logger, viperConfig *viper.Viper, ctx contex
 	userConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
 	userHandler := messaging.NewUserConsumer(logger)
 	messaging.ConsumeTopic(ctx, userConsumerGroup, "users", logger, userHandler.Consume)
+}
+
+// RunSOSConsumer fans SOS events out asynchronously. The worker has no
+// database, so dispatch uses FCM topics (no token lookup) and Twilio
+// from config only; without credentials it logs, like the web path.
+func RunSOSConsumer(logger *logrus.Logger, viperConfig *viper.Viper, ctx context.Context) {
+	logger.Info("setup sos consumer")
+	notificationConfig := config.NewNotificationConfig(viperConfig, logger)
+	dispatcher := usecase.NewAlertDispatcher(logger,
+		&usecase.FCMNotifier{Enabled: notificationConfig.FCMEnabled, ProjectID: notificationConfig.FCMProjectID, AccessToken: notificationConfig.FCMAccessToken},
+		&usecase.APNsNotifier{Enabled: notificationConfig.APNsEnabled, KeyID: notificationConfig.APNsKeyID, TeamID: notificationConfig.APNsTeamID, BundleID: notificationConfig.APNsBundleID, PrivateKeyPEM: notificationConfig.APNsPrivateKey, Production: notificationConfig.APNsProduction},
+		&usecase.TwilioNotifier{Enabled: notificationConfig.TwilioEnabled, AccountSID: notificationConfig.TwilioSID, AuthToken: notificationConfig.TwilioToken, FromNumber: notificationConfig.TwilioFrom},
+		nil, nil, nil)
+	sosConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
+	sosHandler := messaging.NewSOSConsumer(logger, dispatcher)
+	messaging.ConsumeTopic(ctx, sosConsumerGroup, "sos.dispatched", logger, sosHandler.Consume)
 }
