@@ -12,6 +12,7 @@ type RouteConfig struct {
 	ContactController  *http.ContactController
 	AddressController  *http.AddressController
 	LocationController *http.LocationController
+	SOSController      *http.SOSController
 	AuthMiddleware     fiber.Handler
 }
 
@@ -44,4 +45,5 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Delete("/api/contacts/:contactId/addresses/:addressId", c.AddressController.Delete)
 
 	c.App.Put("/api/location", c.LocationController.Update)
+	c.App.Post("/api/sos", c.SOSController.Trigger)
 }

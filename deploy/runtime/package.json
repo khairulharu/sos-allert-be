@@ -1,0 +1,15 @@
+{
+  "name": "sos-allert-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Run SOS-Allert on Runtime Cloud",
+  "scripts": {
+    "verify": "node verify.mjs",
+    "deploy": "node deploy.mjs",
+    "delete": "node deploy.mjs --delete"
+  },
+  "dependencies": {
+    "withruntime": "^0.48.1"
+  }
+}

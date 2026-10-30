@@ -33,6 +33,7 @@ func Bootstrap(config *BootstrapConfig) {
 	contactRepository := repository.NewContactRepository(config.Log)
 	addressRepository := repository.NewAddressRepository(config.Log)
 	locationCacheRepository := repository.NewLocationCacheRepository(config.RedisClient, config.Log)
+	alertRepository := repository.NewAllertRepository(config.Log)
 
 	// setup producer
 	var userProducer *messaging.UserProducer
@@ -50,12 +51,15 @@ func Bootstrap(config *BootstrapConfig) {
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
 	addressUseCase := usecase.NewAddressUseCase(config.DB, config.Log, config.Validate, contactRepository, addressRepository, addressProducer)
 	locationUseCase := usecase.NewLocationUseCase(locationCacheRepository, config.Validate, config.Log)
+	alertNotifier := usecase.NewAlertNotifier(config.Log)
+	triggerSOSUseCase := usecase.NewTriggerSOSUseCase(config.DB, config.Log, locationCacheRepository, alertRepository, alertNotifier)
 
 	// setup controller
 	userController := http.NewUserController(userUseCase, config.Log)
 	contactController := http.NewContactController(contactUseCase, config.Log)
 	addressController := http.NewAddressController(addressUseCase, config.Log)
 	locationController := http.NewLocationController(locationUseCase, config.Log)
+	sosController := http.NewSOSController(triggerSOSUseCase, config.Log)
 
 	// setup middleware
 	authMiddleware := middleware.NewAuth(userUseCase)
@@ -67,6 +71,7 @@ func Bootstrap(config *BootstrapConfig) {
 		AddressController:  addressController,
 		AuthMiddleware:     authMiddleware,
 		LocationController: locationController,
+		SOSController:      sosController,
 	}
 	routeConfig.Setup()
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
@@ -23,15 +24,28 @@ func NewLocationCacheRepository(client *redis.Client, log *logrus.Logger) *Locat
 }
 
 func (l *LocationCacheRepository) Save(ctx context.Context, loc *entity.LocationCache) error {
-	err := l.Client.GeoAdd(ctx, userLocationKey, &redis.GeoLocation{
+	if err := l.Client.GeoAdd(ctx, userLocationKey, &redis.GeoLocation{
 		Name:      loc.UserId,
 		Longitude: loc.Longitude,
 		Latitude:  loc.Latitude,
-	}).Err()
-	if err != nil {
+	}).Err(); err != nil {
 		return fmt.Errorf("redis geoadd: %w", err)
 	}
+
+	nowMs := time.Now().UnixMilli()
+	if err := l.Client.HSet(ctx, userLastSeenKey, loc.UserId, nowMs).Err(); err != nil {
+		return fmt.Errorf("redis hset last_seen: %w", err)
+	}
+
 	return nil
+}
+
+func (l *LocationCacheRepository) GetLastSeen(ctx context.Context, userId string) (int64, error) {
+	val, err := l.Client.HGet(ctx, userLastSeenKey, userId).Int64()
+	if err != nil {
+		return 0, fmt.Errorf("redis hget last_seen %s: %w", userId, err)
+	}
+	return val, nil
 }
 
 func (l *LocationCacheRepository) Get(ctx context.Context, userId string) (*entity.LocationCache, error) {
@@ -49,6 +63,21 @@ func (l *LocationCacheRepository) Get(ctx context.Context, userId string) (*enti
 		Longitude: positions[0].Longitude,
 		Latitude:  positions[0].Latitude,
 	}, nil
+}
+
+func (l *LocationCacheRepository) GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error) {
+	userIDs, err := l.Client.GeoSearch(ctx, userLocationKey, &redis.GeoSearchQuery{
+		Longitude:  longitude,
+		Latitude:   latitude,
+		Radius:     radiusMeters,
+		RadiusUnit: "m",
+		Sort:       "ASC",
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis geosearch: %w", err)
+	}
+
+	return userIDs, nil
 }
 
 func (l *LocationCacheRepository) Delete(ctx context.Context, userId string) (bool, error) {
