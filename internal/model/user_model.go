@@ -19,9 +19,12 @@ type RegisterUserRequest struct {
 }
 
 type UpdateUserRequest struct {
-	ID       string `json:"-" validate:"required,max=100"`
-	Password string `json:"password,omitempty" validate:"max=100"`
-	Name     string `json:"name,omitempty" validate:"max=100"`
+	ID        string `json:"-" validate:"required,max=100"`
+	Password  string `json:"password,omitempty" validate:"max=100"`
+	Name      string `json:"name,omitempty" validate:"max=100"`
+	SafePIN   string `json:"safe_pin,omitempty" validate:"omitempty,len=4,numeric"`
+	FCMToken  string `json:"fcm_token,omitempty" validate:"max=255"`
+	APNsToken string `json:"apns_token,omitempty" validate:"max=255"`
 }
 
 type LoginUserRequest struct {

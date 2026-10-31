@@ -253,6 +253,25 @@ func (c *UserUseCase) Update(ctx context.Context, request *model.UpdateUserReque
 		user.Password = string(password)
 	}
 
+	// Safe PIN: stored only as a bcrypt hash, never in plain text.
+	// Set it via PATCH /api/users/_current with {"safe_pin": "1234"}.
+	if request.SafePIN != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(request.SafePIN), bcrypt.DefaultCost)
+		if err != nil {
+			c.Log.Warnf("Failed to hash safe PIN : %+v", err)
+			return nil, fiber.ErrInternalServerError
+		}
+		pinHash := string(hash)
+		user.SafePINHash = &pinHash
+	}
+
+	if request.FCMToken != "" {
+		user.FCMToken = &request.FCMToken
+	}
+	if request.APNsToken != "" {
+		user.APNsToken = &request.APNsToken
+	}
+
 	if err := c.UserRepository.Update(tx, user); err != nil {
 		c.Log.Warnf("Failed save user : %+v", err)
 		return nil, fiber.ErrInternalServerError

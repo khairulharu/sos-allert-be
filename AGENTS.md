@@ -43,12 +43,12 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 
 - Two distinct stores: `entity.Location` is the MySQL `locations` table; `entity.LocationCache` is Redis. Redis GEO is keyed by `users:locations`; longitude comes before latitude (Redis API order).
 - `LocationCacheRepository` implements Save/Get/Delete/GetAll plus radius search (`GeoSearch`, meters) via `GeoAdd`, `GeoPos`, `ZRange`, `ZRem`, `GEOSEARCH`.
-- `TriggerSOSUseCase.Execute(ctx, senderID)` — gets sender location from Redis, inserts an `entity.Alert` row to MySQL (`alerts` table), runs `GeoSearch` 1 km, returns `*model.TriggerSOSResult{Alert, Recipients}` excluding the sender.
-- `TriggerSOSUseCase` depends on two interfaces: `LocationRepository` (satisfied by `*LocationCacheRepository`) and `AlertSaver` (satisfied by `*AlertRepository`); both are faked in unit tests without live infra.
-- Redis locations have no TTL. `users:last_seen` is reserved for future stale-user filtering (<2 min) but unused.
-- Wired endpoints: `PUT /api/location` (update Redis GEO), `POST /api/sos` (trigger alert — auth required). Both missing from `api/api-spec.json`.
-- `AllertUseCase` and `AlertNotifier` in `internal/usecase/` are legacy stubs — not wired, not used. `alert_usecase.go` and `alert_notifier_usecase.go` can be removed when FCM is implemented.
-- Migration `20261027000000_create_table_alerts.up.sql` adds the `alerts` table; must be run before `POST /api/sos` works.
+- `TriggerSOSUseCase.ExecuteWithRequest(ctx, senderID, req, idempotencyKey)` — request body coords (fallback: Redis), idempotency, rate limit, adaptive radius (1/2/5 km, cap 50), grace-period dispatch, Kafka publish when enabled. `Execute(ctx, senderID)` is the legacy Redis-only wrapper. Lifecycle methods on the same struct: `GetAlert`, `ListActive`, `Cancel` (bcrypt safe PIN), `Acknowledge`, `Resolve`, `Respond` (ETA), `AddBreadcrumb`/`ListBreadcrumbs`, emergency contacts, `UploadMedia`.
+- `TriggerSOSUseCase` depends on interfaces: `LocationRepository` (Redis GEO + `Save`), `AlertStore`, `Notifier` (satisfied by `*AlertDispatcher`, FCM/APNs/Twilio, log-only when unconfigured), `IdempotencyStore`, `RateLimiter`, `EventPublisher`, `TokenReader`/`UserReaderRepository`; all are faked in unit tests without live infra.
+- Redis locations have no TTL. `users:last_seen` is written by `LocationCacheRepository.Save` and used for the >2 min stale filter in `findRecipients`.
+- Wired endpoints: `PUT /api/location`, `POST /api/sos`, `GET /api/sos/active`, `GET /api/sos/:alertId`, cancel/acknowledge/resolve/respond, breadcrumbs, media, `GET/POST /api/emergency-contacts`, `WS /ws/sos/:alertId/track?token=`, `GET /metrics`. The WS route is registered before `AuthMiddleware` in `route.go`.
+- `AlertDispatcher` in `internal/usecase/` supersedes the log-only `AlertNotifier` (kept, unwired). Safe PIN is set via `PATCH /api/users/_current` (`safe_pin`, bcrypt hash in `users.safe_pin_hash`).
+- Migrations `20261027000000_create_table_alerts` and `20261031000000_alerts_v2` add the `alerts` table and the v2 columns/tables (`alert_breadcrumbs`, `emergency_contacts`, `alert_responses`, `alert_media`, PIN/device-token columns); run both before the SOS endpoints work.
 
 ## Runtime Cloud
 
@@ -61,7 +61,7 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 - `test/init.go` connects to the real Redis from `config.json` in package `init` (and `log.Fatalf`s if unreachable), so every test in `./test` needs live Redis/network, even `TestCalculateDistance`.
 - `TestGet`, `TestGetAll`, and `TestDelete` assume data already exists in `users:locations` (including `user-B`), and `TestDelete` removes `user-B`. They are stateful/order-dependent and mutate a shared remote Redis; a full-suite failure may be missing fixture data, not a code regression.
 - `TestCalculateDistance`/`TestCalculateDistanceSimetris` cover the 1 km Haversine helper (`< 1` km, boundary excluded).
-- `internal/usecase/trigger_sos_usecase_test.go` — unit tests for `TriggerSOSUseCase`; no live infra needed (fakes for Redis and MySQL). Run with `go test ./internal/usecase/ -run '^TestTriggerSOS' -v -count=1`.
+- `internal/usecase/trigger_sos_usecase_test.go` and `sos_lifecycle_test.go` — unit tests for `TriggerSOSUseCase` and the lifecycle; no live infra needed (fakes for Redis, MySQL, idempotency, rate limit, PIN, Kafka, hub). Run with `go test ./internal/usecase/ ./internal/tracking/ ./internal/metrics/ -v -count=1`. Dispatch clients (FCM/APNs/Twilio) are tested with `httptest` in `dispatch_test.go`.
 
 ## Code conventions
 
