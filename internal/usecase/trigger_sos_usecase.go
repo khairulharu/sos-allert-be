@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -99,6 +100,7 @@ type TriggerSOSDeps struct {
 	Users             TokenReader
 	Hub               TrackHub
 	Metrics           SOSMetrics
+	Triage            EmergencyTriage
 	EmergencyContacts EmergencyContactStore
 	MediaStore        MediaStorage
 	GracePeriod       time.Duration
@@ -201,9 +203,37 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		return nil, err
 	}
 
+	// Optional AI triage: classify the sender's description into an
+	// emergency type, a 0..1 severity (driving the adaptive fan-out
+	// start radius) and a short summary. Fail-open: a nil engine, a
+	// disabled engine or an error keeps the request/default behaviour,
+	// so a life-safety alert never depends on AI.
+	triageInfo := model.TriageInfo{}
+	if u.Deps.Triage != nil {
+		triage, err := u.Deps.Triage.Triage(ctx, TriageInput{Description: req.Description})
+		if err != nil {
+			u.Log.WithError(err).Warn("AI triage failed, using request defaults")
+		} else {
+			triageInfo = model.TriageInfo{
+				EmergencyType: triage.EmergencyType,
+				Severity:      triage.Severity,
+				Summary:       triage.Summary,
+			}
+		}
+	}
+
 	emergencyType := req.EmergencyType
 	if emergencyType == "" {
-		emergencyType = entity.EmergencyTypeDanger
+		if triageInfo.EmergencyType != "" {
+			emergencyType = triageInfo.EmergencyType
+		} else {
+			emergencyType = entity.EmergencyTypeDanger
+		}
+	}
+
+	radiusStart := 0
+	if triageInfo.Severity > 0 {
+		radiusStart = u.radiusStartIndex(triageInfo.Severity)
 	}
 	alert := &entity.Alert{
 		ID:                uuid.NewString(),
@@ -221,7 +251,7 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 	u.Log.Infof("alert %s saved for sender %s at (%.6f, %.6f)", alert.ID, senderID, longitude, latitude)
 
-	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude)
+	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude, radiusStart)
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +264,8 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		EmergencyType:     alert.EmergencyType,
 		AccuracyMeters:    alert.AccuracyMeters,
 		BatteryPercentage: alert.BatteryPercentage,
+		Severity:          triageInfo.Severity,
+		Summary:           triageInfo.Summary,
 		Location: model.LocationResponse{
 			Longitude: alert.Longitude,
 			Latitude:  alert.Latitude,
@@ -253,6 +285,9 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		RadiusMeters:       radius,
 		GracePeriodSeconds: int(u.Deps.GracePeriod.Seconds()),
 	}
+	if triageInfo.EmergencyType != "" || triageInfo.Summary != "" || triageInfo.Severity > 0 {
+		result.Triage = &triageInfo
+	}
 
 	dispatch := func(dispatchCtx context.Context) {
 		if u.Deps.Publisher != nil {
@@ -266,6 +301,8 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				Status:        alert.Status,
 				Recipients:    recipients,
 				TriggeredAt:   alert.TriggeredAt,
+				Severity:      triageInfo.Severity,
+				Summary:       triageInfo.Summary,
 			}
 			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
 				u.recordDispatch(startedAt)
@@ -371,14 +408,38 @@ func (u *TriggerSOSUseCase) resolveCoordinates(ctx context.Context, senderID str
 	return sender.Latitude, sender.Longitude, nil
 }
 
-// findRecipients runs adaptive-radius GeoSearch: start at 1 km and
-// expand to 2 km / 5 km until at least MinRecipients fresh users are
-// found, capping the fan-out at MaxRecipients (nearest first).
-func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string, longitude, latitude float64) ([]string, float64, error) {
+// radiusStartIndex maps an AI severity (0..1) onto the configured
+// adaptive radii: more severe incidents start their fan-out broader.
+func (u *TriggerSOSUseCase) radiusStartIndex(severity float64) int {
+	n := len(u.Deps.Radii)
+	if n <= 1 || severity <= 0 {
+		return 0
+	}
+	if severity >= 1 {
+		return n - 1
+	}
+	idx := int(math.Floor(severity * float64(n)))
+	if idx >= n {
+		idx = n - 1
+	}
+	return idx
+}
+
+// findRecipients runs adaptive-radius GeoSearch: start at the radius
+// selected by startIndex (0 = 1 km; an AI severity may start wider) and
+// expand upward until at least MinRecipients fresh users are found,
+// capping the fan-out at MaxRecipients (nearest first).
+func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string, longitude, latitude float64, startIndex int) ([]string, float64, error) {
+	if startIndex < 0 {
+		startIndex = 0
+	}
+	if startIndex >= len(u.Deps.Radii) {
+		startIndex = len(u.Deps.Radii) - 1
+	}
 	now := time.Now().UnixMilli()
 	var recipients []string
 	usedRadius := u.Deps.Radii[len(u.Deps.Radii)-1]
-	for _, radius := range u.Deps.Radii {
+	for _, radius := range u.Deps.Radii[startIndex:] {
 		usedRadius = radius
 		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius)
 		if err != nil {

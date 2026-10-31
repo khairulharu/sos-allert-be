@@ -38,6 +38,7 @@ When a user in distress triggers an emergency SOS:
 | | Redis GEO user positioning (`PUT /api/location`) | ✅ Done | - | High-throughput Redis GEO `GEOADD` (`users:locations`). |
 | | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; auto-prunes idle users > 2 min. |
 | | Dynamic Adaptive Radius | ✅ Done | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
+| **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. |
 | **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
 | | SOS State Machine | ✅ Done | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
 | | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | ✅ Done | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
@@ -145,7 +146,8 @@ Body:
   "longitude": 106.8456,
   "accuracy_meters": 4.5,
   "battery_percentage": 18,
-  "emergency_type": "DANGER" // DANGER | MEDICAL | ACCIDENT
+  "emergency_type": "DANGER", // DANGER | MEDICAL | ACCIDENT (optional; AI triage can classify it)
+  "description": "Ada orang pingsan di pantai, tidak sadar" // optional; feeds AI triage
 }
 Response 201 Created:
 {
@@ -154,7 +156,8 @@ Response 201 Created:
     "status": "TRIGGERED",
     "grace_period_seconds": 10,
     "recipients_notified": 7,
-    "triggered_at": 1730304000000
+    "triggered_at": 1730304000000,
+    "triage": { "emergency_type": "MEDICAL", "severity": 0.8, "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis" }
   }
 }
 ```
@@ -241,7 +244,84 @@ Response 200 OK:
 
 ---
 
-## 5. Skema Database & Evolusi
+## 5. AI Triage (Incident Description Classifier)
+
+Optional AI layer di `POST /api/sos`. Saat pelapor mengisi `description`
+(misal `"ada orang pingsan di pantai, tidak sadar"`), backend mengklasifikasikannya
+menjadi **emergency type** (`DANGER/MEDICAL/ACCIDENT`), **severity score 0–1**,
+dan **summary singkat**. Severity dipakai untuk memilih radius adaptive fan-out
+(1/2/5 km): insiden makin urgent → fan-out makin lebar ke user sekitar. Hasil
+triage dikembalikan di response sebagai `triage`.
+
+### Fail-open (life-safety first)
+
+AI **tidak pernah** memblokir trigger SOS:
+
+- `ai.enabled: false`, atau engine error/timeout → berperilaku persis pre-AI
+  (request default, radius mulai 1 km).
+- `description` kosong / tidak terdeteksi keyword → zero signal (DANGER default, 1 km).
+- Request `emergency_type` eksplisit menang atas hasil klasifikasi AI.
+
+### Provider
+
+| Provider | `ai.provider` | Keterangan |
+|---|---|---|
+| Offline classifier (default) | `offline` | Rule-based keyword (ID/EN), deterministic, zero-credential, microseconds. |
+| Ollama (lokal) | `ollama` | `POST {ollama.base_url}/api/chat` dengan structured JSON output. |
+| OpenAI / compatible gateway | `openai` | chat completions + `response_format: json_object`. |
+
+Provider live (`ollama`/`openai`) + fallback otomatis ke offline classifier saat
+gagal/timeout. Mapping severity → radius: `0–0.33` → 1 km, `0.34–0.66` → 2 km,
+`≥0.67` → 5 km.
+
+### Config (`config.json`, section `ai`)
+
+```json
+"ai": {
+  "enabled": true,
+  "provider": "offline",            // offline | ollama | openai
+  "timeout_seconds": 5,
+  "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
+  "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini" }
+}
+```
+
+### Contoh
+
+```bash
+curl -X POST http://localhost:3000/api/sos \
+  -H "Authorization: <token>" \
+  -d '{"latitude":-8.65,"longitude":115.22,"description":"ada orang pingsan, tidak sadar"}'
+```
+
+```json
+{
+  "data": {
+    "alert_id": "alt_01...",
+    "status": "TRIGGERED",
+    "recipients_notified": 7,
+    "triage": {
+      "emergency_type": "MEDICAL",
+      "severity": 0.8,
+      "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis"
+    }
+  }
+}
+```
+
+### Isi Push Notification
+
+Hasil triage ikut masuk ke push (FCM), dan tetap sama saat dispatch lewat
+Kafka worker (`sos.dispatched` membawa `severity` + `summary`):
+
+- `data.severity` → `"0.80"` (format 2 desimal, hanya kalau triage jalan).
+- `data.summary` → ringkasan AI (hanya kalau tidak kosong).
+- Body notifikasi → `<summary> — Emergency MEDICAL nearby. Open the app for the live location.`
+  Tanpa summary, body tetap seperti sebelumnya.
+
+---
+
+## 6. Skema Database & Evolusi
 
 ### Tabel `alerts` (Saat Ini)
 ```sql
@@ -291,7 +371,7 @@ CREATE TABLE emergency_contacts (
 
 ---
 
-## 6. Desain Penyimpanan Lokasi
+## 7. Desain Penyimpanan Lokasi
 
 - **Redis GEO** (`users:locations`): Menyimpan geospatial coordinates semua user aktif. Format data: Member = `userId`, Value = `(longitude, latitude)`.
 - **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. Membuang user yang offline/inaktif $> 2$ menit dari broadcast SOS.
@@ -302,7 +382,7 @@ CREATE TABLE emergency_contacts (
 
 ---
 
-## 7. Non-Functional Requirements & SLA
+## 8. Non-Functional Requirements & SLA
 
 | Metrik | Target SLA | Mitigasi Kegagalan |
 |---|---|---|
@@ -313,7 +393,7 @@ CREATE TABLE emergency_contacts (
 
 ---
 
-## 8. Panduan Menjalankan Service
+## 9. Panduan Menjalankan Service
 
 ### Prasyarat
 - Go 1.22+
@@ -355,7 +435,14 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
     "enabled": false, "account_sid": "...",
     "auth_token": "...", "from_number": "+1..."
   },
-  "storage": { "backend": "local", "local_dir": "./uploads" }
+  "storage": { "backend": "local", "local_dir": "./uploads" },
+  "ai": {
+    "enabled": true,
+    "provider": "offline",
+    "timeout_seconds": 5,
+    "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
+    "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini" }
+  }
 }
 ```
 
@@ -379,7 +466,7 @@ go build ./... && go vet ./...
 
 ---
 
-## 9. Status Implementasi & Yang Belum Live
+## 10. Status Implementasi & Yang Belum Live
 
 Yang sudah diimplementasi di branch ini (P0 + P1, lihat matriks §2):
 state machine, cancel + PIN + grace period 10 detik, query/active API,
@@ -388,6 +475,17 @@ tracking + breadcrumbs + telemetri breadcrumb (baterai/speed/heading/altitude/ac
 `sos.dispatched` + worker consumer, metrik `/metrics`, masking lokasi,
 retensi breadcrumb 30 hari, dan klien FCM v1 / APNs Critical Alert /
 Twilio SMS dengan fallback log-only saat kredensial belum diisi.
+
+Feature **AI Triage** udah diimplementasi di branch ini: klasifikasi
+deskripsi insiden (`description` → `DANGER/MEDICAL/ACCIDENT`), severity
+0–1, dan summary. Provider default = offline keyword classifier
+(zero-credential, deterministik); `ai.provider: "ollama"` / `"openai"`
+diaktif klien LLM dengan fallback automatic ke offline classifier
+(fail-open — AI mati tak pernah nge-blokir trigger SOS). Severity AI
+nambah start radius adaptive fan-out (1/2/5 km); `ai.enabled: false`
+atum perilakum pre-AI persis (tanpa deskripsi → zero signal, radius
+mulai 1 km). LLM sungguhan (Ollama/OpenAI) belum tês pergian — path
+offline dites otomatis di unit test.
 
 Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
 - **FCM/APNs/Twilio**: klien HTTP sudah ada dan dites dengan server
@@ -411,7 +509,7 @@ baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
 
 ---
 
-## 10. Menjalankan Pengujian (Testing)
+## 11. Menjalankan Pengujian (Testing)
 
 ```bash
 # Unit test SOS (Zero dependency, menggunakan Mock/Fake in-memory):

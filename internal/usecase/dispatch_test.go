@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
 )
 
@@ -47,6 +49,43 @@ func TestFCMNotifierSends(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"topic":"user_1"`) || !strings.Contains(gotBody, "siren") {
 		t.Fatalf("body = %s", gotBody)
+	}
+}
+
+func TestAlertDispatcherPushCarriesTriage(t *testing.T) {
+	var got fcmMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode FCM body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	fcm := &FCMNotifier{Enabled: true, ProjectID: "p", AccessToken: "tok", BaseURL: srv.URL, HTTPClient: srv.Client()}
+	deviceToken := "device-token"
+	tokens := &fakeUserReader{users: map[string]*entity.User{
+		"user-b": {ID: "user-b", FCMToken: &deviceToken},
+	}}
+	d := NewAlertDispatcher(noopLogger(), fcm, nil, nil, tokens, nil, nil)
+	alert := model.Alert{
+		ID:            "a1",
+		SenderId:      "sender",
+		EmergencyType: entity.EmergencyTypeMedical,
+		Severity:      0.8,
+		Summary:       "PRIORITAS TINGGI: Kemungkinan darurat medis",
+	}
+	if err := d.Notify(context.Background(), []string{"user-b"}, alert); err != nil {
+		t.Fatalf("Notify error = %v", err)
+	}
+	if got.Message.Data["severity"] != "0.80" {
+		t.Fatalf("severity data = %q, want 0.80", got.Message.Data["severity"])
+	}
+	if got.Message.Data["summary"] != alert.Summary {
+		t.Fatalf("summary data = %q, want %q", got.Message.Data["summary"], alert.Summary)
+	}
+	if body := got.Message.Notification.Body; !strings.Contains(body, alert.Summary) {
+		t.Fatalf("push body = %q, want it to contain the AI summary", body)
 	}
 }
 

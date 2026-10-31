@@ -9,6 +9,9 @@ type TriggerSOSRequest struct {
 	AccuracyMeters    *float64 `json:"accuracy_meters" validate:"omitempty,gte=0"`
 	BatteryPercentage *int     `json:"battery_percentage" validate:"omitempty,gte=0,lte=100"`
 	EmergencyType     string   `json:"emergency_type" validate:"omitempty,oneof=DANGER MEDICAL ACCIDENT"`
+	// Description feeds the optional AI triage ("ai.*" config). It is
+	// advisory only: a missing or failing triage never blocks the SOS.
+	Description string `json:"description" validate:"omitempty,max=1000"`
 }
 
 // TriggerSOSResult is the internal result of a trigger. The HTTP shape is
@@ -18,15 +21,26 @@ type TriggerSOSResult struct {
 	Recipients         []string
 	RadiusMeters       float64
 	GracePeriodSeconds int
+	Triage             *TriageInfo
+}
+
+// TriageInfo is the optional AI triage metadata attached to a trigger:
+// the classified emergency type, a 0..1 severity score (drives the
+// adaptive fan-out start radius) and a short human-readable summary.
+type TriageInfo struct {
+	EmergencyType string  `json:"emergency_type,omitempty"`
+	Severity      float64 `json:"severity"`
+	Summary       string  `json:"summary,omitempty"`
 }
 
 // SOSCreatedResponse matches README section 4: 201 Created.
 type SOSCreatedResponse struct {
-	AlertID            string `json:"alert_id"`
-	Status             string `json:"status"`
-	GracePeriodSeconds int    `json:"grace_period_seconds"`
-	RecipientsNotified int    `json:"recipients_notified"`
-	TriggeredAt        int64  `json:"triggered_at"`
+	AlertID            string      `json:"alert_id"`
+	Status             string      `json:"status"`
+	GracePeriodSeconds int         `json:"grace_period_seconds"`
+	RecipientsNotified int         `json:"recipients_notified"`
+	TriggeredAt        int64       `json:"triggered_at"`
+	Triage             *TriageInfo `json:"triage,omitempty"`
 }
 
 // CancelSOSRequest is the POST /api/sos/:alertId/cancel body.
@@ -174,4 +188,8 @@ type SOSEvent struct {
 	Status        string   `json:"status"`
 	Recipients    []string `json:"recipients"`
 	TriggeredAt   int64    `json:"triggered_at"`
+	// Severity/Summary carry the optional AI triage into the worker so
+	// push content is identical whether dispatch is direct or via Kafka.
+	Severity float64 `json:"severity,omitempty"`
+	Summary  string  `json:"summary,omitempty"`
 }

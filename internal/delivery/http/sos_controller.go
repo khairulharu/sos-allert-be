@@ -68,6 +68,7 @@ func (s *SOSController) Trigger(ctx *fiber.Ctx) error {
 		GracePeriodSeconds: result.GracePeriodSeconds,
 		RecipientsNotified: len(result.Recipients),
 		TriggeredAt:        result.Alert.TriggeredAt.UnixMilli(),
+		Triage:             result.Triage,
 	}
 	return ctx.Status(fiber.StatusCreated).JSON(model.WebResponse[*model.SOSCreatedResponse]{Data: data})
 }

@@ -39,6 +39,8 @@ func (c *SOSConsumer) Consume(message *sarama.ConsumerMessage) error {
 		SenderId:      event.SenderID,
 		Status:        event.Status,
 		EmergencyType: event.EmergencyType,
+		Severity:      event.Severity,
+		Summary:       event.Summary,
 		TriggeredAt:   time.UnixMilli(event.TriggeredAt),
 		Location: model.LocationResponse{
 			Latitude:  event.Latitude,
