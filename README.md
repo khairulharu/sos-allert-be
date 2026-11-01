@@ -116,13 +116,16 @@ sequenceDiagram
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) |
 | `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam) |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
+| `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
 | `GET` | `/api/sos/:alertId` | ✅ | Detail insiden; lokasi dimask untuk viewer yang bukan sender/responder |
 | `POST` | `/api/sos/:alertId/cancel` | ✅ | Batalkan false alarm (PIN 4 digit + alasan) |
 | `POST` | `/api/sos/:alertId/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED` |
 | `POST` | `/api/sos/:alertId/resolve` | ✅ | `TRIGGERED`/`ACKNOWLEDGED` → `RESOLVED` (sender saja) |
 | `POST` | `/api/sos/:alertId/respond` | ✅ | Responder menjawab, hitung ETA & jarak |
 | `GET/POST` | `/api/sos/:alertId/breadcrumbs` | ✅ | Riwayat breadcrumb / kirim satu titik tracking |
-| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal) |
+| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); response memuat `url` |
+| `GET` | `/api/sos/:alertId/media` | ✅ | Daftar media insiden (sender/responder saja) |
+| `GET` | `/api/sos/:alertId/media/:mediaId` | ✅ | Stream/download media; header `Authorization`, `Content-Type` asli |
 | `WS` | `/ws/sos/:alertId/track?token=<token>` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`) |
 | `GET/POST` | `/api/emergency-contacts` | ✅ | CRUD Tier-1 emergency contacts untuk SMS fallback |
 | `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`) |
@@ -187,14 +190,22 @@ Response 200 OK:
 {
   "data": {
     "alert_id": "alt_01HXYZ...",
-    "sender": { "id": "usr_1", "name": "Jane Doe", "phone": "+62812..." },
+    "sender": { "id": "usr_1", "name": "Jane Doe" },
     "status": "TRIGGERED",
+    "emergency_type": "MEDICAL",
+    "severity": 0.8,                                   // ada kalau triage jalan
+    "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
     "initial_location": { "latitude": -6.2088, "longitude": 106.8456 },
     "latest_location": { "latitude": -6.2091, "longitude": 106.8460, "updated_at": 1730304050000 },
-    "responders_en_route": 2
+    "responders_en_route": 2,
+    "triggered_at": 1730304000000
   }
 }
 ```
+
+> `masked: true` muncul (dan koordinat dibulatkan ~100 m) kalau viewer bukan
+> sender/responder. `severity`/`summary` ikut tersimpan di tabel `alerts`, jadi
+> tampil juga di `GET /api/sos/active` dan `GET /api/sos/inbox`.
 
 #### 2. Live Tracking Stream (WebSocket)
 
@@ -219,6 +230,14 @@ Server -> Responders (Broadcast posisi terkini):
   "longitude": 106.8462,
   "speed_mps": 4.2,
   "heading_deg": 135.0
+}
+
+Server -> Responders (perubahan status, tanpa perlu polling):
+{
+  "type": "ALERT_STATUS",
+  "alert_id": "alt_01HXYZ...",
+  "status": "RESOLVED",   // ACKNOWLEDGED | RESOLVED | CANCELLED
+  "updated_at": 1730304075000
 }
 ```
 
@@ -319,6 +338,22 @@ Kafka worker (`sos.dispatched` membawa `severity` + `summary`):
 - Body notifikasi → `<summary> — Emergency MEDICAL nearby. Open the app for the live location.`
   Tanpa summary, body tetap seperti sebelumnya.
 
+**Kontrak penerimaan push (wajib di client):** backend mengirim ke
+`fcm_token`/`apns_token` user kalau terdaftar; kalau tidak ada, ke FCM topic
+`user_<user_id>`. Jadi app harus memilih salah satu:
+
+1. Kirim token setelah login/refresh: `PATCH /api/users/_current`
+   `{"fcm_token": "<token>"}` (atau `apns_token`), **atau**
+2. Subscribe topic `user_<user_id>` di FCM setelah login.
+
+Tanpa salah satu, push tidak akan pernah sampai ke device. User juga harus
+mengirim heartbeat `PUT /api/location` minimal tiap 2 menit agar masuk radius
+penerima (`users:last_seen` yang lebih tua difilter).
+
+Setelah push dibuka, responder memakai `GET /api/sos/inbox` (riwayat insiden
+yang pernah dinotifikasi) dan `GET /api/sos/:alertId/media` + `url` media untuk
+memutar rekaman.
+
 ---
 
 ## 6. Skema Database & Evolusi
@@ -336,6 +371,7 @@ CREATE TABLE alerts (
 ```
 
 ### Migrasi `alerts` v2 (diterapkan di `db/migrations/20261031000000_alerts_v2.*.sql`, termasuk tabel `alert_breadcrumbs`, `emergency_contacts`, `alert_responses`, `alert_media`, dan kolom `safe_pin_hash`/`fcm_token`/`apns_token` di `users`)
+
 ```sql
 ALTER TABLE alerts
     ADD COLUMN status              VARCHAR(20)  NOT NULL DEFAULT 'TRIGGERED', -- TRIGGERED, ACKNOWLEDGED, RESOLVED, CANCELLED
@@ -368,6 +404,15 @@ CREATE TABLE emergency_contacts (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 ```
+
+### Migrasi triage & inbox (`20261101000000_alerts_triage.*.sql`, `20261102000000_alert_recipients.*.sql`)
+
+- `alerts.severity DOUBLE NULL` + `alerts.summary VARCHAR(512) NULL` — hasil AI triage
+  ikut tersimpan supaya detail/active/inbox menampilkan data yang sama dengan push.
+- `alert_recipients(alert_id, user_id, notified_at)` — daftar user yang dinotifikasi,
+  dipakai `GET /api/sos/inbox`; baris dihapus otomatis saat alert dihapus.
+
+Jalankan kedua migrasi sebelum memakai endpoint baru.
 
 ---
 

@@ -82,6 +82,8 @@ type fakeAlertRepository struct {
 	alerts       map[string]*entity.Alert
 	breadcrumbs  map[string][]*entity.AlertBreadcrumb
 	responses    map[string][]*entity.AlertResponse
+	media        map[string][]*entity.AlertMedia
+	recipients   map[string][]string
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -93,6 +95,12 @@ func (f *fakeAlertRepository) ensure() {
 	}
 	if f.responses == nil {
 		f.responses = make(map[string][]*entity.AlertResponse)
+	}
+	if f.media == nil {
+		f.media = make(map[string][]*entity.AlertMedia)
+	}
+	if f.recipients == nil {
+		f.recipients = make(map[string][]string)
 	}
 }
 
@@ -212,7 +220,47 @@ func (f *fakeAlertRepository) IsResponder(ctx context.Context, db *gorm.DB, aler
 }
 
 func (f *fakeAlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
+	f.ensure()
+	f.media[m.AlertID] = append(f.media[m.AlertID], m)
 	return nil
+}
+
+func (f *fakeAlertRepository) ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error) {
+	f.ensure()
+	return f.media[alertID], nil
+}
+
+func (f *fakeAlertRepository) GetMedia(ctx context.Context, db *gorm.DB, alertID, mediaID string) (*entity.AlertMedia, error) {
+	f.ensure()
+	for _, m := range f.media[alertID] {
+		if m.ID == mediaID {
+			return m, nil
+		}
+	}
+	return nil, model.ErrMediaNotFound
+}
+
+func (f *fakeAlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error {
+	f.ensure()
+	f.recipients[alertID] = append(f.recipients[alertID], userIDs...)
+	return nil
+}
+
+func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {
+	f.ensure()
+	var out []*entity.Alert
+	for alertID, users := range f.recipients {
+		for _, u := range users {
+			if u == userID {
+				if a, ok := f.alerts[alertID]; ok && a.IsActive() {
+					cp := *a
+					out = append(out, &cp)
+				}
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {

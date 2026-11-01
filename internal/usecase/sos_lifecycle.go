@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -25,10 +26,11 @@ type EmergencyContactStore interface {
 	ListByUserID(ctx context.Context, db *gorm.DB, userID string) ([]*entity.EmergencyContact, error)
 }
 
-// MediaStorage saves uploaded media bytes and returns a storage path.
-// Satisfied by *storage.LocalStorage.
+// MediaStorage saves uploaded media bytes and opens them back for
+// authenticated download. Satisfied by *storage.LocalStorage.
 type MediaStorage interface {
 	Save(ctx context.Context, filename string, r io.Reader) (string, error)
+	Open(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
 const maxMediaBytes = 50 << 20 // 50 MB
@@ -60,6 +62,24 @@ func (u *TriggerSOSUseCase) ListActive(ctx context.Context, senderID string) ([]
 	return out, nil
 }
 
+// ListInbox returns the active incidents a user was notified for
+// (push recipients recorded at trigger time), newest first.
+func (u *TriggerSOSUseCase) ListInbox(ctx context.Context, userID string) ([]*model.AlertDetailResponse, error) {
+	alerts, err := u.Deps.Alerts.ListInbox(ctx, u.DB, userID, 20)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*model.AlertDetailResponse, 0, len(alerts))
+	for _, alert := range alerts {
+		detail, err := u.buildDetail(ctx, alert, userID, false)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, detail)
+	}
+	return out, nil
+}
+
 func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert, requesterID string, includeBreadcrumbs bool) (*model.AlertDetailResponse, error) {
 	detail := &model.AlertDetailResponse{
 		AlertID:       alert.ID,
@@ -69,6 +89,12 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 		TriggeredAt:   alert.TriggeredAt,
 		ResolvedAt:    alert.ResolvedAt,
 		CancelledAt:   alert.CancelledAt,
+	}
+	if alert.Severity != nil {
+		detail.Severity = *alert.Severity
+	}
+	if alert.Summary != nil {
+		detail.Summary = *alert.Summary
 	}
 	if u.Deps.Users != nil {
 		if sender, err := u.Deps.Users.GetByID(ctx, alert.SenderID); err == nil && sender != nil {
@@ -169,6 +195,7 @@ func (u *TriggerSOSUseCase) Cancel(ctx context.Context, senderID, alertID string
 	if !changed {
 		return nil, model.ErrInvalidTransition
 	}
+	u.publishStatus(alertID, entity.AlertStatusCancelled, now)
 	return &model.CancelSOSResponse{AlertID: alertID, Status: entity.AlertStatusCancelled, CancelledAt: now}, nil
 }
 
@@ -212,6 +239,7 @@ func (u *TriggerSOSUseCase) Acknowledge(ctx context.Context, alertID string) (*m
 	if err != nil {
 		return nil, err
 	}
+	u.publishStatus(alertID, updated.Status, time.Now().UnixMilli())
 	return u.buildDetail(ctx, updated, updated.SenderID, false)
 }
 
@@ -238,6 +266,7 @@ func (u *TriggerSOSUseCase) Resolve(ctx context.Context, senderID, alertID strin
 	if err != nil {
 		return nil, err
 	}
+	u.publishStatus(alertID, entity.AlertStatusResolved, now)
 	return u.buildDetail(ctx, updated, senderID, false)
 }
 
@@ -281,11 +310,14 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 		return nil, err
 	}
 	if alert.Status == entity.AlertStatusTriggered {
-		_, err := u.Deps.Alerts.Transition(ctx, u.DB, alertID,
+		changed, err := u.Deps.Alerts.Transition(ctx, u.DB, alertID,
 			[]string{entity.AlertStatusTriggered},
 			map[string]any{"status": entity.AlertStatusAcknowledged})
 		if err != nil {
 			return nil, err
+		}
+		if changed {
+			u.publishStatus(alertID, entity.AlertStatusAcknowledged, response.RespondedAt)
 		}
 	}
 	return &model.RespondSOSResponse{
@@ -465,10 +497,64 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 	if err := u.Deps.Alerts.CreateMedia(ctx, u.DB, media); err != nil {
 		return nil, err
 	}
+	return mediaToResponse(media), nil
+}
+
+// ListAlertMedia returns an incident's uploads. Sender and responders
+// only, because the recordings are incident evidence.
+func (u *TriggerSOSUseCase) ListAlertMedia(ctx context.Context, requesterID, alertID string) ([]*model.AlertMediaResponse, error) {
+	if err := u.AuthorizeTracking(ctx, requesterID, alertID); err != nil {
+		return nil, err
+	}
+	media, err := u.Deps.Alerts.ListMedia(ctx, u.DB, alertID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*model.AlertMediaResponse, 0, len(media))
+	for _, m := range media {
+		out = append(out, mediaToResponse(m))
+	}
+	return out, nil
+}
+
+// OpenAlertMedia returns media metadata plus a reader for playback.
+// Sender and responders only; the caller closes the reader.
+func (u *TriggerSOSUseCase) OpenAlertMedia(ctx context.Context, requesterID, alertID, mediaID string) (*entity.AlertMedia, io.ReadCloser, error) {
+	if err := u.AuthorizeTracking(ctx, requesterID, alertID); err != nil {
+		return nil, nil, err
+	}
+	media, err := u.Deps.Alerts.GetMedia(ctx, u.DB, alertID, mediaID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if u.Deps.MediaStore == nil {
+		return nil, nil, model.ErrStorageNotConfigured
+	}
+	reader, err := u.Deps.MediaStore.Open(ctx, media.StoragePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return media, reader, nil
+}
+
+func mediaToResponse(m *entity.AlertMedia) *model.AlertMediaResponse {
 	return &model.AlertMediaResponse{
-		ID: media.ID, AlertID: media.AlertID, Filename: media.Filename,
-		ContentType: media.ContentType, SizeBytes: media.SizeBytes, UploadedAt: media.UploadedAt,
-	}, nil
+		ID: m.ID, AlertID: m.AlertID, Filename: m.Filename,
+		ContentType: m.ContentType, SizeBytes: m.SizeBytes, UploadedAt: m.UploadedAt,
+		URL: "/api/sos/" + url.PathEscape(m.AlertID) + "/media/" + url.PathEscape(m.ID),
+	}
+}
+
+// publishStatus broadcasts an ALERT_STATUS event to tracking subscribers
+// so responders learn about cancel/acknowledge/resolve without polling.
+func (u *TriggerSOSUseCase) publishStatus(alertID, status string, updatedAt int64) {
+	if u.Deps.Hub == nil {
+		return
+	}
+	msg := model.AlertStatusMessage{Type: "ALERT_STATUS", AlertID: alertID, Status: status, UpdatedAt: updatedAt}
+	if data, err := json.Marshal(msg); err == nil {
+		u.Deps.Hub.Publish(alertID, data)
+	}
 }
 
 // ExpireOldAlerts moves TRIGGERED alerts older than ExpireAfter to EXPIRED.

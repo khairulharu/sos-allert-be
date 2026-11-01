@@ -2,6 +2,8 @@ package http
 
 import (
 	"errors"
+	"path/filepath"
+	"strconv"
 
 	"golang-clean-architecture/internal/delivery/http/middleware"
 	"golang-clean-architecture/internal/model"
@@ -27,13 +29,15 @@ func NewSOSController(useCase *usecase.TriggerSOSUseCase, log *logrus.Logger) *S
 // and other errors pass through to the global ErrorHandler.
 func mapSOSError(err error) error {
 	switch {
-	case errors.Is(err, model.ErrAlertNotFound):
+	case errors.Is(err, model.ErrAlertNotFound),
+		errors.Is(err, model.ErrMediaNotFound):
 		return fiber.ErrNotFound
 	case errors.Is(err, model.ErrInvalidTransition):
 		return fiber.ErrConflict
 	case errors.Is(err, model.ErrInvalidPIN):
 		return fiber.ErrUnauthorized
-	case errors.Is(err, model.ErrPINNotConfigured):
+	case errors.Is(err, model.ErrPINNotConfigured),
+		errors.Is(err, model.ErrStorageNotConfigured):
 		return fiber.NewError(fiber.StatusPreconditionFailed, err.Error())
 	case errors.Is(err, model.ErrRateLimited):
 		return fiber.NewError(fiber.StatusTooManyRequests, err.Error())
@@ -85,6 +89,15 @@ func (s *SOSController) Get(ctx *fiber.Ctx) error {
 func (s *SOSController) ListActive(ctx *fiber.Ctx) error {
 	auth := middleware.GetUser(ctx)
 	alerts, err := s.UseCase.ListActive(ctx.UserContext(), auth.ID)
+	if err != nil {
+		return mapSOSError(err)
+	}
+	return ctx.JSON(model.WebResponse[[]*model.AlertDetailResponse]{Data: alerts})
+}
+
+func (s *SOSController) ListInbox(ctx *fiber.Ctx) error {
+	auth := middleware.GetUser(ctx)
+	alerts, err := s.UseCase.ListInbox(ctx.UserContext(), auth.ID)
 	if err != nil {
 		return mapSOSError(err)
 	}
@@ -173,4 +186,30 @@ func (s *SOSController) UploadMedia(ctx *fiber.Ctx) error {
 		return mapSOSError(err)
 	}
 	return ctx.JSON(model.WebResponse[*model.AlertMediaResponse]{Data: result})
+}
+
+func (s *SOSController) ListMedia(ctx *fiber.Ctx) error {
+	auth := middleware.GetUser(ctx)
+	media, err := s.UseCase.ListAlertMedia(ctx.UserContext(), auth.ID, ctx.Params("alertId"))
+	if err != nil {
+		return mapSOSError(err)
+	}
+	return ctx.JSON(model.WebResponse[[]*model.AlertMediaResponse]{Data: media})
+}
+
+// DownloadMedia streams one upload. The raw session token goes in the
+// Authorization header like every other HTTP endpoint; players that
+// cannot set headers should download the file first.
+func (s *SOSController) DownloadMedia(ctx *fiber.Ctx) error {
+	auth := middleware.GetUser(ctx)
+	media, reader, err := s.UseCase.OpenAlertMedia(ctx.UserContext(), auth.ID,
+		ctx.Params("alertId"), ctx.Params("mediaId"))
+	if err != nil {
+		return mapSOSError(err)
+	}
+	ctx.Set(fiber.HeaderContentType, media.ContentType)
+	ctx.Set(fiber.HeaderContentDisposition, "inline; filename="+strconv.Quote(filepath.Base(media.Filename)))
+	ctx.Set(fiber.HeaderCacheControl, "private, max-age=300")
+	// fasthttp closes the reader after streaming it; do not defer Close here.
+	return ctx.SendStream(reader, int(media.SizeBytes))
 }

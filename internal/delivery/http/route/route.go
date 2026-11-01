@@ -58,8 +58,11 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Put("/api/location", c.LocationController.Update)
 
 	c.App.Post("/api/sos", c.SOSController.Trigger)
+	c.App.Get("/api/sos/inbox", c.SOSController.ListInbox)
 	c.App.Get("/api/sos/active", c.SOSController.ListActive)
 	c.App.Get("/api/sos/:alertId", c.SOSController.Get)
+	c.App.Get("/api/sos/:alertId/media", c.SOSController.ListMedia)
+	c.App.Get("/api/sos/:alertId/media/:mediaId", c.SOSController.DownloadMedia)
 	c.App.Post("/api/sos/:alertId/cancel", c.SOSController.Cancel)
 	c.App.Post("/api/sos/:alertId/acknowledge", c.SOSController.Acknowledge)
 	c.App.Post("/api/sos/:alertId/resolve", c.SOSController.Resolve)

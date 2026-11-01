@@ -78,6 +78,17 @@ func TestTriggerSOSAITriageClassification(t *testing.T) {
 	if notifier.lastAlert.Severity != 0.8 || notifier.lastAlert.Summary != "Kemungkinan darurat medis" {
 		t.Errorf("notified alert triage = %+v, want severity 0.8 and the AI summary", notifier.lastAlert)
 	}
+	if alerts.lastAlert.Severity == nil || *alerts.lastAlert.Severity != 0.8 ||
+		alerts.lastAlert.Summary == nil || *alerts.lastAlert.Summary != "Kemungkinan darurat medis" {
+		t.Errorf("persisted triage = %+v, want severity 0.8 and the AI summary", alerts.lastAlert)
+	}
+	detail, err := uc.GetAlert(context.Background(), "sender", result.Alert.ID)
+	if err != nil {
+		t.Fatalf("GetAlert() error = %v", err)
+	}
+	if detail.Severity != 0.8 || detail.Summary != "Kemungkinan darurat medis" {
+		t.Errorf("detail triage = severity %v summary %q, want 0.8 / Kemungkinan darurat medis", detail.Severity, detail.Summary)
+	}
 }
 
 func TestTriggerSOSAITriageLowSeverityKeepsOneKm(t *testing.T) {

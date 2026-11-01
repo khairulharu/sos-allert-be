@@ -44,6 +44,10 @@ type AlertStore interface {
 	CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error)
 	IsResponder(ctx context.Context, db *gorm.DB, alertID, userID string) (bool, error)
 	CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error
+	ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error)
+	GetMedia(ctx context.Context, db *gorm.DB, alertID, mediaID string) (*entity.AlertMedia, error)
+	CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error
+	ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error)
 	PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error)
 }
 
@@ -246,6 +250,12 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		AccuracyMeters:    req.AccuracyMeters,
 		BatteryPercentage: req.BatteryPercentage,
 	}
+	if triageInfo.Severity > 0 {
+		alert.Severity = &triageInfo.Severity
+	}
+	if triageInfo.Summary != "" {
+		alert.Summary = &triageInfo.Summary
+	}
 	if err := u.Deps.Alerts.Create(ctx, u.DB, alert); err != nil {
 		return nil, fmt.Errorf("save alert: %w", err)
 	}
@@ -254,6 +264,9 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude, radiusStart)
 	if err != nil {
 		return nil, err
+	}
+	if err := u.Deps.Alerts.CreateRecipients(ctx, u.DB, alert.ID, recipients, alert.TriggeredAt); err != nil {
+		u.Log.WithError(err).Warn("could not record alert recipients")
 	}
 
 	alertModel := model.Alert{
@@ -369,18 +382,25 @@ func (u *TriggerSOSUseCase) replayIfExists(ctx context.Context, key string) (*mo
 		count, _ = strconv.Atoi(parts[1])
 	}
 	recipients := make([]string, count)
-	return &model.TriggerSOSResult{
-		Alert: model.Alert{
-			ID:            alert.ID,
-			SenderId:      alert.SenderID,
-			TriggeredAt:   time.UnixMilli(alert.TriggeredAt),
-			Status:        alert.Status,
-			EmergencyType: alert.EmergencyType,
-			Location: model.LocationResponse{
-				Longitude: alert.Longitude,
-				Latitude:  alert.Latitude,
-			},
+	alertModel := model.Alert{
+		ID:            alert.ID,
+		SenderId:      alert.SenderID,
+		TriggeredAt:   time.UnixMilli(alert.TriggeredAt),
+		Status:        alert.Status,
+		EmergencyType: alert.EmergencyType,
+		Location: model.LocationResponse{
+			Longitude: alert.Longitude,
+			Latitude:  alert.Latitude,
 		},
+	}
+	if alert.Severity != nil {
+		alertModel.Severity = *alert.Severity
+	}
+	if alert.Summary != nil {
+		alertModel.Summary = *alert.Summary
+	}
+	return &model.TriggerSOSResult{
+		Alert:              alertModel,
 		Recipients:         recipients,
 		GracePeriodSeconds: 0,
 	}, true, nil

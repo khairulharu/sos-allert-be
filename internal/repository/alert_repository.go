@@ -9,6 +9,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type AlertRepository struct {
@@ -133,6 +134,56 @@ func (a *AlertRepository) IsResponder(ctx context.Context, db *gorm.DB, alertID,
 // CreateMedia records an uploaded media file.
 func (a *AlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
 	return db.WithContext(ctx).Create(m).Error
+}
+
+// ListMedia returns an incident's uploads, oldest first.
+func (a *AlertRepository) ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error) {
+	var out []*entity.AlertMedia
+	if err := db.WithContext(ctx).Where("alert_id = ?", alertID).
+		Order("uploaded_at ASC").Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// GetMedia loads one upload, or model.ErrMediaNotFound.
+func (a *AlertRepository) GetMedia(ctx context.Context, db *gorm.DB, alertID, mediaID string) (*entity.AlertMedia, error) {
+	m := new(entity.AlertMedia)
+	if err := db.WithContext(ctx).
+		Where("id = ? AND alert_id = ?", mediaID, alertID).First(m).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, model.ErrMediaNotFound
+		}
+		return nil, err
+	}
+	return m, nil
+}
+
+// CreateRecipients records who was notified for an incident. Duplicate
+// inserts are ignored so a retried trigger stays idempotent.
+func (a *AlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	rows := make([]*entity.AlertRecipient, 0, len(userIDs))
+	for _, userID := range userIDs {
+		rows = append(rows, &entity.AlertRecipient{AlertID: alertID, UserID: userID, NotifiedAt: notifiedAt})
+	}
+	return db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+}
+
+// ListInbox returns the active incidents a user was notified for,
+// newest first (the responder inbox behind GET /api/sos/inbox).
+func (a *AlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {
+	var out []*entity.Alert
+	if err := db.WithContext(ctx).Model(&entity.Alert{}).
+		Select("alerts.*").
+		Joins("JOIN alert_recipients r ON r.alert_id = alerts.id").
+		Where("r.user_id = ? AND alerts.status IN ?", userID, []string{entity.AlertStatusTriggered, entity.AlertStatusAcknowledged}).
+		Order("alerts.triggered_at DESC").Limit(limit).Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // PurgeBreadcrumbs deletes trail points older than beforeMs for alerts
