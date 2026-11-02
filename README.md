@@ -513,6 +513,10 @@ go build ./... && go vet ./...
 
 ## 10. Status Implementasi & Yang Belum Live
 
+**CORS** (baru): middleware CORS aktif (branch `feat/frontend-cors`) — mengizinkan
+frontend Svelte (contoh `http://localhost:5173`) memanggil API lintas-origin, termasuk
+header `Authorization` + `X-Idempotency-Key` (raw token, tanpa `Bearer`).
+
 Yang sudah diimplementasi di branch ini (P0 + P1, lihat matriks §2):
 state machine, cancel + PIN + grace period 10 detik, query/active API,
 idempotency & rate limit, adaptive radius (1/2/5 km, cap 50), WebSocket
