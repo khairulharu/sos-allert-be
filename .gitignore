@@ -3,3 +3,5 @@ config.json
 ca.pem
 Archi.Md
 deploy/runtime/node_modules
+uploads/
+
