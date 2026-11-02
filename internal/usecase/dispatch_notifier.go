@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
@@ -55,12 +56,21 @@ func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, ale
 	if alert.EmergencyType == "" {
 		body = "Emergency alert nearby. Open the app for the live location."
 	}
+	if summary := strings.TrimSpace(alert.Summary); summary != "" {
+		body = summary + " — " + body
+	}
 	data := map[string]string{
 		"alert_id":       alert.ID,
 		"sender_id":      alert.SenderId,
 		"emergency_type": alert.EmergencyType,
 		"latitude":       fmt.Sprintf("%f", alert.Location.Latitude),
 		"longitude":      fmt.Sprintf("%f", alert.Location.Longitude),
+	}
+	if alert.Severity > 0 {
+		data["severity"] = fmt.Sprintf("%.2f", alert.Severity)
+	}
+	if summary := strings.TrimSpace(alert.Summary); summary != "" {
+		data["summary"] = summary
 	}
 
 	pushFailed := false

@@ -19,4 +19,5 @@ var (
 	ErrNotAlertParticipant  = errors.New("only the sender or a responder can view this alert")
 	ErrDuplicateResponse    = errors.New("responder has already responded to this alert")
 	ErrStorageNotConfigured = errors.New("media storage is not configured")
+	ErrMediaNotFound        = errors.New("media not found")
 )

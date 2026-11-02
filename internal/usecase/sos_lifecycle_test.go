@@ -1,8 +1,12 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -353,6 +357,80 @@ func TestBreadcrumbBroadcastAndResolve(t *testing.T) {
 	if _, err := uc.AddBreadcrumb(context.Background(), "sender", alertID, &model.BreadcrumbRequest{Latitude: &lat, Longitude: &lng}); !errors.Is(err, model.ErrInvalidTransition) {
 		t.Fatalf("breadcrumb on resolved alert error = %v, want ErrInvalidTransition", err)
 	}
+	published := hub.published[alertID]
+	if len(published) != 2 {
+		t.Fatalf("hub publishes after resolve = %d, want 2 (breadcrumb + status)", len(published))
+	}
+	var status model.AlertStatusMessage
+	if err := json.Unmarshal(published[1], &status); err != nil {
+		t.Fatalf("status payload decode = %v", err)
+	}
+	if status.Type != "ALERT_STATUS" || status.AlertID != alertID || status.Status != entity.AlertStatusResolved {
+		t.Fatalf("status payload = %+v, want ALERT_STATUS/RESOLVED", status)
+	}
+}
+
+func TestSOSInboxListsNotifiedAlerts(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	inbox, err := uc.ListInbox(context.Background(), "user-b")
+	if err != nil {
+		t.Fatalf("ListInbox error = %v", err)
+	}
+	if len(inbox) != 1 || inbox[0].AlertID != created.Alert.ID {
+		t.Fatalf("inbox = %+v, want the triggered alert", inbox)
+	}
+	empty, err := uc.ListInbox(context.Background(), "user-outside")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("inbox for unrelated user = %+v, err = %v", empty, err)
+	}
+}
+
+func TestMediaUploadListAndDownload(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+	up, err := uc.UploadMedia(context.Background(), "sender", alertID,
+		"panic.m4a", "audio/mp4", int64(len("voice")), strings.NewReader("voice"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.URL != "/api/sos/"+alertID+"/media/"+up.ID {
+		t.Fatalf("media url = %q", up.URL)
+	}
+	list, err := uc.ListAlertMedia(context.Background(), "sender", alertID)
+	if err != nil || len(list) != 1 || list[0].ID != up.ID {
+		t.Fatalf("list = %+v, err = %v", list, err)
+	}
+	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-outside", alertID, up.ID); !errors.Is(err, model.ErrNotAlertParticipant) {
+		t.Fatalf("outsider open error = %v, want ErrNotAlertParticipant", err)
+	}
+	lat, lng := -6.21, 106.85
+	if _, err := uc.Respond(context.Background(), "user-b", alertID, &model.RespondSOSRequest{
+		ResponderLatitude: &lat, ResponderLongitude: &lng,
+	}); err != nil {
+		t.Fatalf("respond error = %v", err)
+	}
+	media, reader, err := uc.OpenAlertMedia(context.Background(), "user-b", alertID, up.ID)
+	if err != nil {
+		t.Fatalf("responder open error = %v", err)
+	}
+	defer reader.Close()
+	body, err := io.ReadAll(reader)
+	if err != nil || string(body) != "voice" || media.ContentType != "audio/mp4" {
+		t.Fatalf("media body = %q, content type = %q, err = %v", body, media.ContentType, err)
+	}
+	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-b", alertID, "missing"); !errors.Is(err, model.ErrMediaNotFound) {
+		t.Fatalf("missing media error = %v, want ErrMediaNotFound", err)
+	}
 }
 
 func TestAlertStatusTransitions(t *testing.T) {
@@ -394,4 +472,29 @@ func TestEmergencyContactCRUD(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].ID != created.ID {
 		t.Fatalf("list = %+v, err = %v", list, err)
 	}
+}
+
+type fakeMediaStorage struct {
+	files map[string][]byte
+}
+
+func (f *fakeMediaStorage) Save(ctx context.Context, filename string, r io.Reader) (string, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", err
+	}
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	path := "/media/" + filename
+	f.files[path] = b
+	return path, nil
+}
+
+func (f *fakeMediaStorage) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	b, ok := f.files[path]
+	if !ok {
+		return nil, errors.New("media file not found")
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
 }

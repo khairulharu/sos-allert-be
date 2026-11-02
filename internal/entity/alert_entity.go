@@ -30,6 +30,8 @@ type Alert struct {
 	EmergencyType      string   `gorm:"column:emergency_type"`
 	AccuracyMeters     *float64 `gorm:"column:accuracy_meters"`
 	BatteryPercentage  *int     `gorm:"column:battery_percentage"`
+	Severity           *float64 `gorm:"column:severity"`
+	Summary            *string  `gorm:"column:summary"`
 	CancellationReason *string  `gorm:"column:cancellation_reason"`
 	ResolvedAt         *int64   `gorm:"column:resolved_at"`
 	CancelledAt        *int64   `gorm:"column:cancelled_at"`
@@ -126,4 +128,16 @@ type AlertMedia struct {
 
 func (m *AlertMedia) TableName() string {
 	return "alert_media"
+}
+
+// AlertRecipient records one user notified for an incident
+// (MySQL `alert_recipients` table), backing GET /api/sos/inbox.
+type AlertRecipient struct {
+	AlertID    string `gorm:"column:alert_id;primaryKey"`
+	UserID     string `gorm:"column:user_id;primaryKey"`
+	NotifiedAt int64  `gorm:"column:notified_at"`
+}
+
+func (r *AlertRecipient) TableName() string {
+	return "alert_recipients"
 }

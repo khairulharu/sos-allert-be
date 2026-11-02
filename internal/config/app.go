@@ -64,6 +64,7 @@ func Bootstrap(config *BootstrapConfig) {
 	sosConfig := NewSOSConfig(config.Config)
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
 	storageConfig := NewStorageConfig(config.Config)
+	aiConfig := NewAIConfig(config.Config)
 
 	// multi-channel dispatcher: FCM / APNs / Twilio, config-gated.
 	// Without credentials it degrades to the previous log-only behaviour.
@@ -92,6 +93,27 @@ func Bootstrap(config *BootstrapConfig) {
 		config.Log.Warnf("storage backend %q is not supported yet, media upload disabled", storageConfig.Backend)
 	}
 
+	// Optional AI triage: offline keyword classifier by default; a live
+	// Ollama/OpenAI provider takes over when configured. Provider
+	// errors fall back to the offline classifier, so the SOS trigger
+	// never depends on AI being up.
+	var triageEngine usecase.EmergencyTriage
+	if aiConfig.Enabled {
+		var llmEngine usecase.EmergencyTriage
+		switch aiConfig.Provider {
+		case AITriageProviderOllama:
+			llmEngine = usecase.NewOllamaClient(aiConfig.OllamaBaseURL, aiConfig.OllamaModel, aiConfig.Timeout)
+		case AITriageProviderOpenAI:
+			if aiConfig.OpenAIAPIKey == "" {
+				config.Log.Warn("ai.provider=openai but ai.openai.api_key is empty; using offline classifier")
+			} else {
+				llmEngine = usecase.NewOpenAIClient(aiConfig.OpenAIBaseURL, aiConfig.OpenAIAPIKey, aiConfig.OpenAIModel, aiConfig.Timeout)
+			}
+		}
+		triageEngine = usecase.NewAITriage(config.Log, llmEngine, usecase.NewOfflineClassifier())
+		config.Log.Infof("AI triage enabled, provider=%q (live LLM=%v, offline fallback=on)", aiConfig.Provider, llmEngine != nil)
+	}
+
 	// setup use cases
 	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
@@ -108,6 +130,7 @@ func Bootstrap(config *BootstrapConfig) {
 		Users:             userReaderRepository,
 		Hub:               trackHub,
 		Metrics:           appMetrics,
+		Triage:            triageEngine,
 		EmergencyContacts: emergencyContactRepository,
 		MediaStore:        mediaStore,
 		GracePeriod:       sosConfig.GracePeriod,

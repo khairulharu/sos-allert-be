@@ -42,3 +42,25 @@ func (s *LocalStorage) Save(ctx context.Context, filename string, r io.Reader) (
 	}
 	return path, nil
 }
+
+// Open opens a stored file for reading. The path must stay inside the
+// storage root so a corrupted DB row cannot read arbitrary files.
+func (s *LocalStorage) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	_ = ctx
+	root, err := filepath.Abs(s.Dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve storage dir: %w", err)
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve storage path: %w", err)
+	}
+	if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
+		return nil, fmt.Errorf("storage path %q escapes %q", target, root)
+	}
+	f, err := os.Open(target)
+	if err != nil {
+		return nil, fmt.Errorf("open storage file: %w", err)
+	}
+	return f, nil
+}

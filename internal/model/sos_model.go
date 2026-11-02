@@ -9,6 +9,9 @@ type TriggerSOSRequest struct {
 	AccuracyMeters    *float64 `json:"accuracy_meters" validate:"omitempty,gte=0"`
 	BatteryPercentage *int     `json:"battery_percentage" validate:"omitempty,gte=0,lte=100"`
 	EmergencyType     string   `json:"emergency_type" validate:"omitempty,oneof=DANGER MEDICAL ACCIDENT"`
+	// Description feeds the optional AI triage ("ai.*" config). It is
+	// advisory only: a missing or failing triage never blocks the SOS.
+	Description string `json:"description" validate:"omitempty,max=1000"`
 }
 
 // TriggerSOSResult is the internal result of a trigger. The HTTP shape is
@@ -18,15 +21,26 @@ type TriggerSOSResult struct {
 	Recipients         []string
 	RadiusMeters       float64
 	GracePeriodSeconds int
+	Triage             *TriageInfo
+}
+
+// TriageInfo is the optional AI triage metadata attached to a trigger:
+// the classified emergency type, a 0..1 severity score (drives the
+// adaptive fan-out start radius) and a short human-readable summary.
+type TriageInfo struct {
+	EmergencyType string  `json:"emergency_type,omitempty"`
+	Severity      float64 `json:"severity"`
+	Summary       string  `json:"summary,omitempty"`
 }
 
 // SOSCreatedResponse matches README section 4: 201 Created.
 type SOSCreatedResponse struct {
-	AlertID            string `json:"alert_id"`
-	Status             string `json:"status"`
-	GracePeriodSeconds int    `json:"grace_period_seconds"`
-	RecipientsNotified int    `json:"recipients_notified"`
-	TriggeredAt        int64  `json:"triggered_at"`
+	AlertID            string      `json:"alert_id"`
+	Status             string      `json:"status"`
+	GracePeriodSeconds int         `json:"grace_period_seconds"`
+	RecipientsNotified int         `json:"recipients_notified"`
+	TriggeredAt        int64       `json:"triggered_at"`
+	Triage             *TriageInfo `json:"triage,omitempty"`
 }
 
 // CancelSOSRequest is the POST /api/sos/:alertId/cancel body.
@@ -103,6 +117,8 @@ type AlertDetailResponse struct {
 	Sender            SenderSummary        `json:"sender"`
 	Status            string               `json:"status"`
 	EmergencyType     string               `json:"emergency_type"`
+	Severity          float64              `json:"severity,omitempty"`
+	Summary           string               `json:"summary,omitempty"`
 	InitialLocation   LocationPoint        `json:"initial_location"`
 	LatestLocation    LocationPoint        `json:"latest_location"`
 	Masked            bool                 `json:"masked,omitempty"`
@@ -146,6 +162,17 @@ type AlertMediaResponse struct {
 	ContentType string `json:"content_type"`
 	SizeBytes   int64  `json:"size_bytes"`
 	UploadedAt  int64  `json:"uploaded_at"`
+	// URL is the authenticated download path (GET, Authorization header).
+	URL string `json:"url"`
+}
+
+// AlertStatusMessage is broadcast on the tracking WebSocket when an
+// incident changes status (cancel/acknowledge/resolve).
+type AlertStatusMessage struct {
+	Type      string `json:"type"`
+	AlertID   string `json:"alert_id"`
+	Status    string `json:"status"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 // MaskCoordinates rounds a position to ~100 m (3 decimal degrees) so
@@ -174,4 +201,8 @@ type SOSEvent struct {
 	Status        string   `json:"status"`
 	Recipients    []string `json:"recipients"`
 	TriggeredAt   int64    `json:"triggered_at"`
+	// Severity/Summary carry the optional AI triage into the worker so
+	// push content is identical whether dispatch is direct or via Kafka.
+	Severity float64 `json:"severity,omitempty"`
+	Summary  string  `json:"summary,omitempty"`
 }

@@ -13,4 +13,8 @@ type Alert struct {
 	EmergencyType     string
 	AccuracyMeters    *float64
 	BatteryPercentage *int
+	// Severity is the optional AI triage score (0..1); 0 means no triage.
+	Severity float64
+	// Summary is the optional AI triage summary; empty means no triage.
+	Summary string
 }
