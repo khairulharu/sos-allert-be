@@ -59,10 +59,26 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 
 ## Tests
 
-- `test/init.go` connects to the real Redis from `config.json` in package `init` (and `log.Fatalf`s if unreachable), so every test in `./test` needs live Redis/network, even `TestCalculateDistance`.
-- `TestGet`, `TestGetAll`, and `TestDelete` assume data already exists in `users:locations` (including `user-B`), and `TestDelete` removes `user-B`. They are stateful/order-dependent and mutate a shared remote Redis; a full-suite failure may be missing fixture data, not a code regression.
-- `TestCalculateDistance`/`TestCalculateDistanceSimetris` cover the 1 km Haversine helper (`< 1` km, boundary excluded).
-- `internal/usecase/trigger_sos_usecase_test.go` and `sos_lifecycle_test.go` — unit tests for `TriggerSOSUseCase` and the lifecycle; no live infra needed (fakes for Redis, MySQL, idempotency, rate limit, PIN, Kafka, hub). Run with `go test ./internal/usecase/ ./internal/tracking/ ./internal/metrics/ -v -count=1`. Dispatch clients (FCM/APNs/Twilio) are tested with `httptest` in `dispatch_test.go`.
+- Test package-specific tetap berada dekat kode yang diuji agar dapat memakai
+  fake/helper internal; test Redis live lintas package berada di `test/`.
+- `go test ./internal/... -v -count=1` adalah suite unit/integration tanpa
+  infrastruktur live dan tidak memerlukan `config.json`.
+- `go test ./... -v -count=1` juga menjalankan package `test`; package tersebut
+  membutuhkan `config.json` dan Redis live/network.
+- `test/init.go` membuat koneksi Redis saat package diinisialisasi. Jika
+  konfigurasi atau Redis tidak tersedia, package `test` gagal sebelum test
+  berjalan.
+- `TestGet`, `TestGetAll`, dan `TestDelete` mengasumsikan fixture `user-B`
+  tersedia di `users:locations`; `TestDelete` menghapus `user-B`. Test ini
+  stateful dan memutasi Redis remote, jadi gunakan Redis/database isolasi.
+- `TestCalculateDistance` dan `TestCalculateDistanceSimetris` menguji helper
+  Haversine dengan batas kurang dari 1 km.
+- `internal/entity/alert_entity_test.go` menguji status aktif dan transisi
+  state machine alert.
+- Test internal lainnya mencakup TriggerSOS, lifecycle, AI triage, dispatch
+  client via `httptest`, HTTP SOS, Kafka consumer, tracking hub, dan metrics.
+- Jalankan suite tanpa live infra dengan `go test ./internal/... -v -count=1`.
+- Build dan static check: `go build ./... && go vet ./...`.
 
 ## Code conventions
 

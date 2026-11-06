@@ -560,20 +560,33 @@ baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
 
 ## 11. Menjalankan Pengujian (Testing)
 
+Test dibagi mengikuti konvensi package Go: unit/integration test yang membutuhkan
+fake atau helper internal tetap berada dekat package yang diuji; test Redis live
+lintas package berada di `test/`. Semua test tercakup oleh `go test ./...`, tetapi
+package `test` membutuhkan `config.json` dan Redis yang dapat dijangkau.
+
 ```bash
-# Unit test SOS (Zero dependency, menggunakan Mock/Fake in-memory):
-# trigger, idempotency, rate limit, cancel/PIN, respond/ETA, breadcrumbs,
-# adaptive radius, FCM/APNs/Twilio clients (httptest), hub & metrics
-go test ./internal/usecase/ ./internal/tracking/ ./internal/metrics/ -v -count=1
+# Semua unit/integration test tanpa MySQL, Redis, atau Kafka live:
+go test ./internal/... -v -count=1
 
-# Unit test TriggerSOS (subset lama)
-go test ./internal/usecase/ -run '^TestTriggerSOS' -v -count=1
+# Seluruh test, termasuk Redis live:
+go test ./... -v -count=1
 
-# Helper distance unit tests
+# Helper distance saja:
 go test ./test/ -run '^TestCalculateDistance' -v -count=1
 
-# Full integration test suite (Membutuhkan Redis live sesuai config.json)
-go test ./test/ -v -count=1
+# Build dan pemeriksaan statis:
+go build ./... && go vet ./...
 ```
 
-> **Catatan Penting**: Test di dalam `./test/` bersifat stateful dan memutasi data di Redis live (`user-B` dihapus oleh `TestDelete`). Gunakan database isolasi atau unit test mock untuk CI/CD pipeline.
+Coverage utama yang diuji:
+- trigger SOS, idempotency, rate limit, adaptive radius, dan error persistence;
+- lifecycle alert, PIN, responder/ETA, breadcrumbs, media, dan akses peserta;
+- AI triage, dispatch FCM/APNs/Twilio melalui `httptest`, consumer Kafka;
+- HTTP SOS end-to-end dengan in-memory stores, WebSocket hub, metrics;
+- state machine entity alert (`IsActive` dan `CanTransitionTo`);
+- helper geospatial distance dan repository lokasi Redis live.
+
+> `test/` berisi test stateful yang memutasi Redis live (`user-B` dihapus oleh
+> `TestDelete`). Jalankan hanya terhadap Redis isolasi/fixture yang sesuai.
+Tanpa `config.json`, gunakan `go test ./internal/...`.
