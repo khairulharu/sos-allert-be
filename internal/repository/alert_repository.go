@@ -136,6 +136,25 @@ func (a *AlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entit
 	return db.WithContext(ctx).Create(m).Error
 }
 
+// UpdateTriage refreshes the classification after post-trigger audio
+// transcription. Empty fields are left untouched.
+func (a *AlertRepository) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error {
+	updates := map[string]any{}
+	if emergencyType != "" {
+		updates["emergency_type"] = emergencyType
+	}
+	if severity > 0 {
+		updates["severity"] = severity
+	}
+	if summary != "" {
+		updates["summary"] = summary
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return db.WithContext(ctx).Model(&entity.Alert{}).Where("id = ?", alertID).Updates(updates).Error
+}
+
 // ListMedia returns an incident's uploads, oldest first.
 func (a *AlertRepository) ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error) {
 	var out []*entity.AlertMedia

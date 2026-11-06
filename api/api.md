@@ -163,7 +163,7 @@ belum ada, response-nya `404`. Panggil `PUT /api/location` dulu.
 | `GET` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Riwayat posisi insiden (sender/responder). |
 | `POST` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Simpan satu titik tracking. Sender saja, insiden harus aktif. |
 | `GET` | `/api/sos/{alertId}/media` | ✅ | List media insiden (sender/responder). |
-| `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. |
+| `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. Audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible), lalu transcript masuk triage dan response memuat `transcript`, `transcription_status`, `triage`. |
 | `GET` | `/api/sos/{alertId}/media/{mediaId}` | ✅ | Download/stream media (sender/responder). |
 
 Detail trigger:
@@ -268,6 +268,19 @@ WS /ws/sos/{alertId}/track?token=<token>
   "type": "ALERT_STATUS",
   "alert_id": "alt_...",
   "status": "RESOLVED",
+  "updated_at": 1730304075000
+}
+```
+
+- Server menyiarkan hasil triage dari audio yang baru ditranskrip:
+
+```json
+{
+  "type": "ALERT_TRIAGE",
+  "alert_id": "alt_...",
+  "emergency_type": "MEDICAL",
+  "severity": 0.8,
+  "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
   "updated_at": 1730304075000
 }
 ```

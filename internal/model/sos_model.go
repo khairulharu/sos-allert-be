@@ -164,6 +164,23 @@ type AlertMediaResponse struct {
 	UploadedAt  int64  `json:"uploaded_at"`
 	// URL is the authenticated download path (GET, Authorization header).
 	URL string `json:"url"`
+	// Transcript is the speech-to-text result for audio evidence.
+	Transcript string `json:"transcript,omitempty"`
+	// TranscriptionStatus: disabled | too_large | completed | empty | failed.
+	TranscriptionStatus string      `json:"transcription_status"`
+	TranscribedAt       *int64      `json:"transcribed_at,omitempty"`
+	Triage              *TriageInfo `json:"triage,omitempty"`
+}
+
+// AlertTriageMessage is broadcast when audio transcription updates the
+// incident classification after the initial trigger.
+type AlertTriageMessage struct {
+	Type          string  `json:"type"`
+	AlertID       string  `json:"alert_id"`
+	EmergencyType string  `json:"emergency_type"`
+	Severity      float64 `json:"severity"`
+	Summary       string  `json:"summary,omitempty"`
+	UpdatedAt     int64   `json:"updated_at"`
 }
 
 // AlertStatusMessage is broadcast on the tracking WebSocket when an

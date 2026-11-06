@@ -39,7 +39,7 @@ When a user in distress triggers an emergency SOS:
 | | Location read & nearby responders (`GET /api/location`, `GET /api/location/nearby`) | ✅ Done | - | Posisi terakhir + `stale`; responder aktif di radius 100–5000 m, stale > 2 menit difilter, koordinat dimask ~100 m, maks 50. |
 | | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; excludes idle users > 2 min from SOS fan-out and the nearby map. |
 | | Dynamic Adaptive Radius | ✅ Done | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
-| **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. |
+| **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. Audio evidence ≤ 25 MB is transcribed via Groq/Whisper-compatible STT and fed into the same triage engine. |
 | **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
 | | SOS State Machine | ✅ Done | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
 | | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | ✅ Done | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
@@ -53,7 +53,7 @@ When a user in distress triggers an emergency SOS:
 | **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | ✅ Done | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
 | | Breadcrumb History (`alert_breadcrumbs`) | ✅ Done | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
 | | Device Telemetry Monitoring | 🟡 In Progress | **P1** | Track battery level, battery charging state, network quality, and automated fall/crash sensor flags. |
-| | Incident Media & Audio Capture | 🟡 In Progress | **P1** | Automatic 10-second ambient audio recording uploaded to S3/GCS (`POST /api/sos/:id/media`) as evidence. |
+| | Incident Media & Audio Capture | ✅ Done | **P1** | 10-second ambient audio recording uploaded to `POST /api/sos/:id/media` (local storage); audio ≤ 25 MB is transcribed and used for post-trigger triage. S3/GCS backend still pending. |
 | **Responder Operations** | Responder Acceptance & ETA | ✅ Done | **P1** | Responders can click "I am coming" (`POST /api/sos/:id/respond`), calculating ETA & live distance to victim. |
 | | Anonymized In-Incident Comms | 🔵 Planned | **P2** | Ephemeral, masked chat or WebRTC voice channel between victim and responding volunteers. |
 | | Emergency Medical ID Card | 🔵 Planned | **P2** | Victim's blood type, allergies, medications, and emergency contacts accessible only during active SOS. |
@@ -126,7 +126,7 @@ sequenceDiagram
 | `POST` | `/api/sos/:alertId/resolve` | ✅ | `TRIGGERED`/`ACKNOWLEDGED` → `RESOLVED` (sender saja) |
 | `POST` | `/api/sos/:alertId/respond` | ✅ | Responder menjawab, hitung ETA & jarak |
 | `GET/POST` | `/api/sos/:alertId/breadcrumbs` | ✅ | Riwayat breadcrumb / kirim satu titik tracking |
-| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); response memuat `url` |
+| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible) lalu transcript masuk triage; response memuat `url`, `transcript`, `transcription_status`, `triage` |
 | `GET` | `/api/sos/:alertId/media` | ✅ | Daftar media insiden (sender/responder saja) |
 | `GET` | `/api/sos/:alertId/media/:mediaId` | ✅ | Stream/download media; header `Authorization`, `Content-Type` asli |
 | `WS` | `/ws/sos/:alertId/track?token=<token>` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`) |
@@ -266,7 +266,7 @@ Response 200 OK:
 
 ---
 
-## 5. AI Triage (Incident Description Classifier)
+## 5. AI Triage (Text + Audio Evidence)
 
 Optional AI layer di `POST /api/sos`. Saat pelapor mengisi `description`
 (misal `"ada orang pingsan di pantai, tidak sadar"`), backend mengklasifikasikannya
@@ -296,6 +296,31 @@ Provider live (`ollama`/`openai`) + fallback otomatis ke offline classifier saat
 gagal/timeout. Mapping severity → radius: `0–0.33` → 1 km, `0.34–0.66` → 2 km,
 `≥0.67` → 5 km.
 
+### Speech-to-text untuk audio evidence
+
+Frontend merekam 10 detik audio setelah alert aktif, lalu mengirim satu file
+`.webm`/`.m4a`/`.ogg` ke `POST /api/sos/:alertId/media`. Backend:
+
+1. Menyimpan media (bukti insiden).
+2. Audio ≤ 25 MB ditranskrip lewat provider OpenAI-compatible (Groq/OpenAI/local).
+3. Transcript dimasukkan ke engine triage yang sama.
+4. `alerts.emergency_type/severity/summary` di-update dan `ALERT_TRIAGE`
+   disiarkan lewat WebSocket.
+5. Response upload memuat `transcript`, `transcription_status`, dan `triage`.
+
+STT/triage fail-open: kalau provider error, media tetap tersimpan dengan
+`transcription_status: "failed"`; upload tidak gagal. Nilai status:
+`disabled`, `too_large`, `completed`, `empty`, `failed`.
+
+| Provider STT | `ai.stt.provider` | Key |
+|---|---|---|
+| Groq (default) | `groq` | `ai.stt.api_key` (`gsk_...`) |
+| OpenAI Whisper | `openai` | `ai.stt.api_key`, fallback `ai.openai.api_key` |
+| Local Whisper (OpenAI-compatible) | `local` | tidak perlu key |
+
+Model default Groq: `whisper-large-v3-turbo`, language default `id`.
+Batas Groq free tier: 25 MB per file; backend hanya mengirim audio ≤ 25 MB ke STT.
+
 ### Config (`config.json`, section `ai`)
 
 ```json
@@ -303,6 +328,15 @@ gagal/timeout. Mapping severity → radius: `0–0.33` → 1 km, `0.34–0.66` �
   "enabled": true,
   "provider": "offline",            // offline | ollama | openai
   "timeout_seconds": 5,
+  "stt": {
+    "enabled": true,
+    "provider": "groq",             // groq | openai | local
+    "base_url": "https://api.groq.com/openai/v1",
+    "api_key": "gsk_...",
+    "model": "whisper-large-v3-turbo",
+    "language": "id",
+    "timeout_seconds": 30
+  },
   "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
   "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini" }
 }
@@ -424,8 +458,16 @@ CREATE TABLE emergency_contacts (
 - Endpoint `GET /api/location/nearby` memakai Redis GEO + `users:last_seen`,
   bukan tabel histori ini.
 
+### Migrasi transkripsi media (`20261108000000_alert_media_transcription.*.sql`)
+
+- Menambah `alert_media.transcript TEXT NULL`,
+  `alert_media.transcription_status VARCHAR(20) NOT NULL DEFAULT 'disabled'`, dan
+  `alert_media.transcribed_at BIGINT NULL`.
+- Dipakai saat upload audio: transcript disimpan bersama media dan hasil triage
+  di-update ke tabel `alerts`.
+
 Semua migrasi sudah diterapkan di DB development saat ini (versi
-`20261107000000`). Untuk environment lain, jalankan `migrate up`.
+`20261108000000`). Untuk environment lain, jalankan `migrate up`.
 
 ---
 
@@ -507,6 +549,15 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
     "enabled": true,
     "provider": "offline",
     "timeout_seconds": 5,
+    "stt": {
+      "enabled": true,
+      "provider": "groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "gsk_...",
+      "model": "whisper-large-v3-turbo",
+      "language": "id",
+      "timeout_seconds": 30
+    },
     "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
     "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini" }
   }
@@ -573,6 +624,13 @@ atum perilakum pre-AI persis (tanpa deskripsi → zero signal, radius
 mulai 1 km). LLM sungguhan (Ollama/OpenAI) belum tês pergian — path
 offline dites otomatis di unit test.
 
+Audio evidence sudah terhubung ke triage: upload `.webm`/`.m4a`/`.ogg`
+≤ 25 MB ditranskrip via provider OpenAI-compatible (default Groq
+`whisper-large-v3-turbo`), transcript masuk engine triage, alert
+di-update, dan `ALERT_TRIAGE` disiarkan lewat WebSocket. Kalau STT
+belum dikonfigurasi/gagal, media tetap tersimpan dan triage awal tidak
+berubah.
+
 Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
 - **FCM/APNs/Twilio**: klien HTTP sudah ada dan dites dengan server
   tiruan, tapi belum pernah mengirim push/SMS sungguhan. Butuh
@@ -589,7 +647,7 @@ Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
   belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) belum di-wire;
   pesan gagal di-redelivery oleh consumer group.
 
-Jalankan semua migrasi (`migrate up`; versi terakhir `20261107000000_locations_user_unique`)
+Jalankan semua migrasi (`migrate up`; versi terakhir `20261108000000_alert_media_transcription`)
 sebelum memakai endpoint baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
 `{"safe_pin": "1234"}`) agar cancel bisa diverifikasi.
 

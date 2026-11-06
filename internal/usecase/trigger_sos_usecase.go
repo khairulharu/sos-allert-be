@@ -47,6 +47,7 @@ type AlertStore interface {
 	CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error
 	ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error)
 	GetMedia(ctx context.Context, db *gorm.DB, alertID, mediaID string) (*entity.AlertMedia, error)
+	UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error
 	CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error
 	ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error)
 	PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error)
@@ -108,6 +109,7 @@ type TriggerSOSDeps struct {
 	Triage            EmergencyTriage
 	EmergencyContacts EmergencyContactStore
 	MediaStore        MediaStorage
+	Transcriber       Transcriber
 	GracePeriod       time.Duration
 	MaxRecipients     int
 	MinRecipients     int

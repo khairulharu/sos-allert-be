@@ -131,6 +131,24 @@ func (s *memAlerts) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.Aler
 	return nil
 }
 
+func (s *memAlerts) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error {
+	s.init()
+	if a, ok := s.alerts[alertID]; ok {
+		if emergencyType != "" {
+			a.EmergencyType = emergencyType
+		}
+		if severity > 0 {
+			v := severity
+			a.Severity = &v
+		}
+		if summary != "" {
+			v := summary
+			a.Summary = &v
+		}
+	}
+	return nil
+}
+
 func (s *memAlerts) ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error) {
 	s.init()
 	return s.media[alertID], nil

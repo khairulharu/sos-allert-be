@@ -526,3 +526,121 @@ func TestAcknowledgeMasksForOutsider(t *testing.T) {
 		t.Fatalf("sender acknowledge must not be masked: %+v", sender)
 	}
 }
+
+type fakeTranscriber struct {
+	text           string
+	err            error
+	gotFilename    string
+	gotContentType string
+	gotAudio       string
+	calls          int
+}
+
+func (f *fakeTranscriber) Transcribe(ctx context.Context, filename, contentType string, r io.Reader) (string, error) {
+	f.calls++
+	f.gotFilename = filename
+	f.gotContentType = contentType
+	b, _ := io.ReadAll(r)
+	f.gotAudio = string(b)
+	return f.text, f.err
+}
+
+func TestUploadMediaTranscribesAndTriages(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{text: "ada orang pingsan tidak sadar"}
+	uc.Deps.Triage = NewAITriage(noopLogger(), nil, NewOfflineClassifier())
+	hub := &fakeHub{}
+	uc.Deps.Hub = hub
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+
+	up, err := uc.UploadMedia(context.Background(), "sender", alertID,
+		"panic.webm", "audio/webm", int64(len("voice-bytes")), strings.NewReader("voice-bytes"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.TranscriptionStatus != "completed" {
+		t.Fatalf("status = %q, want completed", up.TranscriptionStatus)
+	}
+	if up.Transcript != "ada orang pingsan tidak sadar" {
+		t.Fatalf("transcript = %q", up.Transcript)
+	}
+	if up.Triage == nil || up.Triage.EmergencyType != entity.EmergencyTypeMedical || up.Triage.Severity <= 0 {
+		t.Fatalf("triage = %+v", up.Triage)
+	}
+	if up.TranscribedAt == nil {
+		t.Fatal("TranscribedAt is nil")
+	}
+	if !alertRepo.triageUpdated || alertRepo.triageType != entity.EmergencyTypeMedical {
+		t.Fatalf("triage update = %+v", alertRepo)
+	}
+	if alertRepo.alerts[alertID].Summary == nil || *alertRepo.alerts[alertID].Summary == "" {
+		t.Fatal("alert summary was not updated")
+	}
+	if len(alertRepo.media[alertID]) != 1 || alertRepo.media[alertID][0].Transcript == "" {
+		t.Fatalf("media = %+v", alertRepo.media[alertID])
+	}
+
+	var foundTriage bool
+	for _, payload := range hub.published[alertID] {
+		var msg model.AlertTriageMessage
+		if json.Unmarshal(payload, &msg) == nil && msg.Type == "ALERT_TRIAGE" {
+			foundTriage = true
+			if msg.EmergencyType != entity.EmergencyTypeMedical || msg.Summary == "" {
+				t.Fatalf("triage message = %+v", msg)
+			}
+		}
+	}
+	if !foundTriage {
+		t.Fatal("ALERT_TRIAGE websocket message not published")
+	}
+}
+
+func TestUploadMediaTranscriptionFailureKeepsMedia(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{err: errors.New("stt down")}
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"panic.webm", "audio/webm", int64(len("voice")), strings.NewReader("voice"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.TranscriptionStatus != "failed" || up.Transcript != "" {
+		t.Fatalf("media = %+v", up)
+	}
+	if alertRepo.triageUpdated {
+		t.Fatal("triage must not update on STT failure")
+	}
+	if len(alertRepo.media[created.Alert.ID]) != 1 {
+		t.Fatal("media must still be stored")
+	}
+}
+
+func TestUploadMediaAudioOverTranscriptionLimit(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{text: "should not be used"}
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"big.webm", "audio/webm", maxTranscriptionBytes+1, strings.NewReader("small"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.TranscriptionStatus != "too_large" {
+		t.Fatalf("status = %q, want too_large", up.TranscriptionStatus)
+	}
+}

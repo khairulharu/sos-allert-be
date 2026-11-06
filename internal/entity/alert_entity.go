@@ -116,14 +116,17 @@ func (c *EmergencyContact) TableName() string {
 // (MySQL `alert_media` table). The bytes live in the configured
 // storage backend (local disk by default, S3 when configured).
 type AlertMedia struct {
-	ID          string `gorm:"column:id;primaryKey"`
-	AlertID     string `gorm:"column:alert_id"`
-	Filename    string `gorm:"column:filename"`
-	ContentType string `gorm:"column:content_type"`
-	SizeBytes   int64  `gorm:"column:size_bytes"`
-	StoragePath string `gorm:"column:storage_path"`
-	UploadedBy  string `gorm:"column:uploaded_by"`
-	UploadedAt  int64  `gorm:"column:uploaded_at;autoCreateTime:milli"`
+	ID                  string `gorm:"column:id;primaryKey"`
+	AlertID             string `gorm:"column:alert_id"`
+	Filename            string `gorm:"column:filename"`
+	ContentType         string `gorm:"column:content_type"`
+	SizeBytes           int64  `gorm:"column:size_bytes"`
+	StoragePath         string `gorm:"column:storage_path"`
+	UploadedBy          string `gorm:"column:uploaded_by"`
+	UploadedAt          int64  `gorm:"column:uploaded_at;autoCreateTime:milli"`
+	Transcript          string `gorm:"column:transcript"`
+	TranscriptionStatus string `gorm:"column:transcription_status"`
+	TranscribedAt       *int64 `gorm:"column:transcribed_at"`
 }
 
 func (m *AlertMedia) TableName() string {

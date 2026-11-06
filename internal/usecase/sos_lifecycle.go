@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,7 +34,10 @@ type MediaStorage interface {
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
 }
 
-const maxMediaBytes = 50 << 20 // 50 MB
+const (
+	maxMediaBytes         = 50 << 20   // 50 MB
+	maxTranscriptionBytes = 25_000_000 // Groq free tier: 25 MB (decimal)
+)
 
 // GetAlert returns one incident detail, masking the exact location for
 // viewers who are neither the sender nor a responder.
@@ -461,6 +465,9 @@ func (u *TriggerSOSUseCase) ListEmergencyContacts(ctx context.Context, userID st
 }
 
 // UploadMedia stores an incident audio/video capture. Sender only.
+// Audio up to the transcription limit is sent to the configured STT
+// provider, then the transcript is fed to the existing triage engine.
+// STT/triage failures are fail-open: the evidence is still stored.
 func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, filename, contentType string, size int64, r io.Reader) (*model.AlertMediaResponse, error) {
 	alert, err := u.Deps.Alerts.GetByID(ctx, u.DB, alertID)
 	if err != nil {
@@ -481,25 +488,133 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 	if u.Deps.MediaStore == nil {
 		return nil, model.ErrStorageNotConfigured
 	}
-	storedName := alertID + "_" + uuid.NewString() + "_" + filepath.Base(filename)
-	path, err := u.Deps.MediaStore.Save(ctx, storedName, r)
-	if err != nil {
-		return nil, err
-	}
+
+	isAudio := strings.HasPrefix(contentType, "audio/")
+	transcribe := isAudio && u.Deps.Transcriber != nil && size <= maxTranscriptionBytes
+
 	media := &entity.AlertMedia{
-		ID:          uuid.NewString(),
-		AlertID:     alertID,
-		Filename:    filename,
-		ContentType: contentType,
-		SizeBytes:   size,
-		StoragePath: path,
-		UploadedBy:  senderID,
-		UploadedAt:  time.Now().UnixMilli(),
+		ID:                  uuid.NewString(),
+		AlertID:             alertID,
+		Filename:            filename,
+		ContentType:         contentType,
+		SizeBytes:           size,
+		UploadedBy:          senderID,
+		UploadedAt:          time.Now().UnixMilli(),
+		TranscriptionStatus: "disabled",
 	}
-	if err := u.Deps.Alerts.CreateMedia(ctx, u.DB, media); err != nil {
+
+	storedName := alertID + "_" + uuid.NewString() + "_" + filepath.Base(filename)
+	var audio []byte
+	if transcribe {
+		audio, err = io.ReadAll(io.LimitReader(r, maxTranscriptionBytes+1))
+		if err != nil {
+			return nil, fiber.ErrInternalServerError
+		}
+		if int64(len(audio)) > maxTranscriptionBytes {
+			return nil, fiber.ErrBadRequest
+		}
+		media.SizeBytes = int64(len(audio))
+		path, saveErr := u.Deps.MediaStore.Save(ctx, storedName, bytes.NewReader(audio))
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		media.StoragePath = path
+	} else {
+		if isAudio && size > maxTranscriptionBytes {
+			media.TranscriptionStatus = "too_large"
+		}
+		path, saveErr := u.Deps.MediaStore.Save(ctx, storedName, r)
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		media.StoragePath = path
+	}
+
+	var triageInfo *model.TriageInfo
+	if transcribe {
+		now := time.Now().UnixMilli()
+		media.TranscribedAt = &now
+		transcript, transcribeErr := u.Deps.Transcriber.Transcribe(ctx, filename, contentType, bytes.NewReader(audio))
+		if transcribeErr != nil {
+			media.TranscriptionStatus = "failed"
+			u.Log.WithError(transcribeErr).Warn("audio transcription failed, keeping media without transcript")
+		} else if transcript == "" {
+			media.TranscriptionStatus = "empty"
+		} else {
+			media.Transcript = transcript
+			media.TranscriptionStatus = "completed"
+			triageInfo = u.triageTranscript(ctx, transcript)
+		}
+	}
+
+	db := u.DB
+	var tx *gorm.DB
+	if db != nil && triageInfo != nil {
+		tx = db.WithContext(ctx).Begin()
+		defer tx.Rollback()
+		db = tx
+	}
+	if err := u.Deps.Alerts.CreateMedia(ctx, db, media); err != nil {
 		return nil, err
 	}
-	return mediaToResponse(media), nil
+	if triageInfo != nil {
+		if err := u.Deps.Alerts.UpdateTriage(ctx, db, alertID, triageInfo.EmergencyType, triageInfo.Severity, triageInfo.Summary); err != nil {
+			return nil, err
+		}
+	}
+	if tx != nil {
+		if err := tx.Commit().Error; err != nil {
+			return nil, err
+		}
+	}
+
+	if triageInfo != nil {
+		u.publishTriage(alertID, *triageInfo)
+	}
+
+	response := mediaToResponse(media)
+	response.Triage = triageInfo
+	return response, nil
+}
+
+// triageTranscript classifies the speech-to-text result. A zero result
+// (no keyword signal) leaves the alert's existing classification intact.
+func (u *TriggerSOSUseCase) triageTranscript(ctx context.Context, transcript string) *model.TriageInfo {
+	if u.Deps.Triage == nil {
+		return nil
+	}
+	result, err := u.Deps.Triage.Triage(ctx, TriageInput{Description: transcript})
+	if err != nil {
+		u.Log.WithError(err).Warn("triage from audio transcript failed")
+		return nil
+	}
+	if result.EmergencyType == "" && result.Severity == 0 && result.Summary == "" {
+		return nil
+	}
+	return &model.TriageInfo{
+		EmergencyType: result.EmergencyType,
+		Severity:      result.Severity,
+		Summary:       result.Summary,
+	}
+}
+
+// publishTriage notifies tracking subscribers that post-trigger audio
+// changed the incident classification.
+func (u *TriggerSOSUseCase) publishTriage(alertID string, info model.TriageInfo) {
+	if u.Deps.Hub == nil {
+		return
+	}
+	msg := model.AlertTriageMessage{
+		Type:          "ALERT_TRIAGE",
+		AlertID:       alertID,
+		EmergencyType: info.EmergencyType,
+		Severity:      info.Severity,
+		Summary:       info.Summary,
+		UpdatedAt:     time.Now().UnixMilli(),
+	}
+	if data, err := json.Marshal(msg); err == nil {
+		u.Deps.Hub.Publish(alertID, data)
+	}
 }
 
 // ListAlertMedia returns an incident's uploads. Sender and responders
@@ -540,10 +655,17 @@ func (u *TriggerSOSUseCase) OpenAlertMedia(ctx context.Context, requesterID, ale
 }
 
 func mediaToResponse(m *entity.AlertMedia) *model.AlertMediaResponse {
+	status := m.TranscriptionStatus
+	if status == "" {
+		status = "disabled"
+	}
 	return &model.AlertMediaResponse{
 		ID: m.ID, AlertID: m.AlertID, Filename: m.Filename,
 		ContentType: m.ContentType, SizeBytes: m.SizeBytes, UploadedAt: m.UploadedAt,
-		URL: "/api/sos/" + url.PathEscape(m.AlertID) + "/media/" + url.PathEscape(m.ID),
+		URL:                 "/api/sos/" + url.PathEscape(m.AlertID) + "/media/" + url.PathEscape(m.ID),
+		Transcript:          m.Transcript,
+		TranscriptionStatus: status,
+		TranscribedAt:       m.TranscribedAt,
 	}
 }
 

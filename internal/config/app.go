@@ -67,6 +67,7 @@ func Bootstrap(config *BootstrapConfig) {
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
 	storageConfig := NewStorageConfig(config.Config)
 	aiConfig := NewAIConfig(config.Config)
+	sttConfig := NewSTTConfig(config.Config)
 
 	// multi-channel dispatcher: FCM / APNs / Twilio, config-gated.
 	// Without credentials it degrades to the previous log-only behaviour.
@@ -116,6 +117,22 @@ func Bootstrap(config *BootstrapConfig) {
 		config.Log.Infof("AI triage enabled, provider=%q (live LLM=%v, offline fallback=on)", aiConfig.Provider, llmEngine != nil)
 	}
 
+	// Optional speech-to-text for post-trigger audio evidence. Groq is
+	// the default OpenAI-compatible provider; a missing key disables
+	// transcription without disabling media upload.
+	var transcriber usecase.Transcriber
+	if sttConfig.Enabled {
+		switch {
+		case sttConfig.BaseURL == "":
+			config.Log.Warn("STT enabled but ai.stt.base_url is empty; audio transcription disabled")
+		case sttConfig.Provider != "local" && sttConfig.APIKey == "":
+			config.Log.Warn("STT enabled but ai.stt.api_key is empty; audio transcription disabled")
+		default:
+			transcriber = usecase.NewWhisperTranscriber(sttConfig.BaseURL, sttConfig.APIKey, sttConfig.Model, sttConfig.Language, sttConfig.Timeout)
+			config.Log.Infof("STT enabled provider=%q model=%q language=%q", sttConfig.Provider, sttConfig.Model, sttConfig.Language)
+		}
+	}
+
 	// setup use cases
 	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
@@ -135,6 +152,7 @@ func Bootstrap(config *BootstrapConfig) {
 		Triage:            triageEngine,
 		EmergencyContacts: emergencyContactRepository,
 		MediaStore:        mediaStore,
+		Transcriber:       transcriber,
 		GracePeriod:       sosConfig.GracePeriod,
 		MaxRecipients:     sosConfig.MaxRecipients,
 		MinRecipients:     sosConfig.MinRecipients,

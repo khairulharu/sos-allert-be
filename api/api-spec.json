@@ -1526,7 +1526,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend; the response `url` is the authenticated download path.",
+        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend. Audio up to 25 MB is sent to the configured speech-to-text provider (Groq/OpenAI-compatible Whisper); the transcript feeds triage, updates the alert classification, and is returned in the response. STT/triage failures are fail-open: the media is still stored and `transcription_status` reports the outcome.",
         "security": [
           {
             "RawToken": []
@@ -1553,7 +1553,7 @@
         },
         "responses": {
           "200": {
-            "description": "Media stored.",
+            "description": "Media stored, with transcript/triage when audio transcription succeeds.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2632,6 +2632,29 @@
           "url": {
             "type": "string",
             "description": "Authenticated download path; send the raw token in the Authorization header."
+          },
+          "transcript": {
+            "type": "string",
+            "description": "Speech-to-text result for audio evidence. Omitted when transcription did not produce text."
+          },
+          "transcription_status": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "too_large",
+              "completed",
+              "empty",
+              "failed"
+            ],
+            "description": "disabled = no STT provider or non-audio; too_large = audio above the 25 MB transcription limit; completed = transcript available; empty = no speech detected; failed = provider error (media is still stored)."
+          },
+          "transcribed_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch milliseconds when STT was attempted."
+          },
+          "triage": {
+            "$ref": "#/components/schemas/TriageInfo"
           }
         }
       },

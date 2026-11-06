@@ -99,6 +99,12 @@ type fakeAlertRepository struct {
 	responses    map[string][]*entity.AlertResponse
 	media        map[string][]*entity.AlertMedia
 	recipients   map[string][]string
+
+	triageUpdated  bool
+	triageType     string
+	triageSeverity float64
+	triageSummary  string
+	triageErr      error
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -237,6 +243,30 @@ func (f *fakeAlertRepository) IsResponder(ctx context.Context, db *gorm.DB, aler
 func (f *fakeAlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
 	f.ensure()
 	f.media[m.AlertID] = append(f.media[m.AlertID], m)
+	return nil
+}
+
+func (f *fakeAlertRepository) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error {
+	if f.triageErr != nil {
+		return f.triageErr
+	}
+	f.triageUpdated = true
+	f.triageType = emergencyType
+	f.triageSeverity = severity
+	f.triageSummary = summary
+	if alert, ok := f.alerts[alertID]; ok {
+		if emergencyType != "" {
+			alert.EmergencyType = emergencyType
+		}
+		if severity > 0 {
+			v := severity
+			alert.Severity = &v
+		}
+		if summary != "" {
+			v := summary
+			alert.Summary = &v
+		}
+	}
 	return nil
 }
 
