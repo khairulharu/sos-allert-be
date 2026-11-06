@@ -58,7 +58,7 @@ When a user in distress triggers an emergency SOS:
 | | Anonymized In-Incident Comms | 🔵 Planned | **P2** | Ephemeral, masked chat or WebRTC voice channel between victim and responding volunteers. |
 | | Emergency Medical ID Card | 🔵 Planned | **P2** | Victim's blood type, allergies, medications, and emergency contacts accessible only during active SOS. |
 | **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
-| | Anti-Abuse & Rate Limiting | ✅ Done | **P0** | Redis sliding-window rate limit (max 3 SOS triggers/hour/user) + spam detection to stop prank/malicious triggers. |
+| | Anti-Abuse & Rate Limiting | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. |
 | | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
 | **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. |
 
@@ -435,6 +435,8 @@ Semua migrasi sudah diterapkan di DB development saat ini (versi
 - **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. User yang offline/inaktif $> 2$ menit difilter dari broadcast SOS dan `GET /api/location/nearby` (bukan dihapus).
 - **Redis Key Value** (`idempotency:sos:{key}`): TTL 5 menit untuk deduplikasi request pengiriman SOS.
 - **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, max 3 trigger SOS per jam per user.
+- **Redis Sorted Set** (`ratelimit:auth:{ip}`): sliding window 5 percobaan auth per menit per IP.
+- **Redis Key Value** (`lockout:auth:{ip}`): TTL 15 menit setelah limit auth terlampaui.
 - **MySQL** (`locations` table): Satu baris histori per user (unique `user_id`), di-upsert pada setiap `PUT /api/location`. Dipakai untuk audit/riwayat, bukan untuk pencarian radius real-time.
 - **MySQL** (`alerts` & `alert_breadcrumbs`): Persistence insiden resmi untuk audit dan investigasi forensik.
 
@@ -463,7 +465,7 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
 ```json
 {
   "app": { "name": "sos-backend" },
-  "web": { "port": 3000, "prefork": false },
+  "web": { "port": 3000, "prefork": false, "proxy_header": "" },
   "log": { "level": 4 },
   "database": {
     "username": "avnadmin",
@@ -487,6 +489,10 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
     "rate_limit_per_hour": 3,
     "max_recipients": 50
   },
+  "auth": {
+    "rate_limit_per_minute": 5,
+    "lockout_minutes": 15
+  },
   "fcm": { "enabled": false, "project_id": "...", "access_token": "..." },
   "apns": {
     "enabled": false, "key_id": "...", "team_id": "...",
@@ -506,6 +512,10 @@ File kredensial `config.json` dan `ca.pem` harus berada di direktori root backen
   }
 }
 ```
+
+> Di belakang reverse proxy (mis. nginx/Cloudflare), set `web.proxy_header`
+> ke `X-Forwarded-For` agar rate limit auth memakai IP klien, bukan IP proxy.
+> Hanya aktifkan jika proxy memang tepercaya dan app tidak bisa diakses langsung.
 
 ### Menjalankan Database Migration
 ```bash
@@ -547,6 +557,10 @@ koordinat dimask ~100 m, stale > 2 menit difilter). Setiap heartbeat meng-upsert
 satu baris histori ke MySQL `locations`. Response `POST /api/sos/:id/acknowledge`
 sekarang memakai sudut pandang pemanggil, jadi user di luar insiden tetap menerima
 koordinat yang dimask.
+
+Rate limit auth juga aktif: `POST /api/users` dan `POST /api/users/_login`
+dibatasi 5 percobaan/menit per IP, lalu lockout 15 menit (`429` +
+`Retry-After`). Limiter gagal-terbuka saat Redis error agar login tidak mati.
 
 Feature **AI Triage** udah diimplementasi di branch ini: klasifikasi
 deskripsi insiden (`description` → `DANGER/MEDICAL/ACCIDENT`), severity

@@ -63,6 +63,7 @@ func Bootstrap(config *BootstrapConfig) {
 	appMetrics := metrics.New()
 	trackHub := tracking.NewHub()
 	sosConfig := NewSOSConfig(config.Config)
+	authConfig := NewAuthConfig(config.Config)
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
 	storageConfig := NewStorageConfig(config.Config)
 	aiConfig := NewAIConfig(config.Config)
@@ -154,6 +155,8 @@ func Bootstrap(config *BootstrapConfig) {
 
 	// setup middleware
 	authMiddleware := middleware.NewAuth(userUseCase)
+	authRateLimit := middleware.NewAuthRateLimit(rateLimitRepository, config.Log,
+		authConfig.RateLimitPerMinute, authConfig.Window, authConfig.Lockout)
 
 	routeConfig := route.RouteConfig{
 		App:                        config.App,
@@ -161,6 +164,7 @@ func Bootstrap(config *BootstrapConfig) {
 		ContactController:          contactController,
 		AddressController:          addressController,
 		AuthMiddleware:             authMiddleware,
+		AuthRateLimit:              authRateLimit,
 		LocationController:         locationController,
 		SOSController:              sosController,
 		EmergencyContactController: emergencyContactController,

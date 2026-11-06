@@ -90,3 +90,51 @@ func (r *RateLimitRepository) Allow(ctx context.Context, userID string, limit in
 	}
 	return res == 1, nil
 }
+
+// authRateLimitScript is a per-IP sliding window plus a lockout key. It
+// allows `limit` attempts per `window`; the next attempt sets a lockout
+// marker for `lockoutMs`. While the lockout key exists, every attempt is
+// rejected and the remaining TTL is returned for Retry-After.
+var authRateLimitScript = redis.NewScript(`
+local windowKey = KEYS[1]
+local lockKey = KEYS[2]
+local now = tonumber(ARGV[1])
+local windowMs = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local lockoutMs = tonumber(ARGV[4])
+local member = ARGV[5]
+
+local locked = redis.call("PTTL", lockKey)
+if locked > 0 then
+  return {0, locked}
+end
+
+redis.call("ZREMRANGEBYSCORE", windowKey, 0, now - windowMs)
+local count = redis.call("ZCARD", windowKey)
+if count >= limit then
+  redis.call("SET", lockKey, "1", "PX", lockoutMs)
+  return {0, lockoutMs}
+end
+
+redis.call("ZADD", windowKey, now, member)
+redis.call("PEXPIRE", windowKey, windowMs)
+return {1, 0}
+`)
+
+// AllowAuth applies the per-IP auth limiter. It returns whether the
+// attempt is allowed and, when blocked, how long until the lockout ends.
+func (r *RateLimitRepository) AllowAuth(ctx context.Context, ip string, limit int, window, lockout time.Duration) (bool, time.Duration, error) {
+	now := time.Now().UnixMilli()
+	res, err := authRateLimitScript.Run(ctx, r.Client,
+		[]string{authRateLimitKeyPrefix + ip, authLockoutKeyPrefix + ip},
+		now, window.Milliseconds(), limit, lockout.Milliseconds(),
+		fmt.Sprintf("%d-%d", now, time.Now().UnixNano()),
+	).Int64Slice()
+	if err != nil {
+		return false, 0, fmt.Errorf("redis auth rate limit: %w", err)
+	}
+	if len(res) != 2 {
+		return false, 0, fmt.Errorf("redis auth rate limit: unexpected reply %v", res)
+	}
+	return res[0] == 1, time.Duration(res[1]) * time.Millisecond, nil
+}

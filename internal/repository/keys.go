@@ -7,4 +7,8 @@ const (
 	idempotencyKeyPrefix = "idempotency:sos:"
 	// rateLimitKeyPrefix + user id -> sorted set of trigger timestamps.
 	rateLimitKeyPrefix = "ratelimit:sos:"
+	// authRateLimitKeyPrefix + client IP -> sorted set of auth attempts.
+	authRateLimitKeyPrefix = "ratelimit:auth:"
+	// authLockoutKeyPrefix + client IP -> lockout marker with TTL.
+	authLockoutKeyPrefix = "lockout:auth:"
 )

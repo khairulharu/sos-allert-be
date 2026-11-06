@@ -36,6 +36,7 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 ## Auth
 
 - Guest routes: `POST /api/users`, `POST /api/users/_login`. All other routes go through `AuthMiddleware`.
+- Guest auth routes are rate-limited per client IP by `middleware.NewAuthRateLimit`: 5 attempts/minute, then a 15-minute lockout (`429` + `Retry-After`). Register and login share the same bucket. The limiter fails open on Redis errors so auth stays available; config is `auth.rate_limit_per_minute` / `auth.lockout_minutes`. Behind a reverse proxy set `web.proxy_header` (e.g. `X-Forwarded-For`) so `ctx.IP()` is the real client IP.
 - `Authorization` is the raw token returned by login, not `Bearer <token>`.
 - Middleware loads the user ID into `ctx.Locals("auth")`; controllers get it with `middleware.GetUser(ctx)` and set `UserId` fields marked `json:"-"`.
 

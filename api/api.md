@@ -16,6 +16,12 @@ Endpoint publik (tanpa token):
 - `POST /api/users/_login` (login)
 - `GET /metrics`
 
+`POST /api/users` dan `POST /api/users/_login` dibatasi per IP klien:
+**5 percobaan/menit**, lalu **lockout 15 menit** (`429` + header
+`Retry-After`). Register dan login memakai bucket yang sama. Di belakang
+reverse proxy, set `web.proxy_header` (mis. `X-Forwarded-For`) agar IP klien
+yang dipakai bukan IP proxy.
+
 Endpoint lain wajib mengirim token mentah hasil login:
 
 ```http
@@ -281,7 +287,7 @@ autentikasi/otorisasi dikirim sebagai `{"error": "..."}` lalu koneksi ditutup.
 | `404` | Resource tidak ditemukan atau bukan milik user. |
 | `409` | Duplikat atau transisi status insiden tidak valid. |
 | `412` | Precondition gagal: Safe PIN belum diatur atau storage media belum dikonfigurasi. |
-| `429` | Rate limit SOS terlampaui. |
+| `429` | Rate limit terlampaui: auth 5/menit/IP + lockout 15 menit, atau SOS 3/jam/user. |
 | `500` | Error internal/dependency. |
 
 ## Catatan implementasi

@@ -11,6 +11,10 @@ func NewFiber(config *viper.Viper) *fiber.App {
 		AppName:      config.GetString("app.name"),
 		ErrorHandler: NewErrorHandler(),
 		Prefork:      config.GetBool("web.prefork"),
+		// Set web.proxy_header (e.g. "X-Forwarded-For") only when the
+		// app sits behind a trusted reverse proxy; ctx.IP() then uses
+		// the client address for the auth rate limiter.
+		ProxyHeader: config.GetString("web.proxy_header"),
 	})
 
 	// CORS: allow the Vite dev origin and any configured origin so the

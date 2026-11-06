@@ -17,6 +17,7 @@ type RouteConfig struct {
 	SOSTrackController         *http.SOSTrackController
 	MetricsHandler             fiber.Handler
 	AuthMiddleware             fiber.Handler
+	AuthRateLimit              fiber.Handler
 }
 
 func (c *RouteConfig) Setup() {
@@ -25,8 +26,13 @@ func (c *RouteConfig) Setup() {
 }
 
 func (c *RouteConfig) SetupGuestRoute() {
-	c.App.Post("/api/users", c.UserController.Register)
-	c.App.Post("/api/users/_login", c.UserController.Login)
+	authRateLimit := c.AuthRateLimit
+	if authRateLimit == nil {
+		authRateLimit = func(ctx *fiber.Ctx) error { return ctx.Next() }
+	}
+
+	c.App.Post("/api/users", authRateLimit, c.UserController.Register)
+	c.App.Post("/api/users/_login", authRateLimit, c.UserController.Login)
 	if c.MetricsHandler != nil {
 		c.App.Get("/metrics", c.MetricsHandler)
 	}

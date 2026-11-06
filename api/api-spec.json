@@ -48,7 +48,7 @@
         "tags": [
           "User API"
         ],
-        "description": "Register a new user. Guests only.",
+        "description": "Register a new user. Guests only. Rate limited per client IP: 5 attempts/minute, then a 15-minute lockout (`429` + `Retry-After`).",
         "requestBody": {
           "required": true,
           "content": {
@@ -80,6 +80,9 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
@@ -132,7 +135,7 @@
         "tags": [
           "User API"
         ],
-        "description": "Authenticate a user. The returned token is the raw value for the `Authorization` header on protected calls.",
+        "description": "Authenticate a user. The returned token is the raw value for the `Authorization` header on protected calls. Rate limited per client IP together with registration: 5 attempts/minute, then a 15-minute lockout (`429` + `Retry-After`).",
         "requestBody": {
           "required": true,
           "content": {
@@ -164,6 +167,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
@@ -1843,7 +1849,15 @@
         }
       },
       "TooManyRequests": {
-        "description": "SOS rate limit exceeded (max 3 triggers per hour).",
+        "description": "Rate limit exceeded. Auth routes allow 5 attempts/minute per client IP, then a 15-minute lockout; SOS allows 3 triggers/hour per user.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds until the caller may retry.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        },
         "content": {
           "application/json": {
             "schema": {
