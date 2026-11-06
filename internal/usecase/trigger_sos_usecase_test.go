@@ -26,6 +26,9 @@ type fakeLocationRepository struct {
 	nearby    []string
 	nearbyErr error
 
+	// nearbyDetailed is returned by GeoSearchWithDistance.
+	nearbyDetailed []entity.GeoLocation
+
 	// lastSeenMs keyed by userId; zero value means "not found" → returns error
 	lastSeenMs map[string]int64
 
@@ -61,6 +64,18 @@ func (f *fakeLocationRepository) GeoSearch(ctx context.Context, longitude float6
 		return nil, f.nearbyErr
 	}
 	return f.nearby, nil
+}
+
+func (f *fakeLocationRepository) GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error) {
+	f.geoSearchCalls++
+	f.gotLongitude = longitude
+	f.gotLatitude = latitude
+	f.gotRadius = radiusMeters
+	f.radii = append(f.radii, radiusMeters)
+	if f.nearbyErr != nil {
+		return nil, f.nearbyErr
+	}
+	return f.nearbyDetailed, nil
 }
 
 func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string) (int64, error) {

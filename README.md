@@ -35,8 +35,9 @@ When a user in distress triggers an emergency SOS:
 | Kategori | Fitur | Status | Prioritas | Keterangan & Spesifikasi Teknis |
 |---|---|:---:|:---:|---|
 | **Core Geospatial** | Haversine distance calculator | ✅ Done | - | Boundary-checked distance helper (`< 1 km`). |
-| | Redis GEO user positioning (`PUT /api/location`) | ✅ Done | - | High-throughput Redis GEO `GEOADD` (`users:locations`). |
-| | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; auto-prunes idle users > 2 min. |
+| | Redis GEO user positioning (`PUT /api/location`) | ✅ Done | - | High-throughput Redis GEO `GEOADD` (`users:locations`) + upsert histori MySQL `locations`. |
+| | Location read & nearby responders (`GET /api/location`, `GET /api/location/nearby`) | ✅ Done | - | Posisi terakhir + `stale`; responder aktif di radius 100–5000 m, stale > 2 menit difilter, koordinat dimask ~100 m, maks 50. |
+| | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; excludes idle users > 2 min from SOS fan-out and the nearby map. |
 | | Dynamic Adaptive Radius | ✅ Done | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
 | **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. |
 | **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
@@ -113,7 +114,9 @@ sequenceDiagram
 | `DELETE` | `/api/users` | ✅ | Logout session |
 | `PATCH` | `/api/users/_current` | ✅ | Update profil user saat ini; kirim `safe_pin` (4 digit, disimpan sebagai hash), `fcm_token`, atau `apns_token` untuk mengaturnya |
 | `GET` | `/api/users/_current` | ✅ | Ambil profil user saat ini |
-| `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) |
+| `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
+| `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
+| `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50 |
 | `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam) |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
 | `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
@@ -412,17 +415,27 @@ CREATE TABLE emergency_contacts (
 - `alert_recipients(alert_id, user_id, notified_at)` — daftar user yang dinotifikasi,
   dipakai `GET /api/sos/inbox`; baris dihapus otomatis saat alert dihapus.
 
-Jalankan kedua migrasi sebelum memakai endpoint baru.
+### Migrasi lokasi (`20261107000000_locations_user_unique.*.sql`)
+
+- Menambah `UNIQUE KEY uq_locations_user_id (user_id)` pada tabel `locations`.
+- `PUT /api/location` meng-upsert satu baris histori per user (koordinat terakhir)
+  setelah Redis GEO berhasil ditulis. Kegagalan MySQL hanya di-log dan tidak
+  menggagalkan heartbeat.
+- Endpoint `GET /api/location/nearby` memakai Redis GEO + `users:last_seen`,
+  bukan tabel histori ini.
+
+Semua migrasi sudah diterapkan di DB development saat ini (versi
+`20261107000000`). Untuk environment lain, jalankan `migrate up`.
 
 ---
 
 ## 7. Desain Penyimpanan Lokasi
 
 - **Redis GEO** (`users:locations`): Menyimpan geospatial coordinates semua user aktif. Format data: Member = `userId`, Value = `(longitude, latitude)`.
-- **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. Membuang user yang offline/inaktif $> 2$ menit dari broadcast SOS.
+- **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. User yang offline/inaktif $> 2$ menit difilter dari broadcast SOS dan `GET /api/location/nearby` (bukan dihapus).
 - **Redis Key Value** (`idempotency:sos:{key}`): TTL 5 menit untuk deduplikasi request pengiriman SOS.
 - **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, max 3 trigger SOS per jam per user.
-- **MySQL** (`locations` table): Historis koordinat stasioner.
+- **MySQL** (`locations` table): Satu baris histori per user (unique `user_id`), di-upsert pada setiap `PUT /api/location`. Dipakai untuk audit/riwayat, bukan untuk pencarian radius real-time.
 - **MySQL** (`alerts` & `alert_breadcrumbs`): Persistence insiden resmi untuk audit dan investigasi forensik.
 
 ---
@@ -449,21 +462,24 @@ Jalankan kedua migrasi sebelum memakai endpoint baru.
 File kredensial `config.json` dan `ca.pem` harus berada di direktori root backend (`.gitignore` diaktifkan):
 ```json
 {
-  "app": { "name": "sos-backend", "port": 3000 },
+  "app": { "name": "sos-backend" },
+  "web": { "port": 3000, "prefork": false },
+  "log": { "level": 4 },
   "database": {
     "username": "avnadmin",
     "password": "...",
     "host": "...",
     "port": 18770,
-    "database": "defaultdb",
-    "ssl": { "ca_cert": "ca.pem" }
+    "name": "defaultdb"
   },
   "redis": {
-    "host": "...",
-    "port": 15164,
-    "password": "..."
+    "addr": "host:15164",
+    "user": "",
+    "pass": "...",
+    "db": 0
   },
   "kafka": {
+    "bootstrap": { "servers": "localhost:9092" },
     "producer": { "enabled": false }
   },
   "sos": {
@@ -525,6 +541,13 @@ tracking + breadcrumbs + telemetri breadcrumb (baterai/speed/heading/altitude/ac
 retensi breadcrumb 30 hari, dan klien FCM v1 / APNs Critical Alert /
 Twilio SMS dengan fallback log-only saat kredensial belum diisi.
 
+Lokasi juga sudah melayani sisi baca: `GET /api/location` (posisi terakhir +
+`stale`) dan `GET /api/location/nearby` (responder aktif di radius tertentu,
+koordinat dimask ~100 m, stale > 2 menit difilter). Setiap heartbeat meng-upsert
+satu baris histori ke MySQL `locations`. Response `POST /api/sos/:id/acknowledge`
+sekarang memakai sudut pandang pemanggil, jadi user di luar insiden tetap menerima
+koordinat yang dimask.
+
 Feature **AI Triage** udah diimplementasi di branch ini: klasifikasi
 deskripsi insiden (`description` → `DANGER/MEDICAL/ACCIDENT`), severity
 0–1, dan summary. Provider default = offline keyword classifier
@@ -552,8 +575,8 @@ Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
   belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) belum di-wire;
   pesan gagal di-redelivery oleh consumer group.
 
-Jalankan migrasi `20261031000000_alerts_v2` sebelum memakai endpoint
-baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
+Jalankan semua migrasi (`migrate up`; versi terakhir `20261107000000_locations_user_unique`)
+sebelum memakai endpoint baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
 `{"safe_pin": "1234"}`) agar cancel bisa diverifikasi.
 
 ---

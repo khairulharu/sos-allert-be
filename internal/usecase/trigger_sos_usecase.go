@@ -26,6 +26,7 @@ type LocationRepository interface {
 	Get(ctx context.Context, userId string) (*entity.LocationCache, error)
 	Save(ctx context.Context, loc *entity.LocationCache) error
 	GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error)
+	GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error)
 	GetLastSeen(ctx context.Context, userId string) (int64, error)
 }
 

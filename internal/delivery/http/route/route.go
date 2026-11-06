@@ -55,6 +55,8 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Get("/api/contacts/:contactId/addresses/:addressId", c.AddressController.Get)
 	c.App.Delete("/api/contacts/:contactId/addresses/:addressId", c.AddressController.Delete)
 
+	c.App.Get("/api/location", c.LocationController.Get)
+	c.App.Get("/api/location/nearby", c.LocationController.ListNearby)
 	c.App.Put("/api/location", c.LocationController.Update)
 
 	c.App.Post("/api/sos", c.SOSController.Trigger)

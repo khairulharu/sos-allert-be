@@ -498,3 +498,31 @@ func (f *fakeMediaStorage) Open(ctx context.Context, path string) (io.ReadCloser
 	}
 	return io.NopCloser(bytes.NewReader(b)), nil
 }
+
+func TestAcknowledgeMasksForOutsider(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+
+	outsider, err := uc.Acknowledge(context.Background(), "stranger", created.Alert.ID)
+	if err != nil {
+		t.Fatalf("acknowledge error = %v", err)
+	}
+	if !outsider.Masked {
+		t.Fatalf("outsider acknowledge must be masked: %+v", outsider)
+	}
+	if outsider.LatestLocation.Latitude == created.Alert.Location.Latitude {
+		t.Fatal("masked latitude equals exact latitude")
+	}
+
+	// The sender still sees exact coordinates when re-reading the state.
+	sender, err := uc.Acknowledge(context.Background(), "sender", created.Alert.ID)
+	if err != nil {
+		t.Fatalf("sender acknowledge error = %v", err)
+	}
+	if sender.Masked {
+		t.Fatalf("sender acknowledge must not be masked: %+v", sender)
+	}
+}

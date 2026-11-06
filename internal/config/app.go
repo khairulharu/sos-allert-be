@@ -36,6 +36,7 @@ func Bootstrap(config *BootstrapConfig) {
 	contactRepository := repository.NewContactRepository(config.Log)
 	addressRepository := repository.NewAddressRepository(config.Log)
 	locationCacheRepository := repository.NewLocationCacheRepository(config.RedisClient, config.Log)
+	locationRepository := repository.NewLocationRepository(config.DB, config.Log)
 	alertRepository := repository.NewAllertRepository(config.Log)
 	emergencyContactRepository := repository.NewEmergencyContactRepository(config.Log)
 	userReaderRepository := repository.NewUserReaderRepository(config.DB, config.Log)
@@ -118,7 +119,7 @@ func Bootstrap(config *BootstrapConfig) {
 	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
 	addressUseCase := usecase.NewAddressUseCase(config.DB, config.Log, config.Validate, contactRepository, addressRepository, addressProducer)
-	locationUseCase := usecase.NewLocationUseCase(locationCacheRepository, config.Validate, config.Log)
+	locationUseCase := usecase.NewLocationUseCase(locationCacheRepository, locationRepository, config.Validate, config.Log)
 	triggerSOSUseCase := usecase.NewTriggerSOSUseCase(config.DB, config.Log, usecase.TriggerSOSDeps{
 		Validate:          config.Validate,
 		Location:          locationCacheRepository,

@@ -118,7 +118,8 @@ func (s *SOSController) Cancel(ctx *fiber.Ctx) error {
 }
 
 func (s *SOSController) Acknowledge(ctx *fiber.Ctx) error {
-	detail, err := s.UseCase.Acknowledge(ctx.UserContext(), ctx.Params("alertId"))
+	auth := middleware.GetUser(ctx)
+	detail, err := s.UseCase.Acknowledge(ctx.UserContext(), auth.ID, ctx.Params("alertId"))
 	if err != nil {
 		return mapSOSError(err)
 	}

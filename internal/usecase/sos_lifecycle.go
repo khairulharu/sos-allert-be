@@ -217,14 +217,16 @@ func (u *TriggerSOSUseCase) verifyPIN(ctx context.Context, userID, pin string) e
 	return nil
 }
 
-// Acknowledge moves a TRIGGERED incident to ACKNOWLEDGED.
-func (u *TriggerSOSUseCase) Acknowledge(ctx context.Context, alertID string) (*model.AlertDetailResponse, error) {
+// Acknowledge moves a TRIGGERED incident to ACKNOWLEDGED. The response is
+// built from the caller's perspective, so non-participants only see masked
+// coordinates (the previous implementation always used the sender view).
+func (u *TriggerSOSUseCase) Acknowledge(ctx context.Context, requesterID, alertID string) (*model.AlertDetailResponse, error) {
 	alert, err := u.Deps.Alerts.GetByID(ctx, u.DB, alertID)
 	if err != nil {
 		return nil, err
 	}
 	if alert.Status == entity.AlertStatusAcknowledged {
-		return u.buildDetail(ctx, alert, alert.SenderID, false)
+		return u.buildDetail(ctx, alert, requesterID, false)
 	}
 	changed, err := u.Deps.Alerts.Transition(ctx, u.DB, alertID,
 		[]string{entity.AlertStatusTriggered},
@@ -240,7 +242,7 @@ func (u *TriggerSOSUseCase) Acknowledge(ctx context.Context, alertID string) (*m
 		return nil, err
 	}
 	u.publishStatus(alertID, updated.Status, time.Now().UnixMilli())
-	return u.buildDetail(ctx, updated, updated.SenderID, false)
+	return u.buildDetail(ctx, updated, requesterID, false)
 }
 
 // Resolve closes an active incident. Sender only.

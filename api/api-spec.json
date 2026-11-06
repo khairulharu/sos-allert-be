@@ -1,377 +1,335 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Golang Clean Architecture",
-    "description": "Golang Clean Architecture",
+    "title": "SOS Allert Backend API",
+    "description": "HTTP API for the SOS Allert life-safety backend, used by the web frontend.\n\nAuthentication: every protected endpoint expects the raw session token returned by `POST /api/users/_login` in the `Authorization` header. Do not prefix it with `Bearer `. Guest endpoints are `POST /api/users`, `POST /api/users/_login`, and `GET /metrics`.\n\nResponse envelope: success responses are `{\"data\": ...}` and, for paginated lists, also `{\"paging\": {...}}`. Errors are rendered by the global error handler as `{\"errors\": \"<message>\"}` with the matching HTTP status.\n\nLive tracking uses a WebSocket at `ws://localhost:3000/ws/sos/{alertId}/track?token=<token>`. OpenAPI 3.0 cannot describe WebSocket frames; see `api/api.md` for the message contract.",
     "version": "1.0.0"
   },
   "servers": [
     {
-      "url": "http://localhost:3000"
+      "url": "http://localhost:3000",
+      "description": "Local development server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "User API",
+      "description": "Registration, login, session, and profile management."
+    },
+    {
+      "name": "Contact API",
+      "description": "Per-user contact CRUD with search and pagination."
+    },
+    {
+      "name": "Address API",
+      "description": "Addresses that belong to a contact."
+    },
+    {
+      "name": "Location API",
+      "description": "Presence/location heartbeat used for SOS proximity fan-out."
+    },
+    {
+      "name": "SOS API",
+      "description": "Trigger, query, and manage emergency incidents."
+    },
+    {
+      "name": "Emergency Contact API",
+      "description": "Tier-1 emergency contacts used for SMS/voice fallback."
+    },
+    {
+      "name": "Observability",
+      "description": "Operational endpoints."
     }
   ],
   "paths": {
     "/api/users": {
       "post": {
+        "operationId": "registerUser",
         "tags": [
           "User API"
         ],
-        "description": "Register new user",
+        "description": "Register a new user. Guests only.",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string"
-                  },
-                  "password": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name",
-                  "password"
-                ]
+                "$ref": "#/components/schemas/RegisterUserRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Success register new user",
+            "description": "User created.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "name": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/UserResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "delete": {
-        "description": "Logout user",
+        "operationId": "logoutUser",
         "tags": [
           "User API"
         ],
-        "parameters": [
+        "description": "Log out the authenticated user by clearing the stored session token.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "responses": {
           "200": {
-            "description": "Success logout user",
+            "description": "Session cleared.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "example": true
                     }
                   }
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
     },
     "/api/users/_login": {
       "post": {
-        "description": "Login user",
+        "operationId": "loginUser",
         "tags": [
           "User API"
         ],
+        "description": "Authenticate a user. The returned token is the raw value for the `Authorization` header on protected calls.",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string"
-                  },
-                  "password": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "id",
-                  "password"
-                ]
+                "$ref": "#/components/schemas/LoginUserRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Success login",
+            "description": "Authenticated; `data.token` is the session token.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "token": {
-                          "type": "string"
-                        }
-                      }
+                      "$ref": "#/components/schemas/UserResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
     },
     "/api/users/_current": {
       "get": {
+        "operationId": "getCurrentUser",
         "tags": [
           "User API"
         ],
-        "description": "Get current user",
-        "parameters": [
+        "description": "Get the authenticated user's profile.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "responses": {
           "200": {
-            "description": "Success register new user",
+            "description": "Current profile.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "name": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/UserResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "patch": {
+        "operationId": "updateCurrentUser",
         "tags": [
           "User API"
         ],
-        "description": "Update current user",
-        "parameters": [
+        "description": "Update the authenticated user's profile. All fields are optional; omitted fields are left unchanged.\n\n- `safe_pin` is a 4-digit numeric PIN, stored as a bcrypt hash. It is required to cancel an SOS.\n- `fcm_token` / `apns_token` register device push tokens so the user can receive SOS notifications.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "password": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/components/schemas/UpdateUserRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Success register new user",
+            "description": "Updated profile.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "name": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/UserResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
     },
     "/api/contacts": {
       "post": {
+        "operationId": "createContact",
         "tags": [
           "Contact API"
         ],
-        "description": "Create new contact",
-        "parameters": [
+        "description": "Create a contact owned by the authenticated user.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "first_name": {
-                    "type": "string"
-                  },
-                  "last_name": {
-                    "type": "string"
-                  },
-                  "email": {
-                    "type": "string"
-                  },
-                  "phone": {
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/components/schemas/CreateContactRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Success create new contact",
+            "description": "Contact created.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "first_name": {
-                          "type": "string"
-                        },
-                        "last_name": {
-                          "type": "string"
-                        },
-                        "email": {
-                          "type": "string"
-                        },
-                        "phone": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/ContactResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "get": {
+        "operationId": "listContacts",
         "tags": [
           "Contact API"
         ],
-        "description": "Get all contacts",
-        "parameters": [
+        "description": "List the authenticated user's contacts with optional filters and pagination. `name` matches first or last name with a `LIKE` search.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
+            "RawToken": []
+          }
+        ],
+        "parameters": [
           {
             "name": "page",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "number",
+              "type": "integer",
+              "minimum": 1,
               "default": 1
             }
           },
@@ -380,7 +338,9 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "number",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
               "default": 10
             }
           },
@@ -389,7 +349,8 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 100
             }
           },
           {
@@ -397,7 +358,8 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 20
             }
           },
           {
@@ -405,13 +367,14 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 200
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "Success get list of contacts",
+            "description": "Contact page.",
             "content": {
               "application/json": {
                 "schema": {
@@ -420,371 +383,241 @@
                     "data": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "first_name": {
-                            "type": "string"
-                          },
-                          "last_name": {
-                            "type": "string"
-                          },
-                          "email": {
-                            "type": "string"
-                          },
-                          "phone": {
-                            "type": "string"
-                          },
-                          "created_at": {
-                            "type": "number"
-                          },
-                          "updated_at": {
-                            "type": "number"
-                          }
-                        }
+                        "$ref": "#/components/schemas/ContactResponse"
                       }
                     },
                     "paging": {
-                      "type": "object",
-                      "properties": {
-                        "page": {
-                          "type": "number"
-                        },
-                        "size": {
-                          "type": "number"
-                        },
-                        "total_item": {
-                          "type": "number"
-                        },
-                        "total_page": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/PageMetadata"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
     },
     "/api/contacts/{contactId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ContactId"
+        }
+      ],
       "get": {
+        "operationId": "getContact",
         "tags": [
           "Contact API"
         ],
-        "description": "Get contact by id",
-        "parameters": [
+        "description": "Get one contact owned by the authenticated user.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "responses": {
           "200": {
-            "description": "Success get contact",
+            "description": "Contact detail.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "first_name": {
-                          "type": "string"
-                        },
-                        "last_name": {
-                          "type": "string"
-                        },
-                        "email": {
-                          "type": "string"
-                        },
-                        "phone": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/ContactResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "put": {
+        "operationId": "updateContact",
         "tags": [
           "Contact API"
         ],
-        "description": "Update contact by id",
-        "parameters": [
+        "description": "Replace a contact. `first_name` is required; the other fields may be empty.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "first_name": {
-                    "type": "string"
-                  },
-                  "last_name": {
-                    "type": "string"
-                  },
-                  "email": {
-                    "type": "string"
-                  },
-                  "phone": {
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/components/schemas/UpdateContactRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Success update contact",
+            "description": "Updated contact.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "first_name": {
-                          "type": "string"
-                        },
-                        "last_name": {
-                          "type": "string"
-                        },
-                        "email": {
-                          "type": "string"
-                        },
-                        "phone": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/ContactResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "delete": {
+        "operationId": "deleteContact",
         "tags": [
           "Contact API"
         ],
-        "description": "Delete contact by id",
-        "parameters": [
+        "description": "Delete a contact owned by the authenticated user.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "responses": {
           "200": {
-            "description": "Success delete contact",
+            "description": "Deleted.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "example": true
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
     },
     "/api/contacts/{contactId}/addresses": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ContactId"
+        }
+      ],
       "post": {
+        "operationId": "createAddress",
         "tags": [
           "Address API"
         ],
-        "description": "Create new address",
-        "parameters": [
+        "description": "Create an address under a contact owned by the authenticated user.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "street": {
-                    "type": "string"
-                  },
-                  "city": {
-                    "type": "string"
-                  },
-                  "province": {
-                    "type": "string"
-                  },
-                  "country": {
-                    "type": "string"
-                  },
-                  "postal_code": {
-                    "type": "string"
-                  }
-                }
+                "$ref": "#/components/schemas/CreateAddressRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Success create new address",
+            "description": "Address created.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "street": {
-                          "type": "string"
-                        },
-                        "city": {
-                          "type": "string"
-                        },
-                        "province": {
-                          "type": "string"
-                        },
-                        "country": {
-                          "type": "string"
-                        },
-                        "postal_code": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/AddressResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "get": {
+        "operationId": "listAddresses",
         "tags": [
           "Address API"
         ],
-        "description": "Get all addresses",
-        "parameters": [
+        "description": "List all addresses of a contact owned by the authenticated user.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "responses": {
           "200": {
-            "description": "Success get list of addresses",
+            "description": "Addresses.",
             "content": {
               "application/json": {
                 "schema": {
@@ -793,170 +626,919 @@
                     "data": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "id": {
-                            "type": "string"
-                          },
-                          "street": {
-                            "type": "string"
-                          },
-                          "city": {
-                            "type": "string"
-                          },
-                          "province": {
-                            "type": "string"
-                          },
-                          "country": {
-                            "type": "string"
-                          },
-                          "postal_code": {
-                            "type": "string"
-                          },
-                          "created_at": {
-                            "type": "number"
-                          },
-                          "updated_at": {
-                            "type": "number"
-                          }
-                        }
+                        "$ref": "#/components/schemas/AddressResponse"
                       }
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       }
     },
     "/api/contacts/{contactId}/addresses/{addressId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/ContactId"
+        },
+        {
+          "$ref": "#/components/parameters/AddressId"
+        }
+      ],
       "get": {
+        "operationId": "getAddress",
         "tags": [
           "Address API"
         ],
-        "description": "Get address by id",
-        "parameters": [
+        "description": "Get one address of a contact owned by the authenticated user.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "addressId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
         "responses": {
           "200": {
-            "description": "Success create new address",
+            "description": "Address detail.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "street": {
-                          "type": "string"
-                        },
-                        "city": {
-                          "type": "string"
-                        },
-                        "province": {
-                          "type": "string"
-                        },
-                        "country": {
-                          "type": "string"
-                        },
-                        "postal_code": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
-                      }
+                      "$ref": "#/components/schemas/AddressResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
       "put": {
+        "operationId": "updateAddress",
         "tags": [
           "Address API"
         ],
-        "description": "Update address by id",
+        "description": "Replace an address. All address fields are optional.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAddressRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AddressResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAddress",
+        "tags": [
+          "Address API"
+        ],
+        "description": "Delete an address from a contact owned by the authenticated user.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "boolean",
+                      "example": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/location": {
+      "get": {
+        "operationId": "getLocation",
+        "tags": [
+          "Location API"
+        ],
+        "description": "Get the authenticated user's last heartbeat from Redis GEO plus the `last_seen` timestamp. Returns `404` when the user has never sent one. `stale` is `true` when `last_seen` is missing or older than 2 minutes (the same threshold used for SOS fan-out).",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Last known location.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/LocationStatusResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateLocation",
+        "tags": [
+          "Location API"
+        ],
+        "description": "Send a location heartbeat. Coordinates are written to Redis GEO (`users:locations`) and the last-seen timestamp to `users:last_seen`. The same heartbeat upserts one historical row per user into MySQL `locations`. Users older than 2 minutes are excluded from SOS fan-out and the nearby endpoint, so clients should call this at least every 2 minutes while active.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLocationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Heartbeat accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "boolean",
+                      "example": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/location/nearby": {
+      "get": {
+        "operationId": "listNearbyResponders",
+        "tags": [
+          "Location API"
+        ],
+        "description": "List active users within `radius_m` of the authenticated user's last heartbeat. The requester must have a heartbeat (`404` otherwise). The requester and users whose `last_seen` is older than 2 minutes are excluded. Results are capped at 50, nearest first, and coordinates are rounded to ~100 m (`masked: true`) so the endpoint never exposes a precise home/office position.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
         "parameters": [
           {
-            "name": "Authorization",
+            "name": "radius_m",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "minimum": 100,
+              "maximum": 5000,
+              "default": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nearby active users.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/NearbyLocationResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos": {
+      "post": {
+        "operationId": "triggerSOS",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Trigger an SOS incident. The request body is optional: when coordinates are omitted, the sender's last Redis GEO position is used.\n\n- `X-Idempotency-Key` deduplicates retried submissions for 5 minutes.\n- Rate limit: max 3 triggers per user per hour (HTTP 429 beyond that).\n- `description` feeds optional AI triage (fail-open). `emergency_type` sent explicitly wins over the classifier.\n- The response returns `201 Created`.\n\nRecipients are chosen from nearby active users with adaptive radius (1/2/5 km, capped at 50) plus the sender's emergency contacts.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-Idempotency-Key",
             "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "addressId",
-            "in": "path",
-            "required": true,
+            "required": false,
+            "description": "Client-generated UUID used to deduplicate retries.",
             "schema": {
               "type": "string"
             }
           }
         ],
         "requestBody": {
+          "required": false,
           "content": {
             "application/json": {
               "schema": {
+                "$ref": "#/components/schemas/TriggerSOSRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Incident triggered.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SOSCreatedResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/active": {
+      "get": {
+        "operationId": "listActiveAlerts",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "List the authenticated user's active incidents (status `TRIGGERED` or `ACKNOWLEDGED`). Useful for cold-start sync.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active incidents.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AlertDetailResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/inbox": {
+      "get": {
+        "operationId": "listAlertInbox",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Responder inbox: incidents for which a push notification was delivered to the authenticated user.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incidents pushed to this user.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AlertDetailResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "get": {
+        "operationId": "getAlert",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Get incident detail. Any authenticated user may fetch it, but coordinates are masked (~100 m) unless the requester is the sender or a recorded responder; `masked` is `true` when masking applies.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incident detail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AlertDetailResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/cancel": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "post": {
+        "operationId": "cancelAlert",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Cancel a false alarm. Requires the authenticated sender's 4-digit safe PIN (`PATCH /api/users/_current` with `safe_pin`).",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelSOSRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Incident cancelled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CancelSOSResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/acknowledge": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "post": {
+        "operationId": "acknowledgeAlert",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Move an incident from `TRIGGERED` to `ACKNOWLEDGED`. Any authenticated user who knows the alert id can acknowledge; acknowledging an already acknowledged incident is idempotent. The returned detail is built from the caller's perspective: coordinates are masked unless the caller is the sender or a recorded responder.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incident acknowledged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AlertDetailResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/resolve": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "post": {
+        "operationId": "resolveAlert",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Resolve an incident. Only the sender may resolve it.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incident resolved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AlertDetailResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/respond": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "post": {
+        "operationId": "respondToAlert",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Respond to an incident as an authenticated user other than the sender. The backend computes distance and ETA from the responder's coordinates to the victim, records the response, and moves a `TRIGGERED` incident to `ACKNOWLEDGED`.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RespondSOSRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Response recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RespondSOSResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/breadcrumbs": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "get": {
+        "operationId": "listBreadcrumbs",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "List the recorded trajectory of an incident (sender or responder).",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Breadcrumb trail.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/BreadcrumbResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createBreadcrumb",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Append one position to the incident trajectory. Only the sender can add breadcrumbs to an active incident. The equivalent WebSocket frame reports/broadcasts the same data live.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BreadcrumbRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Breadcrumb stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BreadcrumbResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/media": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        }
+      ],
+      "get": {
+        "operationId": "listAlertMedia",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "List media uploaded for an incident (sender or responder).",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Media records.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AlertMediaResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "uploadAlertMedia",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend; the response `url` is the authenticated download path.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
                 "type": "object",
+                "required": [
+                  "file"
+                ],
                 "properties": {
-                  "street": {
-                    "type": "string"
-                  },
-                  "city": {
-                    "type": "string"
-                  },
-                  "province": {
-                    "type": "string"
-                  },
-                  "country": {
-                    "type": "string"
-                  },
-                  "postal_code": {
-                    "type": "string"
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
                   }
                 }
               }
@@ -965,94 +1547,1123 @@
         },
         "responses": {
           "200": {
-            "description": "Success create new address",
+            "description": "Media stored.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string"
-                        },
-                        "street": {
-                          "type": "string"
-                        },
-                        "city": {
-                          "type": "string"
-                        },
-                        "province": {
-                          "type": "string"
-                        },
-                        "country": {
-                          "type": "string"
-                        },
-                        "postal_code": {
-                          "type": "string"
-                        },
-                        "created_at": {
-                          "type": "number"
-                        },
-                        "updated_at": {
-                          "type": "number"
-                        }
+                      "$ref": "#/components/schemas/AlertMediaResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "412": {
+            "$ref": "#/components/responses/PreconditionFailed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/{alertId}/media/{mediaId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/AlertId"
+        },
+        {
+          "name": "mediaId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "downloadAlertMedia",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Stream one media file (sender or responder). Success returns the raw file bytes with the original `Content-Type` and an inline `Content-Disposition`, not a JSON envelope.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw media bytes.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/emergency-contacts": {
+      "get": {
+        "operationId": "listEmergencyContacts",
+        "tags": [
+          "Emergency Contact API"
+        ],
+        "description": "List the authenticated user's Tier-1 emergency contacts. These are separate from the generic contacts used by the Contact API.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Emergency contacts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/EmergencyContactResponse"
                       }
                     }
                   }
                 }
               }
             }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
           }
         }
       },
-      "delete": {
+      "post": {
+        "operationId": "createEmergencyContact",
         "tags": [
-          "Address API"
+          "Emergency Contact API"
         ],
-        "description": "Delete address by id",
-        "parameters": [
+        "description": "Create a Tier-1 emergency contact. The backend SMS/voice fallback uses this list.",
+        "security": [
           {
-            "name": "Authorization",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "contactId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "addressId",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
+            "RawToken": []
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEmergencyContactRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
-            "description": "Success create new address",
+            "description": "Emergency contact created.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "boolean"
+                      "$ref": "#/components/schemas/EmergencyContactResponse"
                     }
                   }
                 }
               }
             }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "getMetrics",
+        "tags": [
+          "Observability"
+        ],
+        "description": "Prometheus metrics in text exposition format. Guest endpoint. Includes `sos_dispatch_latency_ms`, `push_delivery_failures_total`, and `active_sos_count`.",
+        "responses": {
+          "200": {
+            "description": "Prometheus text format.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "RawToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Raw session token returned by POST /api/users/_login. Do not add a `Bearer ` prefix."
+      }
+    },
+    "parameters": {
+      "ContactId": {
+        "name": "contactId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "AddressId": {
+        "name": "addressId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "AlertId": {
+        "name": "alertId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid JSON, missing/invalid field, or invalid path id.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing/invalid `Authorization` token or wrong credentials/PIN.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Authenticated user is not allowed to perform this action.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource does not exist or is not owned by the authenticated user.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Duplicate resource or invalid alert status transition.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "PreconditionFailed": {
+        "description": "Required precondition is not configured (safe PIN or media storage).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "SOS rate limit exceeded (max 3 triggers per hour).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Unexpected server or dependency failure.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "string",
+            "example": "Not Found"
+          }
+        }
+      },
+      "RegisterUserRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "password"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 100
+          }
+        }
+      },
+      "LoginUserRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "password"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 100
+          }
+        }
+      },
+      "UpdateUserRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "safe_pin": {
+            "type": "string",
+            "description": "4-digit numeric PIN. Stored as a bcrypt hash.",
+            "pattern": "^[0-9]{4}$"
+          },
+          "fcm_token": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "apns_token": {
+            "type": "string",
+            "maxLength": 255
+          }
+        }
+      },
+      "UserResponse": {
+        "type": "object",
+        "description": "Profile fields. `token` is only present in the login response; other fields are omitted when empty.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch milliseconds."
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch milliseconds."
+          }
+        }
+      },
+      "PageMetadata": {
+        "type": "object",
+        "properties": {
+          "page": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "total_item": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_page": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CreateContactRequest": {
+        "type": "object",
+        "required": [
+          "first_name"
+        ],
+        "properties": {
+          "first_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 200
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20
+          }
+        }
+      },
+      "UpdateContactRequest": {
+        "type": "object",
+        "required": [
+          "first_name"
+        ],
+        "properties": {
+          "first_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "last_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 200
+          },
+          "phone": {
+            "type": "string",
+            "maxLength": 20
+          }
+        }
+      },
+      "ContactResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "first_name": {
+            "type": "string"
+          },
+          "last_name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "addresses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AddressResponse"
+            }
+          }
+        }
+      },
+      "CreateAddressRequest": {
+        "type": "object",
+        "properties": {
+          "street": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "province": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "country": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "postal_code": {
+            "type": "string",
+            "maxLength": 10
+          }
+        }
+      },
+      "UpdateAddressRequest": {
+        "type": "object",
+        "properties": {
+          "street": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "province": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "country": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "postal_code": {
+            "type": "string",
+            "maxLength": 10
+          }
+        }
+      },
+      "AddressResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "street": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "province": {
+            "type": "string"
+          },
+          "postal_code": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LocationStatusResponse": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "latitude": {
+            "type": "number",
+            "format": "double"
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double"
+          },
+          "last_seen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch milliseconds; 0 when the timestamp is unavailable."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "True when last_seen is missing or older than 2 minutes."
+          }
+        }
+      },
+      "NearbyResponder": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Rounded to 3 decimal degrees (~100 m)."
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "Rounded to 3 decimal degrees (~100 m)."
+          },
+          "distance_m": {
+            "type": "integer",
+            "description": "Distance from the requester in meters."
+          },
+          "last_seen": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "NearbyLocationResponse": {
+        "type": "object",
+        "properties": {
+          "radius_m": {
+            "type": "number"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "masked": {
+            "type": "boolean",
+            "example": true
+          },
+          "responders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NearbyResponder"
+            }
+          }
+        }
+      },
+      "UpdateLocationRequest": {
+        "type": "object",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -85.05,
+            "maximum": 85.05
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -180,
+            "maximum": 180
+          }
+        }
+      },
+      "TriggerSOSRequest": {
+        "type": "object",
+        "description": "All fields are optional. Coordinates fall back to the sender's last Redis GEO position.",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -85.05,
+            "maximum": 85.05
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "accuracy_meters": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0
+          },
+          "battery_percentage": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "emergency_type": {
+            "type": "string",
+            "enum": [
+              "DANGER",
+              "MEDICAL",
+              "ACCIDENT"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Free text fed to optional AI triage."
+          }
+        }
+      },
+      "TriageInfo": {
+        "type": "object",
+        "properties": {
+          "emergency_type": {
+            "type": "string",
+            "enum": [
+              "DANGER",
+              "MEDICAL",
+              "ACCIDENT"
+            ]
+          },
+          "severity": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "SOSCreatedResponse": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "TRIGGERED",
+              "ACKNOWLEDGED",
+              "RESOLVED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          },
+          "grace_period_seconds": {
+            "type": "integer"
+          },
+          "recipients_notified": {
+            "type": "integer"
+          },
+          "triggered_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "triage": {
+            "$ref": "#/components/schemas/TriageInfo"
+          }
+        }
+      },
+      "CancelSOSRequest": {
+        "type": "object",
+        "required": [
+          "pin"
+        ],
+        "properties": {
+          "pin": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "FALSE_ALARM",
+              "ACCIDENTAL",
+              "SAFE_NOW",
+              "TEST"
+            ]
+          }
+        }
+      },
+      "CancelSOSResponse": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "CANCELLED"
+            ]
+          },
+          "cancelled_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "RespondSOSRequest": {
+        "type": "object",
+        "required": [
+          "responder_latitude",
+          "responder_longitude"
+        ],
+        "properties": {
+          "responder_latitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -85.05,
+            "maximum": 85.05
+          },
+          "responder_longitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -180,
+            "maximum": 180
+          }
+        }
+      },
+      "RespondSOSResponse": {
+        "type": "object",
+        "properties": {
+          "response_id": {
+            "type": "string"
+          },
+          "eta_seconds": {
+            "type": "integer"
+          },
+          "victim_distance_meters": {
+            "type": "integer"
+          }
+        }
+      },
+      "BreadcrumbRequest": {
+        "type": "object",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -85.05,
+            "maximum": 85.05
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "speed_mps": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0
+          },
+          "heading_deg": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0,
+            "maximum": 360
+          },
+          "altitude_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "accuracy_meters": {
+            "type": "number",
+            "format": "double",
+            "minimum": 0
+          },
+          "battery_percentage": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          }
+        }
+      },
+      "BreadcrumbResponse": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double"
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double"
+          },
+          "speed_mps": {
+            "type": "number",
+            "format": "double"
+          },
+          "heading_deg": {
+            "type": "number",
+            "format": "double"
+          },
+          "altitude_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "accuracy_meters": {
+            "type": "number",
+            "format": "double"
+          },
+          "battery_percentage": {
+            "type": "integer"
+          },
+          "recorded_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Epoch milliseconds."
+          }
+        }
+      },
+      "LocationPoint": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double"
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AlertDetailResponse": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "string"
+          },
+          "sender": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "TRIGGERED",
+              "ACKNOWLEDGED",
+              "RESOLVED",
+              "CANCELLED",
+              "EXPIRED"
+            ]
+          },
+          "emergency_type": {
+            "type": "string",
+            "enum": [
+              "DANGER",
+              "MEDICAL",
+              "ACCIDENT"
+            ]
+          },
+          "severity": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "summary": {
+            "type": "string"
+          },
+          "initial_location": {
+            "$ref": "#/components/schemas/LocationPoint"
+          },
+          "latest_location": {
+            "$ref": "#/components/schemas/LocationPoint"
+          },
+          "masked": {
+            "type": "boolean",
+            "description": "True when coordinates are rounded (~100 m) for a viewer who is neither sender nor responder."
+          },
+          "responders_en_route": {
+            "type": "integer"
+          },
+          "triggered_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "resolved_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cancelled_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "breadcrumbs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BreadcrumbResponse"
+            }
+          }
+        }
+      },
+      "AlertMediaResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "alert_id": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "uploaded_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "url": {
+            "type": "string",
+            "description": "Authenticated download path; send the raw token in the Authorization header."
+          }
+        }
+      },
+      "CreateEmergencyContactRequest": {
+        "type": "object",
+        "required": [
+          "contact_name",
+          "phone_number",
+          "relationship"
+        ],
+        "properties": {
+          "contact_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "phone_number": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "relationship": {
+            "type": "string",
+            "maxLength": 50
+          }
+        }
+      },
+      "EmergencyContactResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "contact_name": {
+            "type": "string"
+          },
+          "phone_number": {
+            "type": "string"
+          },
+          "relationship": {
+            "type": "string"
+          },
+          "is_verified": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       }

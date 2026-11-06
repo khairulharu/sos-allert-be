@@ -185,6 +185,10 @@ func (l *memLocation) GeoSearch(ctx context.Context, lng, lat, radius float64) (
 	return []string{"user-b"}, nil
 }
 
+func (l *memLocation) GeoSearchWithDistance(ctx context.Context, lng, lat, radius float64, count int) ([]entity.GeoLocation, error) {
+	return nil, nil
+}
+
 func (l *memLocation) GetLastSeen(ctx context.Context, userID string) (int64, error) {
 	return time.Now().UnixMilli() - 1000, nil
 }

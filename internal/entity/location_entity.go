@@ -15,6 +15,15 @@ type LocationCache struct {
 	Latitude  float64
 }
 
+// GeoLocation is one result of a radius search: the user id, their
+// position, and the distance from the search center in meters.
+type GeoLocation struct {
+	UserId         string
+	Longitude      float64
+	Latitude       float64
+	DistanceMeters float64
+}
+
 func (c *Location) TableName() string {
 	return "locations"
 }

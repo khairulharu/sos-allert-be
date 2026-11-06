@@ -80,6 +80,41 @@ func (l *LocationCacheRepository) GeoSearch(ctx context.Context, longitude float
 	return userIDs, nil
 }
 
+// GeoSearchWithDistance returns positions and distances for a radius
+// search, sorted nearest first. Used by GET /api/location/nearby.
+func (l *LocationCacheRepository) GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error) {
+	query := &redis.GeoSearchLocationQuery{
+		GeoSearchQuery: redis.GeoSearchQuery{
+			Longitude:  longitude,
+			Latitude:   latitude,
+			Radius:     radiusMeters,
+			RadiusUnit: "m",
+			Sort:       "ASC",
+		},
+		WithCoord: true,
+		WithDist:  true,
+	}
+	if count > 0 {
+		query.Count = count
+	}
+
+	results, err := l.Client.GeoSearchLocation(ctx, userLocationKey, query).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis geosearch location: %w", err)
+	}
+
+	out := make([]entity.GeoLocation, 0, len(results))
+	for _, result := range results {
+		out = append(out, entity.GeoLocation{
+			UserId:         result.Name,
+			Longitude:      result.Longitude,
+			Latitude:       result.Latitude,
+			DistanceMeters: result.Dist,
+		})
+	}
+	return out, nil
+}
+
 func (l *LocationCacheRepository) Delete(ctx context.Context, userId string) (bool, error) {
 	if err := l.Client.ZRem(ctx, userLocationKey, userId).Err(); err != nil {
 		return false, fmt.Errorf("redis zrem: %w", err)
