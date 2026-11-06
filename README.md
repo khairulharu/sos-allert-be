@@ -242,6 +242,16 @@ Server -> Responders (perubahan status, tanpa perlu polling):
   "status": "RESOLVED",   // ACKNOWLEDGED | RESOLVED | CANCELLED
   "updated_at": 1730304075000
 }
+
+Server -> Sender/Responders (triage dari audio yang baru ditranskrip):
+{
+  "type": "ALERT_TRIAGE",
+  "alert_id": "alt_01HXYZ...",
+  "emergency_type": "MEDICAL",
+  "severity": 0.8,
+  "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
+  "updated_at": 1730304075000
+}
 ```
 
 #### 3. Responder Coordination
@@ -311,6 +321,9 @@ Frontend merekam 10 detik audio setelah alert aktif, lalu mengirim satu file
 STT/triage fail-open: kalau provider error, media tetap tersimpan dengan
 `transcription_status: "failed"`; upload tidak gagal. Nilai status:
 `disabled`, `too_large`, `completed`, `empty`, `failed`.
+
+**API key Groq** ditempel di `backend/config.json` → `ai.stt.api_key`
+(nilai `gsk_...`), bukan di frontend. Set `ai.stt.enabled: true`.
 
 | Provider STT | `ai.stt.provider` | Key |
 |---|---|---|
