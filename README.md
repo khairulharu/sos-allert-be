@@ -117,7 +117,7 @@ sequenceDiagram
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
 | `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
 | `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50. `users:last_seen` dibaca satu `HMGET` per request (bukan `HGET` per kandidat) |
-| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam — matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi |
+| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit per jam default 3 → `sos.rate_limit_per_hour`, matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi |
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
 | `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
@@ -546,7 +546,7 @@ Semua migrasi sudah diterapkan di DB development saat ini (versi
 - **Redis GEO** (`users:locations`): Menyimpan geospatial coordinates semua user aktif. Format data: Member = `userId`, Value = `(longitude, latitude)`.
 - **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. User yang offline/inaktif $> 2$ menit difilter dari broadcast SOS dan `GET /api/location/nearby` (bukan dihapus).
 - **Redis Key Value** (`idempotency:sos:{key}`): TTL 5 menit untuk deduplikasi request pengiriman SOS.
-- **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, max 3 trigger SOS per jam per user. `sos.rate_limit_disabled: true` melewati pemeriksaan ini (idempotency & grace period tetap jalan).
+- **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, `sos.rate_limit_per_hour` trigger SOS per jam per user (default 3). `sos.rate_limit_disabled: true` melewati pemeriksaan ini (idempotency & grace period tetap jalan).
 - **Redis Sorted Set** (`ratelimit:auth:{ip}`): sliding window 5 percobaan auth per menit per IP.
 - **Redis Key Value** (`lockout:auth:{ip}`): TTL 15 menit setelah limit auth terlampaui.
 - **MySQL** (`locations` table): Satu baris histori per user (unique `user_id`), di-upsert pada setiap `PUT /api/location`. Dipakai untuk audit/riwayat, bukan untuk pencarian radius real-time.

@@ -195,7 +195,7 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		if err != nil {
 			u.Log.WithError(err).Warn("rate limiter unavailable, proceeding")
 		} else if !allowed {
-			return nil, model.ErrRateLimited
+			return nil, fmt.Errorf("%w: max %d triggers per hour", model.ErrRateLimited, u.Deps.RateLimitPerHour)
 		}
 	}
 

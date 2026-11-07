@@ -14,7 +14,7 @@ var (
 	ErrInvalidTransition    = errors.New("invalid alert status transition")
 	ErrInvalidPIN           = errors.New("invalid safe PIN")
 	ErrPINNotConfigured     = errors.New("safe PIN is not configured for this user")
-	ErrRateLimited          = errors.New("SOS rate limit exceeded: max 3 triggers per hour")
+	ErrRateLimited          = errors.New("SOS rate limit exceeded")
 	ErrNotAlertOwner        = errors.New("only the alert sender can perform this action")
 	ErrNotAlertParticipant  = errors.New("only the sender or a responder can view this alert")
 	ErrDuplicateResponse    = errors.New("responder has already responded to this alert")

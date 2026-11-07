@@ -174,7 +174,7 @@ Detail trigger:
   `emergency_type` (`DANGER|MEDICAL|ACCIDENT`), `description`, dan opsional
   `severity` (0–1) + `summary` dari `POST /api/sos/classify`.
 - Header `X-Idempotency-Key` mencegah duplikasi saat retry (TTL 5 menit).
-- Rate limit: maksimal **3 trigger per user per jam**; lebih dari itu `429`. Bisa dimatikan di backend dengan `sos.rate_limit_disabled: true` (default `false`).
+- Rate limit: `sos.rate_limit_per_hour` trigger per user per jam (default **3**); lebih dari itu `429` dengan pesan yang menyebut limit aktif. Bisa dimatikan di backend dengan `sos.rate_limit_disabled: true` (default `false`).
 - `description` dipakai AI triage opsional (fail-open). `emergency_type`,
   `severity`, dan `summary` eksplisit menang atas hasil klasifikasi.
 - Radius fan-out adaptif 1/2/5 km, maksimal 50 penerima, ditambah emergency contacts.

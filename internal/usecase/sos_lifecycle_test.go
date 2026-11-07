@@ -204,9 +204,13 @@ func TestTriggerSOSIdempotencyReplay(t *testing.T) {
 func TestTriggerSOSRateLimited(t *testing.T) {
 	uc, _, alertRepo, notifier := triggerSetup(t)
 	uc.Deps.RateLimiter = &fakeRateLimiter{allow: false}
+	uc.Deps.RateLimitPerHour = 10
 	_, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
 	if !errors.Is(err, model.ErrRateLimited) {
 		t.Fatalf("error = %v, want ErrRateLimited", err)
+	}
+	if !strings.Contains(err.Error(), "max 10 triggers per hour") {
+		t.Fatalf("error = %q, want the configured limit in the message", err)
 	}
 	if alertRepo.createCalled || notifier.notifyCalled {
 		t.Fatal("rate-limited trigger must not create or notify")
