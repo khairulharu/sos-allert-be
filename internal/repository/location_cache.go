@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -46,6 +47,35 @@ func (l *LocationCacheRepository) GetLastSeen(ctx context.Context, userId string
 		return 0, fmt.Errorf("redis hget last_seen %s: %w", userId, err)
 	}
 	return val, nil
+}
+
+// GetLastSeenBatch reads the last_seen timestamp for many users in one
+// Redis round trip (HMGET). Callers that filter a candidate list use it
+// instead of one GetLastSeen per candidate. Users with no stored
+// heartbeat are simply absent from the result map.
+func (l *LocationCacheRepository) GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(userIds))
+	if len(userIds) == 0 {
+		return out, nil
+	}
+	values, err := l.Client.HMGet(ctx, userLastSeenKey, userIds...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("redis hmget last_seen: %w", err)
+	}
+	for i, value := range values {
+		if value == nil {
+			continue
+		}
+		switch v := value.(type) {
+		case int64:
+			out[userIds[i]] = v
+		case string:
+			if parsed, err := strconv.ParseInt(v, 10, 64); err == nil {
+				out[userIds[i]] = parsed
+			}
+		}
+	}
+	return out, nil
 }
 
 func (l *LocationCacheRepository) Get(ctx context.Context, userId string) (*entity.LocationCache, error) {

@@ -139,14 +139,31 @@ func (l *LocationUsecase) ListNearby(ctx context.Context, userId string, radiusM
 		return nil, fiber.ErrInternalServerError
 	}
 
+	// last_seen is read in one HMGET instead of one HGET per candidate:
+	// the per-candidate version cost a full Redis round trip per user
+	// (~50 round trips for a full 50-responder payload).
+	candidates := make([]string, 0, len(results))
+	for _, result := range results {
+		if result.UserId != userId {
+			candidates = append(candidates, result.UserId)
+		}
+	}
+	lastSeenByUser, err := l.LocationCacheRepository.GetLastSeenBatch(ctx, candidates)
+	if err != nil {
+		// Same degradation as before: candidates whose freshness is
+		// unknown are dropped rather than failing the whole response.
+		l.Log.Warnf("Failed to read last_seen batch: %+v", err)
+		lastSeenByUser = nil
+	}
+
 	now := time.Now().UnixMilli()
 	responders := make([]model.NearbyResponder, 0, len(results))
 	for _, result := range results {
 		if result.UserId == userId {
 			continue
 		}
-		lastSeen, err := l.LocationCacheRepository.GetLastSeen(ctx, result.UserId)
-		if err != nil || lastSeen == 0 || now-lastSeen > staleThreshold {
+		lastSeen, ok := lastSeenByUser[result.UserId]
+		if !ok || lastSeen == 0 || now-lastSeen > staleThreshold {
 			continue
 		}
 

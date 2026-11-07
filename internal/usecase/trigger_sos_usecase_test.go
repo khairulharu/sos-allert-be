@@ -42,6 +42,11 @@ type fakeLocationRepository struct {
 	radii          []float64
 	geoSearchCalls int
 	saved          []*entity.LocationCache
+
+	// GetLastSeen call counters: batching means single calls must stay at
+	// zero for the nearby list and the SOS fan-out.
+	lastSeenSingleCalls int
+	lastSeenBatchCalls  int
 }
 
 func (f *fakeLocationRepository) Get(ctx context.Context, userId string) (*entity.LocationCache, error) {
@@ -85,6 +90,7 @@ func (f *fakeLocationRepository) GeoSearchWithDistance(ctx context.Context, long
 }
 
 func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string) (int64, error) {
+	f.lastSeenSingleCalls++
 	if f.lastSeenMs == nil {
 		return 0, errors.New("last_seen not found")
 	}
@@ -93,6 +99,17 @@ func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string)
 		return 0, errors.New("last_seen not found")
 	}
 	return ts, nil
+}
+
+func (f *fakeLocationRepository) GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error) {
+	f.lastSeenBatchCalls++
+	out := make(map[string]int64, len(userIds))
+	for _, id := range userIds {
+		if ts, ok := f.lastSeenMs[id]; ok {
+			out[id] = ts
+		}
+	}
+	return out, nil
 }
 
 // fakeAlertRepository satisfies AlertStore with in-memory state.
@@ -454,6 +471,18 @@ func TestTriggerSOSUseCaseExecute(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTriggerSOSFanoutReadsLastSeenInOneBatch(t *testing.T) {
+	uc, locRepo, _, _ := triggerSetup(t)
+
+	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, ""); err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	if locRepo.lastSeenBatchCalls != 1 || locRepo.lastSeenSingleCalls != 0 {
+		t.Fatalf("fan-out last_seen lookups = batch:%d single:%d, want 1/0 (no per-candidate HGET)",
+			locRepo.lastSeenBatchCalls, locRepo.lastSeenSingleCalls)
 	}
 }
 

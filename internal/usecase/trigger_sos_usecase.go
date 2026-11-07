@@ -28,6 +28,7 @@ type LocationRepository interface {
 	GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error)
 	GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error)
 	GetLastSeen(ctx context.Context, userId string) (int64, error)
+	GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error)
 }
 
 // AlertStore is the full SOS persistence surface.
@@ -488,7 +489,7 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 			return nil, 0, fmt.Errorf("search nearby users: %w", err)
 		}
 		seen := make(map[string]struct{}, len(nearby))
-		recipients = recipients[:0]
+		candidates := make([]string, 0, len(nearby))
 		for _, userID := range nearby {
 			if userID == senderID {
 				continue
@@ -497,9 +498,20 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 				continue
 			}
 			seen[userID] = struct{}{}
-			lastSeen, err := u.Deps.Location.GetLastSeen(ctx, userID)
-			if err != nil {
-				u.Log.Warnf("could not get last_seen for %s, skipping: %v", userID, err)
+			candidates = append(candidates, userID)
+		}
+		// One HMGET per radius instead of one HGET per candidate: the
+		// old loop paid a Redis round trip per nearby user.
+		lastSeenByUser, err := u.Deps.Location.GetLastSeenBatch(ctx, candidates)
+		if err != nil {
+			u.Log.Warnf("could not read last_seen batch, skipping freshness filter: %v", err)
+			lastSeenByUser = nil
+		}
+		recipients = recipients[:0]
+		for _, userID := range candidates {
+			lastSeen, ok := lastSeenByUser[userID]
+			if !ok {
+				u.Log.Warnf("no last_seen for %s, skipping", userID)
 				continue
 			}
 			if now-lastSeen > staleThreshold {

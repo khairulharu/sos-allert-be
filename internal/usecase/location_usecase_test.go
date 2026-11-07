@@ -131,6 +131,37 @@ func TestListNearbyRequiresHeartbeat(t *testing.T) {
 	}
 }
 
+func TestListNearbyReadsLastSeenInOneBatch(t *testing.T) {
+	now := time.Now().UnixMilli()
+	ids := []string{"user-2", "user-3", "user-4", "user-5"}
+	lastSeen := map[string]int64{"user-1": now}
+	nearby := make([]entity.GeoLocation, 0, len(ids))
+	for i, id := range ids {
+		nearby = append(nearby, entity.GeoLocation{
+			UserId: id, Latitude: -6.21, Longitude: 106.85, DistanceMeters: float64(i * 10),
+		})
+		lastSeen[id] = now
+	}
+	repo := &fakeLocationRepository{
+		sender:         &entity.LocationCache{UserId: "user-1"},
+		nearbyDetailed: nearby,
+		lastSeenMs:     lastSeen,
+	}
+	uc := newTestLocationUseCase(repo)
+
+	got, err := uc.ListNearby(context.Background(), "user-1", 1000)
+	if err != nil {
+		t.Fatalf("ListNearby error = %v", err)
+	}
+	if got.Count != len(ids) {
+		t.Fatalf("count = %d, want %d", got.Count, len(ids))
+	}
+	if repo.lastSeenBatchCalls != 1 || repo.lastSeenSingleCalls != 0 {
+		t.Fatalf("last_seen lookups = batch:%d single:%d, want 1/0 (no per-candidate HGET)",
+			repo.lastSeenBatchCalls, repo.lastSeenSingleCalls)
+	}
+}
+
 func TestListNearbyRejectsInvalidRadius(t *testing.T) {
 	repo := &fakeLocationRepository{sender: &entity.LocationCache{UserId: "user-1"}}
 	uc := newTestLocationUseCase(repo)

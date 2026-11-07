@@ -216,6 +216,14 @@ func (l *memLocation) GetLastSeen(ctx context.Context, userID string) (int64, er
 	return time.Now().UnixMilli() - 1000, nil
 }
 
+func (l *memLocation) GetLastSeenBatch(ctx context.Context, userIDs []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(userIDs))
+	for _, id := range userIDs {
+		out[id] = time.Now().UnixMilli() - 1000
+	}
+	return out, nil
+}
+
 type memNotifier struct{}
 
 func (memNotifier) Notify(ctx context.Context, ids []string, alert model.Alert) error { return nil }

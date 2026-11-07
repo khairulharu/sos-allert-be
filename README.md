@@ -116,7 +116,7 @@ sequenceDiagram
 | `GET` | `/api/users/_current` | ✅ | Ambil profil user saat ini |
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
 | `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
-| `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50 |
+| `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50. `users:last_seen` dibaca satu `HMGET` per request (bukan `HGET` per kandidat) |
 | `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi |
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |

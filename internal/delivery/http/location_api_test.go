@@ -53,6 +53,22 @@ func (f *fakeLocationStore) GetLastSeen(ctx context.Context, userId string) (int
 	return f.lastSeen, nil
 }
 
+func (f *fakeLocationStore) GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error) {
+	out := make(map[string]int64, len(userIds))
+	for _, id := range userIds {
+		if f.lastSeenByUser != nil {
+			if ts, ok := f.lastSeenByUser[id]; ok {
+				out[id] = ts
+			}
+			continue
+		}
+		if f.lastSeen != 0 {
+			out[id] = f.lastSeen
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeLocationStore) GeoSearch(ctx context.Context, longitude, latitude, radiusMeters float64) ([]string, error) {
 	return nil, nil
 }
