@@ -5,7 +5,8 @@
   "web": {
     "port": 3000,
     "prefork": false,
-    "proxy_header": ""
+    "proxy_header": "",
+    "trusted_proxies": []
   },
   "log": {
     "level": 4

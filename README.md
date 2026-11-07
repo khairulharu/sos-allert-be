@@ -539,11 +539,16 @@ global: **1 user salah login 5 kali → semua user lain ikut kena `429` +
 service:
 
 ```json
-"web": { "port": 3000, "prefork": false, "proxy_header": "X-Forwarded-For" }
+"web": {
+  "port": 3000,
+  "prefork": false,
+  "proxy_header": "X-Forwarded-For",
+  "trusted_proxies": ["127.0.0.1", "::1"]
+}
 ```
 
 - `cloudflared` dan nginx (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`) mengisi `X-Forwarded-For` dengan IP klien.
-- Isi **hanya** kalau app benar-benar tidak bisa diakses langsung: Fiber memakai header itu apa adanya, tanpa memeriksa apakah request datang dari proxy tepercaya. Kalau app juga bisa diakses langsung, klien bisa memalsukan IP dan lolos dari limiter.
+- Anti-spoofing: set `web.trusted_proxies` (IP/CIDR proxy yang dipercaya, mis. `[\"127.0.0.1\",\"::1\"]` untuk cloudflared/nginx di host yang sama) supaya `X-Forwarded-For` hanya dipakai kalau request datang dari alamat itu; dari luar daftar itu header diabaikan dan `ctx.IP()` memakai IP TCP asli. Tanpa `trusted_proxies`, header dipakai apa adanya (kompatibel config lama) tapi bisa dipalsukan kalau app bisa diakses langsung — backend log warning saat startup.
 - Biarkan `""` untuk dev lokal / saat app diekspos langsung.
 - Cek setelah deploy: 5 login gagal dari satu device tidak boleh memblokir device lain, dan key Redis `ratelimit:auth:<ip>` harus memuat IP klien, bukan IP proxy.
 - Tanpa section `auth`, limiter memakai default `rate_limit_per_minute: 5` dan `lockout_minutes: 15`.
@@ -570,9 +575,7 @@ go build ./... && go vet ./...
 
 ## 10. Status Implementasi & Yang Belum Live
 
-**CORS** (baru): middleware CORS aktif (branch `feat/frontend-cors`) — mengizinkan
-frontend Svelte (contoh `http://localhost:5173`) memanggil API lintas-origin, termasuk
-header `Authorization` + `X-Idempotency-Key` (raw token, tanpa `Bearer`).
+**CORS**: terkunci ke origin produksi `https://allert.my.id` + dev `http://localhost:5173` (di `internal/config/fiber.go`); header `Authorization` + `X-Idempotency-Key` diizinkan (raw token, tanpa `Bearer`). Origin lain ditolak.
 
 Yang sudah diimplementasi di branch ini (P0 + P1, lihat matriks §2):
 state machine, cancel + PIN + grace period 10 detik, query/active API,

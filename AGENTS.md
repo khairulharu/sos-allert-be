@@ -18,7 +18,7 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 
 ## Configuration / runtime
 
-- `config.json` and `ca.pem` are gitignored but required. `config.NewViper` searches `./../` then `./` and panics if absent; keep them at repo root. Never commit the live credentials in them. `config.json.example` is the committed template holding the full key set; keep it in sync when config keys change. Behind a proxy/tunnel, `web.proxy_header` (e.g. `X-Forwarded-For`) is required or the per-IP auth limiter degrades into one global bucket.
+- `config.json` and `ca.pem` are gitignored but required. `config.NewViper` searches `./../` then `./` and panics if absent; keep them at repo root. Never commit the live credentials in them. `config.json.example` is the committed template holding the full key set; keep it in sync when config keys change. Behind a proxy/tunnel, `web.proxy_header` (e.g. `X-Forwarded-For`) is required or the per-IP auth limiter degrades into one global bucket. Set `web.trusted_proxies` (IP/CIDR) so `ctx.IP()` honors `X-Forwarded-For` only from those proxies (blocks direct-access spoofing; without it the header is honored unconditionally, warned at startup). CORS is locked to `https://allert.my.id` + `http://localhost:5173` in `internal/config/fiber.go`.
 - Web startup hard-fails if MySQL or Redis is unreachable. Worker startup needs Kafka (`kafka.bootstrap.servers`, default `localhost:9092`).
 - Kafka producer is disabled by default (`kafka.producer.enabled: false`) and producers are nil-checked in use cases, so the web app runs without Kafka.
 - Persistence is MySQL (Aiven), despite README listing Supabase/PostgreSQL. Timestamps are millisecond `bigint` via GORM `autoCreateTime:milli`.
