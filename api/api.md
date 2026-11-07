@@ -154,6 +154,7 @@ belum ada, response-nya `404`. Panggil `PUT /api/location` dulu.
 | Method | Path | Auth | Kegunaan |
 |---|---|:---:|---|
 | `POST` | `/api/sos` | ✅ | Trigger SOS. Body opsional; fallback ke lokasi Redis terakhir. Response `201`. |
+| `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun; hasilnya (`emergency_type`, `severity`, `summary`) dikirim ulang di body trigger agar fan-out pertama memakai level dari suara. |
 | `GET` | `/api/sos/active` | ✅ | Insiden aktif milik user (cold start). |
 | `GET` | `/api/sos/inbox` | ✅ | Insiden yang push-nya pernah diterima user (inbox responder). |
 | `GET` | `/api/sos/{alertId}` | ✅ | Detail insiden; koordinat dimask untuk non-peserta. |
@@ -164,18 +165,22 @@ belum ada, response-nya `404`. Panggil `PUT /api/location` dulu.
 | `GET` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Riwayat posisi insiden (sender/responder). |
 | `POST` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Simpan satu titik tracking. Sender saja, insiden harus aktif. |
 | `GET` | `/api/sos/{alertId}/media` | ✅ | List media insiden (sender/responder). |
-| `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. Audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible), lalu transcript masuk triage dan response memuat `transcript`, `transcription_status`, `triage`. |
+| `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. Audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible), lalu transcript masuk triage dan response memuat `transcript`, `transcription_status`, `triage`. Kalau severity naik, fan-out diperluas ke responder baru (`escalated: true`, `recipients_added: N`). |
 | `GET` | `/api/sos/{alertId}/media/{mediaId}` | ✅ | Download/stream media (sender/responder). |
 
 Detail trigger:
 
 - Request body: `latitude`, `longitude`, `accuracy_meters`, `battery_percentage`,
-  `emergency_type` (`DANGER|MEDICAL|ACCIDENT`), `description`.
+  `emergency_type` (`DANGER|MEDICAL|ACCIDENT`), `description`, dan opsional
+  `severity` (0–1) + `summary` dari `POST /api/sos/classify`.
 - Header `X-Idempotency-Key` mencegah duplikasi saat retry (TTL 5 menit).
 - Rate limit: maksimal **3 trigger per user per jam**; lebih dari itu `429`.
-- `description` dipakai AI triage opsional (fail-open). `emergency_type` eksplisit
-  menang atas hasil klasifikasi.
+- `description` dipakai AI triage opsional (fail-open). `emergency_type`,
+  `severity`, dan `summary` eksplisit menang atas hasil klasifikasi.
 - Radius fan-out adaptif 1/2/5 km, maksimal 50 penerima, ditambah emergency contacts.
+- Klip audio yang baru ditranskrip setelah trigger dan menaikkan severity
+  memperlebar fan-out ke radius baru: hanya responder baru yang dinotifikasi,
+  tetap menunggu grace period, dan response media menandainya `escalated`.
 
 Response trigger:
 

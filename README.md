@@ -39,7 +39,7 @@ When a user in distress triggers an emergency SOS:
 | | Location read & nearby responders (`GET /api/location`, `GET /api/location/nearby`) | ✅ Done | - | Posisi terakhir + `stale`; responder aktif di radius 100–5000 m, stale > 2 menit difilter, koordinat dimask ~100 m, maks 50. |
 | | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; excludes idle users > 2 min from SOS fan-out and the nearby map. |
 | | Dynamic Adaptive Radius | ✅ Done | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
-| **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. Audio evidence ≤ 25 MB is transcribed via Groq/Whisper-compatible STT and fed into the same triage engine. |
+| **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. Audio evidence ≤ 25 MB is transcribed via Groq/Whisper-compatible STT and fed into the same triage engine. `POST /api/sos/classify` classifies a clip pre-trigger so the first fan-out can use it; a post-trigger clip that raises severity widens the fan-out to the new radius. |
 | **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
 | | SOS State Machine | ✅ Done | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
 | | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | ✅ Done | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
@@ -117,7 +117,8 @@ sequenceDiagram
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
 | `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
 | `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50 |
-| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam) |
+| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit 3/jam). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi |
+| `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
 | `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
 | `GET` | `/api/sos/:alertId` | ✅ | Detail insiden; lokasi dimask untuk viewer yang bukan sender/responder |
@@ -126,7 +127,7 @@ sequenceDiagram
 | `POST` | `/api/sos/:alertId/resolve` | ✅ | `TRIGGERED`/`ACKNOWLEDGED` → `RESOLVED` (sender saja) |
 | `POST` | `/api/sos/:alertId/respond` | ✅ | Responder menjawab, hitung ETA & jarak |
 | `GET/POST` | `/api/sos/:alertId/breadcrumbs` | ✅ | Riwayat breadcrumb / kirim satu titik tracking |
-| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible) lalu transcript masuk triage; response memuat `url`, `transcript`, `transcription_status`, `triage` |
+| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible) lalu transcript masuk triage; response memuat `url`, `transcript`, `transcription_status`, `triage`. Kalau triage audio menaikkan severity, fan-out diperluas ke radius lebih lebar: `escalated: true` + `recipients_added: N` |
 | `GET` | `/api/sos/:alertId/media` | ✅ | Daftar media insiden (sender/responder saja) |
 | `GET` | `/api/sos/:alertId/media/:mediaId` | ✅ | Stream/download media; header `Authorization`, `Content-Type` asli |
 | `WS` | `/ws/sos/:alertId/track?token=<token>` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`) |
@@ -156,7 +157,9 @@ Body:
   "accuracy_meters": 4.5,
   "battery_percentage": 18,
   "emergency_type": "DANGER", // DANGER | MEDICAL | ACCIDENT (optional; AI triage can classify it)
-  "description": "Ada orang pingsan di pantai, tidak sadar" // optional; feeds AI triage
+  "description": "Ada orang pingsan di pantai, tidak sadar", // optional; feeds AI triage
+  "severity": 0.8, // optional; hasil POST /api/sos/classify, menang atas triage deskripsi
+  "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis" // optional; ikut ke push/notifikasi
 }
 Response 201 Created:
 {
@@ -324,6 +327,57 @@ Frontend merekam 10 detik audio setelah alert aktif, lalu mengirim satu file
 STT/triage fail-open: kalau provider error, media tetap tersimpan dengan
 `transcription_status: "failed"`; upload tidak gagal. Nilai status:
 `disabled`, `too_large`, `completed`, `empty`, `failed`.
+
+### Klasifikasi audio pra-trigger (`POST /api/sos/classify`)
+
+Frontend merekam klip selama countdown 10 detik, jadi klip itu sudah ada saat
+alert dikirim. Supaya **fan-out pertama** sudah memakai level dari suara (bukan
+dari deskripsi), kirim klipnya dulu:
+
+```http
+POST /api/sos/classify
+Header: Authorization: <token>
+Content-Type: multipart/form-data  (field `file`, audio ≤ 25 MB)
+Response 200:
+{
+  "data": {
+    "emergency_type": "MEDICAL",
+    "severity": 0.8,
+    "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
+    "transcript": "ada orang pingsan tidak sadar",
+    "transcription_status": "completed"
+  }
+}
+```
+
+Endpoint ini **tidak menyimpan apa pun** (audio, media, alert). Hasilnya
+dikirim ulang di body `POST /api/sos` (`emergency_type` + `severity` +
+`summary`), dan nilai eksplisit itu menang atas triage deskripsi, sehingga
+radius adaptive (1/2/5 km) langsung mengikuti severity dari suara. Karena
+fan-out baru jalan setelah grace period 10 detik, latency STT (ratusan ms)
+terserap oleh countdown dan tidak menunda notifikasi.
+
+Error: `400` untuk non-audio / audio > 25 MB, `503` kalau `ai.stt` belum aktif
+(tidak ada key), `502` kalau provider STT gagal. Frontend boleh mengabaikannya
+dan tetap memakai triage deskripsi.
+
+### Re-fanout saat audio menaikkan severity
+
+Kalau klip baru diunggah **setelah** trigger (alur `POST /api/sos/:alertId/media`),
+transkrip bisa menaikkan severity dari level yang dipakai fan-out pertama.
+Backend memperlebar sendiri jangkauannya:
+
+- Hanya responder **baru** (di radius lebih lebar, belum pernah dicatat untuk
+  alert ini) yang dinotifikasi; penerima awal tidak di-notify ulang.
+- Notifikasi ini tetap menunggu grace period (`TRIGGERED` + 10 detik) dan
+  re-check status, jadi alert yang di-cancel di countdown tidak menyebar.
+- Kalau dispatch lewat Kafka, event `sos.dispatched` kedua dikirim dengan daftar
+  penerima tambahan saja.
+- Response upload menandai perluasan: `escalated: true`, `recipients_added: N`.
+- Kontak darurat pengirim **tidak** di-SMS dua kali (kanal push-only).
+
+Responder yang sudah menjawab level baru tetap menerima frame `ALERT_TRIAGE`
+di WebSocket tracking; mengubah tampilan sheet responder jadi tugas frontend.
 
 **API key Groq** ditempel di `backend/config.json` → `ai.stt.api_key`
 (nilai `gsk_...`), bukan di frontend. Set `ai.stt.enabled: true`.

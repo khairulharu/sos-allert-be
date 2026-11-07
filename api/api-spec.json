@@ -954,7 +954,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Trigger an SOS incident. The request body is optional: when coordinates are omitted, the sender's last Redis GEO position is used.\n\n- `X-Idempotency-Key` deduplicates retried submissions for 5 minutes.\n- Rate limit: max 3 triggers per user per hour (HTTP 429 beyond that).\n- `description` feeds optional AI triage (fail-open). `emergency_type` sent explicitly wins over the classifier.\n- The response returns `201 Created`.\n\nRecipients are chosen from nearby active users with adaptive radius (1/2/5 km, capped at 50) plus the sender's emergency contacts.",
+        "description": "Trigger an SOS incident. The request body is optional: when coordinates are omitted, the sender's last Redis GEO position is used.\n\n- `X-Idempotency-Key` deduplicates retried submissions for 5 minutes.\n- Rate limit: max 3 triggers per user per hour (HTTP 429 beyond that).\n- `description` feeds optional AI triage (fail-open). `emergency_type` sent explicitly wins over the classifier.\n- `severity`/`summary` (from `POST /api/sos/classify`) also win, so an audio-classified incident fans out with the right radius on the first wave.\n- A clip transcribed after the trigger that raises the severity widens the fan-out to the new radius; only the newly reached responders are notified.\n- The response returns `201 Created`.\n\nRecipients are chosen from nearby active users with adaptive radius (1/2/5 km, capped at 50) plus the sender's emergency contacts.",
         "security": [
           {
             "RawToken": []
@@ -1005,6 +1005,71 @@
           },
           "429": {
             "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/classify": {
+      "post": {
+        "operationId": "classifySOSAudio",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Classify a short audio clip before triggering an SOS. Nothing is persisted. The response carries the audio-derived `emergency_type`, `severity` and `summary`; send them in the `POST /api/sos` body so the first fan-out already uses the audio classification (explicit values win over the description triage, and severity selects the adaptive radius). `400` for non-audio or audio above 25 MB, `503` when `ai.stt` is not configured, `502` when the provider fails.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Audio classified. `transcription_status` may be `empty` with no triage when no speech was detected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ClassifyResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "502": {
+            "description": "The speech-to-text provider failed."
+          },
+          "503": {
+            "description": "Speech-to-text is not configured (`ai.stt.enabled` false or missing API key)."
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
@@ -1530,7 +1595,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend. Audio up to 25 MB is sent to the configured speech-to-text provider (Groq/OpenAI-compatible Whisper); the transcript feeds triage, updates the alert classification, and is returned in the response. STT/triage failures are fail-open: the media is still stored and `transcription_status` reports the outcome.",
+        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend. Audio up to 25 MB is sent to the configured speech-to-text provider (Groq/OpenAI-compatible Whisper); the transcript feeds triage, updates the alert classification, and is returned in the response. STT/triage failures are fail-open: the media is still stored and `transcription_status` reports the outcome. If the transcript raises the incident severity, the responder fan-out widens to the larger radius (only newly reached responders are notified, still respecting the trigger grace period) and the response reports `escalated`/`recipients_added`.",
         "security": [
           {
             "RawToken": []
@@ -2468,6 +2533,18 @@
             "type": "string",
             "maxLength": 1000,
             "description": "Free text fed to optional AI triage."
+          },
+          "severity": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Pre-trigger classification from POST /api/sos/classify. Wins over the description triage and selects the adaptive fan-out radius."
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Pre-trigger summary from POST /api/sos/classify; quoted in the push body."
           }
         }
       },
@@ -2490,6 +2567,40 @@
           },
           "summary": {
             "type": "string"
+          }
+        }
+      },
+      "ClassifyResponse": {
+        "type": "object",
+        "description": "Result of POST /api/sos/classify; nothing is persisted.",
+        "properties": {
+          "emergency_type": {
+            "type": "string",
+            "enum": [
+              "DANGER",
+              "MEDICAL",
+              "ACCIDENT"
+            ]
+          },
+          "severity": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "summary": {
+            "type": "string"
+          },
+          "transcript": {
+            "type": "string",
+            "description": "Speech-to-text result. Omitted when empty."
+          },
+          "transcription_status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "empty"
+            ]
           }
         }
       },
@@ -2829,6 +2940,14 @@
           },
           "triage": {
             "$ref": "#/components/schemas/TriageInfo"
+          },
+          "escalated": {
+            "type": "boolean",
+            "description": "True when the transcript raised the incident severity enough to widen the responder fan-out to a larger radius."
+          },
+          "recipients_added": {
+            "type": "integer",
+            "description": "Number of newly reached responders notified because of the escalation. Original recipients are never re-notified."
           }
         }
       },
