@@ -48,6 +48,7 @@
   "sos": {
     "grace_period_seconds": 10,
     "rate_limit_per_hour": 3,
+    "rate_limit_disabled": false,
     "max_recipients": 50
   },
   "auth": {

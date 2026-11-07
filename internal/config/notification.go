@@ -86,10 +86,14 @@ type SOSConfig struct {
 	GracePeriod      time.Duration
 	RateLimitPerHour int
 	RateLimitWindow  time.Duration
-	MaxRecipients    int
-	AdaptiveRadiiM   []float64
-	MinRecipients    int
-	ExpireAfter      time.Duration
+	// RateLimitDisabled turns the per-user trigger limit off entirely
+	// (`sos.rate_limit_disabled`). It defaults to false, so an absent
+	// key keeps the README behaviour.
+	RateLimitDisabled bool
+	MaxRecipients     int
+	AdaptiveRadiiM    []float64
+	MinRecipients     int
+	ExpireAfter       time.Duration
 }
 
 // NewSOSConfig reads the `sos` section, falling back to README defaults.
@@ -107,13 +111,14 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 		maxRecipients = 50
 	}
 	return &SOSConfig{
-		GracePeriod:      time.Duration(grace) * time.Second,
-		RateLimitPerHour: limit,
-		RateLimitWindow:  time.Hour,
-		MaxRecipients:    maxRecipients,
-		AdaptiveRadiiM:   []float64{1000, 2000, 5000},
-		MinRecipients:    3,
-		ExpireAfter:      24 * time.Hour,
+		GracePeriod:       time.Duration(grace) * time.Second,
+		RateLimitPerHour:  limit,
+		RateLimitWindow:   time.Hour,
+		RateLimitDisabled: v.GetBool("sos.rate_limit_disabled"),
+		MaxRecipients:     maxRecipients,
+		AdaptiveRadiiM:    []float64{1000, 2000, 5000},
+		MinRecipients:     3,
+		ExpireAfter:       24 * time.Hour,
 	}
 }
 

@@ -213,6 +213,19 @@ func TestTriggerSOSRateLimited(t *testing.T) {
 	}
 }
 
+func TestTriggerSOSRateLimitDisabledSkipsLimiter(t *testing.T) {
+	uc, _, alertRepo, notifier := triggerSetup(t)
+	uc.Deps.RateLimiter = &fakeRateLimiter{allow: false}
+	uc.Deps.RateLimitDisabled = true
+
+	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, ""); err != nil {
+		t.Fatalf("disabled limit must not block the trigger, got %v", err)
+	}
+	if !alertRepo.createCalled || !notifier.notifyCalled {
+		t.Fatal("trigger must create and dispatch when the limit is disabled")
+	}
+}
+
 func TestTriggerSOSRateLimiterErrorFailsOpen(t *testing.T) {
 	uc, _, alertRepo, _ := triggerSetup(t)
 	uc.Deps.RateLimiter = &fakeRateLimiter{allow: false, err: errors.New("redis down")}

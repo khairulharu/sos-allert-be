@@ -126,6 +126,8 @@ type TriggerSOSDeps struct {
 	Radii             []float64
 	RateLimitPerHour  int
 	RateLimitWindow   time.Duration
+	// RateLimitDisabled skips the per-user trigger limit entirely.
+	RateLimitDisabled bool
 	ExpireAfter       time.Duration
 }
 
@@ -187,7 +189,8 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 
 	// Anti-abuse: fail open on limiter errors (a life-safety request
 	// must not be blocked by a Redis outage), fail closed on limit hit.
-	if u.Deps.RateLimiter != nil {
+	// `RateLimitDisabled` (sos.rate_limit_disabled) skips the check.
+	if u.Deps.RateLimiter != nil && !u.Deps.RateLimitDisabled {
 		allowed, err := u.Deps.RateLimiter.Allow(ctx, senderID, u.Deps.RateLimitPerHour, u.Deps.RateLimitWindow)
 		if err != nil {
 			u.Log.WithError(err).Warn("rate limiter unavailable, proceeding")

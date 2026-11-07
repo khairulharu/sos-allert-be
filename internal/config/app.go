@@ -172,6 +172,7 @@ func Bootstrap(config *BootstrapConfig) {
 		Radii:             sosConfig.AdaptiveRadiiM,
 		RateLimitPerHour:  sosConfig.RateLimitPerHour,
 		RateLimitWindow:   sosConfig.RateLimitWindow,
+		RateLimitDisabled: sosConfig.RateLimitDisabled,
 		ExpireAfter:       sosConfig.ExpireAfter,
 	})
 
