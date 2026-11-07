@@ -1,0 +1,102 @@
+{
+  "app": {
+    "name": "sos-backend"
+  },
+  "web": {
+    "port": 3000,
+    "prefork": false,
+    "proxy_header": ""
+  },
+  "log": {
+    "level": 4
+  },
+  "database": {
+    "username": "avnadmin",
+    "password": "CHANGE_ME",
+    "host": "127.0.0.1",
+    "port": 18770,
+    "name": "defaultdb",
+    "pool": {
+      "idle": 10,
+      "max": 100,
+      "lifetime": 300
+    }
+  },
+  "redis": {
+    "addr": "127.0.0.1:15164",
+    "user": "default",
+    "pass": "CHANGE_ME",
+    "db": 0
+  },
+  "kafka": {
+    "bootstrap": {
+      "servers": "localhost:9092"
+    },
+    "group": {
+      "id": "golang-clean-architecture"
+    },
+    "auto": {
+      "offset": {
+        "reset": "earliest"
+      }
+    },
+    "producer": {
+      "enabled": false
+    }
+  },
+  "sos": {
+    "grace_period_seconds": 10,
+    "rate_limit_per_hour": 3,
+    "max_recipients": 50
+  },
+  "auth": {
+    "rate_limit_per_minute": 5,
+    "lockout_minutes": 15
+  },
+  "fcm": {
+    "enabled": false,
+    "project_id": "",
+    "access_token": ""
+  },
+  "apns": {
+    "enabled": false,
+    "key_id": "",
+    "team_id": "",
+    "bundle_id": "",
+    "private_key_path": "AuthKey.p8",
+    "production": false
+  },
+  "twilio": {
+    "enabled": false,
+    "account_sid": "",
+    "auth_token": "",
+    "from_number": ""
+  },
+  "storage": {
+    "backend": "local",
+    "local_dir": "./uploads"
+  },
+  "ai": {
+    "enabled": true,
+    "provider": "offline",
+    "timeout_seconds": 5,
+    "stt": {
+      "enabled": false,
+      "provider": "groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "",
+      "model": "whisper-large-v3-turbo",
+      "language": "id",
+      "timeout_seconds": 30
+    },
+    "ollama": {
+      "base_url": "http://localhost:11434",
+      "model": "llama3"
+    },
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "model": "gpt-4o-mini"
+    }
+  }
+}

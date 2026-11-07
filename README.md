@@ -58,7 +58,7 @@ When a user in distress triggers an emergency SOS:
 | | Anonymized In-Incident Comms | 🔵 Planned | **P2** | Ephemeral, masked chat or WebRTC voice channel between victim and responding volunteers. |
 | | Emergency Medical ID Card | 🔵 Planned | **P2** | Victim's blood type, allergies, medications, and emergency contacts accessible only during active SOS. |
 | **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
-| | Anti-Abuse & Rate Limiting | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. |
+| **Anti-Abuse & Rate Limiting** | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. Wajib set `web.proxy_header` kalau deploy di belakang proxy/tunnel (§9), kalau tidak limit per-IP jadi satu bucket global untuk semua user. |
 | | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
 | **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. |
 
@@ -516,70 +516,37 @@ Semua migrasi sudah diterapkan di DB development saat ini (versi
 - Redis 7+
 - Kafka (Opsional, disabled by default via config)
 
-File kredensial `config.json` dan `ca.pem` harus berada di direktori root backend (`.gitignore` diaktifkan):
-```json
-{
-  "app": { "name": "sos-backend" },
-  "web": { "port": 3000, "prefork": false, "proxy_header": "" },
-  "log": { "level": 4 },
-  "database": {
-    "username": "avnadmin",
-    "password": "...",
-    "host": "...",
-    "port": 18770,
-    "name": "defaultdb"
-  },
-  "redis": {
-    "addr": "host:15164",
-    "user": "",
-    "pass": "...",
-    "db": 0
-  },
-  "kafka": {
-    "bootstrap": { "servers": "localhost:9092" },
-    "producer": { "enabled": false }
-  },
-  "sos": {
-    "grace_period_seconds": 10,
-    "rate_limit_per_hour": 3,
-    "max_recipients": 50
-  },
-  "auth": {
-    "rate_limit_per_minute": 5,
-    "lockout_minutes": 15
-  },
-  "fcm": { "enabled": false, "project_id": "...", "access_token": "..." },
-  "apns": {
-    "enabled": false, "key_id": "...", "team_id": "...",
-    "bundle_id": "...", "private_key_path": "AuthKey.p8", "production": false
-  },
-  "twilio": {
-    "enabled": false, "account_sid": "...",
-    "auth_token": "...", "from_number": "+1..."
-  },
-  "storage": { "backend": "local", "local_dir": "./uploads" },
-  "ai": {
-    "enabled": true,
-    "provider": "offline",
-    "timeout_seconds": 5,
-    "stt": {
-      "enabled": true,
-      "provider": "groq",
-      "base_url": "https://api.groq.com/openai/v1",
-      "api_key": "gsk_...",
-      "model": "whisper-large-v3-turbo",
-      "language": "id",
-      "timeout_seconds": 30
-    },
-    "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
-    "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini" }
-  }
-}
+`config.json` dan `ca.pem` harus berada di direktori root backend; keduanya
+sudah masuk `.gitignore`, jadi jangan pernah commit kredensial aslinya. Mulai
+dari template yang di-commit:
+
+```bash
+cp config.json.example config.json   # lalu isi kredensial asli
 ```
 
-> Di belakang reverse proxy (mis. nginx/Cloudflare), set `web.proxy_header`
-> ke `X-Forwarded-For` agar rate limit auth memakai IP klien, bukan IP proxy.
-> Hanya aktifkan jika proxy memang tepercaya dan app tidak bisa diakses langsung.
+`config.json.example` memuat **seluruh** key yang dibaca kode (`app`, `web`,
+`log`, `database`, `redis`, `kafka`, `sos`, `auth`, `fcm`, `apns`, `twilio`,
+`storage`, `ai`) dengan nilai placeholder. Tambahkan key baru di sana setiap
+kali menambah setelan, supaya deploy dari nol tidak kehilangan konfigurasi.
+
+### WAJIB: `web.proxy_header` di belakang proxy / tunnel
+
+Kalau semua trafik masuk lewat proxy (Cloudflare Tunnel, nginx, Traefik, load
+balancer), backend melihat **semua klien datang dari IP proxy yang sama**.
+Rate limit auth (§2, §4) dihitung per IP klien, jadi bucket-nya jadi satu
+global: **1 user salah login 5 kali → semua user lain ikut kena `429` +
+`Retry-After` selama 15 menit.** Set header yang membawa IP klien, lalu restart
+service:
+
+```json
+"web": { "port": 3000, "prefork": false, "proxy_header": "X-Forwarded-For" }
+```
+
+- `cloudflared` dan nginx (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`) mengisi `X-Forwarded-For` dengan IP klien.
+- Isi **hanya** kalau app benar-benar tidak bisa diakses langsung: Fiber memakai header itu apa adanya, tanpa memeriksa apakah request datang dari proxy tepercaya. Kalau app juga bisa diakses langsung, klien bisa memalsukan IP dan lolos dari limiter.
+- Biarkan `""` untuk dev lokal / saat app diekspos langsung.
+- Cek setelah deploy: 5 login gagal dari satu device tidak boleh memblokir device lain, dan key Redis `ratelimit:auth:<ip>` harus memuat IP klien, bukan IP proxy.
+- Tanpa section `auth`, limiter memakai default `rate_limit_per_minute: 5` dan `lockout_minutes: 15`.
 
 ### Menjalankan Database Migration
 ```bash
