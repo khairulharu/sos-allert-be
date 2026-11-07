@@ -67,7 +67,7 @@ func TestAlertDispatcherPushCarriesTriage(t *testing.T) {
 	tokens := &fakeUserReader{users: map[string]*entity.User{
 		"user-b": {ID: "user-b", FCMToken: &deviceToken},
 	}}
-	d := NewAlertDispatcher(noopLogger(), fcm, nil, nil, tokens, nil, nil)
+	d := NewAlertDispatcher(noopLogger(), fcm, nil, nil, nil, tokens, nil, nil)
 	alert := model.Alert{
 		ID:            "a1",
 		SenderId:      "sender",
@@ -142,7 +142,7 @@ func TestAPNsJWT(t *testing.T) {
 }
 
 func TestAlertDispatcherLogFallback(t *testing.T) {
-	d := NewAlertDispatcher(noopLogger(), &FCMNotifier{}, &APNsNotifier{}, &TwilioNotifier{}, nil, nil, nil)
+	d := NewAlertDispatcher(noopLogger(), &FCMNotifier{}, &APNsNotifier{}, &TwilioNotifier{}, nil, nil, nil, nil)
 	alert := model.Alert{ID: "a1", SenderId: "sender", EmergencyType: "DANGER"}
 	if err := d.Notify(context.Background(), []string{"user-b"}, alert); err != nil {
 		t.Fatalf("unconfigured dispatcher must not fail the SOS, got %v", err)
@@ -157,7 +157,7 @@ func TestAlertDispatcherSMSFallbackOnPushFailure(t *testing.T) {
 	defer srv.Close()
 	fcm := &FCMNotifier{Enabled: true, ProjectID: "p", AccessToken: "tok", BaseURL: srv.URL, HTTPClient: srv.Client()}
 	contacts := &fakeDispatchContacts{contacts: []model.EmergencyContactResponse{{ContactName: "Ibu", PhoneNumber: "+62812"}}}
-	d := NewAlertDispatcher(noopLogger(), fcm, nil, nil, nil, contacts, nil)
+	d := NewAlertDispatcher(noopLogger(), fcm, nil, nil, nil, nil, contacts, nil)
 	alert := model.Alert{ID: "a1", SenderId: "sender", EmergencyType: "DANGER"}
 	// Twilio is nil, so SMS degrades to logging; push failure alone
 	// must not fail the SOS (the use case only logs Notify errors).
@@ -172,4 +172,43 @@ type fakeDispatchContacts struct {
 
 func (f *fakeDispatchContacts) DispatchContacts(ctx context.Context, userID string) ([]model.EmergencyContactResponse, error) {
 	return f.contacts, nil
+}
+
+func TestAlertDispatcherSendsWebPush(t *testing.T) {
+	srv, svc := testPushService(t, 0)
+	store := newFakePushStore()
+	for _, userID := range []string{"user-b", "user-c"} {
+		sub := testSubscription(t, srv.URL+"/push/"+userID)
+		sub.ID = "sub-" + userID
+		sub.UserID = userID
+		if err := store.Upsert(context.Background(), sub); err != nil {
+			t.Fatalf("seed store: %v", err)
+		}
+	}
+	web := testNotifier(t, store)
+	web.HTTPClient = srv.Client()
+
+	d := NewAlertDispatcher(noopLogger(), nil, nil, nil, web, nil, nil, nil)
+	alert := model.Alert{
+		ID:            "a1",
+		SenderId:      "sender",
+		EmergencyType: "DANGER",
+		Summary:       "Person collapsed",
+		Location:      model.LocationResponse{Latitude: -8.65, Longitude: 115.22},
+	}
+	if err := d.Notify(context.Background(), []string{"user-b", "user-c"}, alert); err != nil {
+		t.Fatalf("Notify error = %v", err)
+	}
+	requests := svc.captured()
+	if len(requests) != 2 {
+		t.Fatalf("push service got %d requests, want one per recipient (2)", len(requests))
+	}
+	for _, got := range requests {
+		if ttl := got.header.Get("TTL"); ttl != "300" {
+			t.Errorf("TTL = %q, want 300", ttl)
+		}
+		if len(got.body) == 0 {
+			t.Error("push body is empty")
+		}
+	}
 }

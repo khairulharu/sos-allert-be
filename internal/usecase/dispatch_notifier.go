@@ -40,14 +40,15 @@ type AlertDispatcher struct {
 	FCM      *FCMNotifier
 	APNs     *APNsNotifier
 	Twilio   *TwilioNotifier
+	Web      *WebPushNotifier
 	Tokens   TokenReader
 	Contacts ContactResolver
 	Metrics  SOSMetrics
 }
 
 // NewAlertDispatcher builds a dispatcher; any channel may be nil.
-func NewAlertDispatcher(log *logrus.Logger, fcm *FCMNotifier, apns *APNsNotifier, twilio *TwilioNotifier, tokens TokenReader, contacts ContactResolver, metrics SOSMetrics) *AlertDispatcher {
-	return &AlertDispatcher{Log: log, FCM: fcm, APNs: apns, Twilio: twilio, Tokens: tokens, Contacts: contacts, Metrics: metrics}
+func NewAlertDispatcher(log *logrus.Logger, fcm *FCMNotifier, apns *APNsNotifier, twilio *TwilioNotifier, web *WebPushNotifier, tokens TokenReader, contacts ContactResolver, metrics SOSMetrics) *AlertDispatcher {
+	return &AlertDispatcher{Log: log, FCM: fcm, APNs: apns, Twilio: twilio, Web: web, Tokens: tokens, Contacts: contacts, Metrics: metrics}
 }
 
 func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error {
@@ -109,6 +110,17 @@ func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, ale
 			if err := d.APNs.Send(ctx, apnsToken, title, body, alert.ID); err != nil && !errors.Is(err, ErrPushNotConfigured) {
 				pushFailed = true
 				d.Log.WithError(err).Errorf("APNs delivery failed for %s", recipientID)
+			}
+		}
+		if d.Web != nil {
+			pushAttempted = true
+			if err := d.Web.SendToUser(ctx, recipientID, title, body, data); err != nil {
+				if errors.Is(err, ErrPushNotConfigured) {
+					d.Log.Infof("[SOS] alert %s: web push not configured, log-only for %s", alert.ID, recipientID)
+				} else {
+					pushFailed = true
+					d.Log.WithError(err).Errorf("web push delivery failed for %s", recipientID)
+				}
 			}
 		}
 	}

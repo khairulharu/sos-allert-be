@@ -73,7 +73,8 @@ func RunSOSConsumer(logger *logrus.Logger, viperConfig *viper.Viper, ctx context
 		&usecase.FCMNotifier{Enabled: notificationConfig.FCMEnabled, ProjectID: notificationConfig.FCMProjectID, AccessToken: notificationConfig.FCMAccessToken},
 		&usecase.APNsNotifier{Enabled: notificationConfig.APNsEnabled, KeyID: notificationConfig.APNsKeyID, TeamID: notificationConfig.APNsTeamID, BundleID: notificationConfig.APNsBundleID, PrivateKeyPEM: notificationConfig.APNsPrivateKey, Production: notificationConfig.APNsProduction},
 		&usecase.TwilioNotifier{Enabled: notificationConfig.TwilioEnabled, AccountSID: notificationConfig.TwilioSID, AuthToken: notificationConfig.TwilioToken, FromNumber: notificationConfig.TwilioFrom},
-		nil, nil, nil)
+		// web push needs the subscription table; the worker has no DB.
+		nil, nil, nil, nil)
 	sosConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
 	sosHandler := messaging.NewSOSConsumer(logger, dispatcher)
 	messaging.ConsumeTopic(ctx, sosConsumerGroup, "sos.dispatched", logger, sosHandler.Consume)

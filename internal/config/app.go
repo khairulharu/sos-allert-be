@@ -40,6 +40,7 @@ func Bootstrap(config *BootstrapConfig) {
 	alertRepository := repository.NewAllertRepository(config.Log)
 	emergencyContactRepository := repository.NewEmergencyContactRepository(config.Log)
 	userReaderRepository := repository.NewUserReaderRepository(config.DB, config.Log)
+	pushSubscriptionRepository := repository.NewPushSubscriptionRepository(config.DB, config.Log)
 	dispatchContacts := &repository.DispatchContactRepository{DB: config.DB, Repo: emergencyContactRepository}
 	idempotencyRepository := repository.NewIdempotencyRepository(config.RedisClient)
 	rateLimitRepository := repository.NewRateLimitRepository(config.RedisClient)
@@ -65,6 +66,7 @@ func Bootstrap(config *BootstrapConfig) {
 	sosConfig := NewSOSConfig(config.Config)
 	authConfig := NewAuthConfig(config.Config)
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
+	webPushConfig := NewWebPushConfig(config.Config)
 	storageConfig := NewStorageConfig(config.Config)
 	aiConfig := NewAIConfig(config.Config)
 	sttConfig := NewSTTConfig(config.Config)
@@ -84,8 +86,19 @@ func Bootstrap(config *BootstrapConfig) {
 		Enabled: notificationConfig.TwilioEnabled, AccountSID: notificationConfig.TwilioSID,
 		AuthToken: notificationConfig.TwilioToken, FromNumber: notificationConfig.TwilioFrom,
 	}
+	// browser Web Push (VAPID): reaches signed-in browsers without FCM
+	// credentials; disabled when the key pair is missing.
+	webPushNotifier := &usecase.WebPushNotifier{
+		Enabled:         webPushConfig.Enabled,
+		VAPIDPublicKey:  webPushConfig.VAPIDPublicKey,
+		VAPIDPrivateKey: webPushConfig.VAPIDPrivateKey,
+		Subscriber:      webPushConfig.Subscriber,
+		TTLSeconds:      webPushConfig.TTLSeconds,
+		Subs:            pushSubscriptionRepository,
+		Log:             config.Log,
+	}
 	dispatcher := usecase.NewAlertDispatcher(config.Log, fcmNotifier, apnsNotifier, twilioNotifier,
-		userReaderRepository, dispatchContacts, appMetrics)
+		webPushNotifier, userReaderRepository, dispatchContacts, appMetrics)
 
 	// media storage: local disk by default; S3 is not wired yet, so a
 	// non-local backend disables uploads with a clear error.
@@ -169,6 +182,9 @@ func Bootstrap(config *BootstrapConfig) {
 	locationController := http.NewLocationController(locationUseCase, config.Log)
 	sosController := http.NewSOSController(triggerSOSUseCase, config.Log)
 	emergencyContactController := http.NewEmergencyContactController(triggerSOSUseCase, config.Log)
+	pushUseCase := usecase.NewPushUseCase(config.DB, config.Log, config.Validate, pushSubscriptionRepository,
+		webPushConfig.VAPIDPublicKey, webPushConfig.Enabled)
+	pushController := http.NewPushController(pushUseCase, config.Log)
 	sosTrackController := http.NewSOSTrackController(triggerSOSUseCase, userUseCase, trackHub, config.Log)
 
 	// setup middleware
@@ -186,6 +202,7 @@ func Bootstrap(config *BootstrapConfig) {
 		LocationController:         locationController,
 		SOSController:              sosController,
 		EmergencyContactController: emergencyContactController,
+		PushController:             pushController,
 		SOSTrackController:         sosTrackController,
 		MetricsHandler:             appMetrics.Handler(),
 	}

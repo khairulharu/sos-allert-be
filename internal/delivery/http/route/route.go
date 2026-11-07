@@ -14,6 +14,7 @@ type RouteConfig struct {
 	LocationController         *http.LocationController
 	SOSController              *http.SOSController
 	EmergencyContactController *http.EmergencyContactController
+	PushController             *http.PushController
 	SOSTrackController         *http.SOSTrackController
 	MetricsHandler             fiber.Handler
 	AuthMiddleware             fiber.Handler
@@ -81,4 +82,9 @@ func (c *RouteConfig) SetupAuthRoute() {
 
 	c.App.Get("/api/emergency-contacts", c.EmergencyContactController.List)
 	c.App.Post("/api/emergency-contacts", c.EmergencyContactController.Create)
+
+	c.App.Get("/api/push/vapid-public-key", c.PushController.VAPIDPublicKey)
+	c.App.Get("/api/push/subscriptions", c.PushController.List)
+	c.App.Post("/api/push/subscriptions", c.PushController.Subscribe)
+	c.App.Delete("/api/push/subscriptions", c.PushController.Unsubscribe)
 }

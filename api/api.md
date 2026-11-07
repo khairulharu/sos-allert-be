@@ -64,6 +64,7 @@ Error ditangani global handler:
 | **Location** | `/api/location` | Heartbeat lokasi user ke Redis GEO + histori MySQL, baca posisi terakhir, dan cari responder terdekat untuk peta. |
 | **SOS Incident** | `/api/sos`, `/api/sos/{alertId}` | Trigger insiden, query insiden aktif/detail/inbox, cancel, acknowledge, resolve, respond (ETA), breadcrumb, dan media bukti. |
 | **Emergency Contact** | `/api/emergency-contacts` | Kontak Tier-1 untuk fallback SMS/voice, terpisah dari tabel kontak biasa. |
+| **Push (Web Push browser)** | `/api/push` | Langganan Web Push browser (VAPID) — kanal push tanpa kredensial Firebase. |
 | **Live Tracking** | `WS /ws/sos/{alertId}/track` | Stream posisi korban dan perubahan status insiden secara real-time. |
 | **Observability** | `/metrics` | Metrik Prometheus untuk operasional (bukan untuk frontend user). |
 
@@ -222,6 +223,30 @@ Hanya `TRIGGERED` dan `ACKNOWLEDGED` yang dianggap aktif.
 
 Kontak ini dipakai backend untuk fallback SMS/voice, bukan untuk CRUD kontak
 biasa. Belum ada endpoint update/delete.
+
+### Push (Web Push browser)
+
+| Method | Path | Auth | Kegunaan |
+|---|---|:---:|---|
+| `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` kalau kanal belum dikonfigurasi. |
+| `GET` | `/api/push/subscriptions` | ✅ | List langganan push milik user. |
+| `POST` | `/api/push/subscriptions` | ✅ | Simpan langganan browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → upsert. |
+| `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan (`{"endpoint": "..."}`); endpoint tak dikenal tetap `200`. |
+
+```json
+// POST /api/push/subscriptions
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/...",
+  "p256dh": "B...",
+  "auth": "...",
+  "user_agent": "Mozilla/5.0 ..."
+}
+```
+
+Backend mengenkripsi payload notifikasi (RFC 8291) dan mengirim satu request per
+langganan saat SOS fan-out; `404`/`410` dari push service menghapus baris
+langganan otomatis. Butuh `webpush.*` di `config.json` (lihat
+`../README.md` §9) dan secure context browser (`https://` atau `localhost`).
 
 ### Observability
 

@@ -73,6 +73,13 @@
     "auth_token": "",
     "from_number": ""
   },
+  "webpush": {
+    "enabled": false,
+    "vapid_public_key": "",
+    "vapid_private_key": "",
+    "subscriber": "sos@example.com",
+    "ttl_seconds": 300
+  },
   "storage": {
     "backend": "local",
     "local_dir": "./uploads"

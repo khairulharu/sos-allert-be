@@ -131,6 +131,9 @@ sequenceDiagram
 | `GET` | `/api/sos/:alertId/media/:mediaId` | ✅ | Stream/download media; header `Authorization`, `Content-Type` asli |
 | `WS` | `/ws/sos/:alertId/track?token=<token>` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`) |
 | `GET/POST` | `/api/emergency-contacts` | ✅ | CRUD Tier-1 emergency contacts untuk SMS fallback |
+| `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` saat `webpush.enabled: false` atau key kosong |
+| `GET/POST` | `/api/push/subscriptions` | ✅ | Daftar / simpan langganan Web Push browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → re-subscribe = upsert |
+| `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan milik user (body `{"endpoint": "..."}`); endpoint tak dikenal tetap `200` |
 | `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`) |
 | `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
 | `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
@@ -526,8 +529,9 @@ cp config.json.example config.json   # lalu isi kredensial asli
 
 `config.json.example` memuat **seluruh** key yang dibaca kode (`app`, `web`,
 `log`, `database`, `redis`, `kafka`, `sos`, `auth`, `fcm`, `apns`, `twilio`,
-`storage`, `ai`) dengan nilai placeholder. Tambahkan key baru di sana setiap
-kali menambah setelan, supaya deploy dari nol tidak kehilangan konfigurasi.
+`webpush`, `storage`, `ai`) dengan nilai placeholder. Tambahkan key baru di sana
+setiap kali menambah setelan, supaya deploy dari nol tidak kehilangan
+konfigurasi.
 
 ### WAJIB: `web.proxy_header` di belakang proxy / tunnel
 
@@ -552,6 +556,30 @@ service:
 - Biarkan `""` untuk dev lokal / saat app diekspos langsung.
 - Cek setelah deploy: 5 login gagal dari satu device tidak boleh memblokir device lain, dan key Redis `ratelimit:auth:<ip>` harus memuat IP klien, bukan IP proxy.
 - Tanpa section `auth`, limiter memakai default `rate_limit_per_minute: 5` dan `lockout_minutes: 15`.
+
+### Web Push ke browser (VAPID)
+
+Endpoint push alternatif yang **tidak butuh kredensial Firebase**: notifikasi
+dikirim langsung ke browser yang login (service worker `frontend/public/sw.js`),
+jadi demo tetap jalan tanpa `fcm.project_id`. Jalur FCM v1/APNs/Twilio tidak
+berubah; keduanya jalan berdampingan dan masing-masing gagal-terbuka.
+
+```json
+"webpush": {
+  "enabled": true,
+  "vapid_public_key": "<base64url>",
+  "vapid_private_key": "<base64url>",
+  "subscriber": "sos@allert.my.id",
+  "ttl_seconds": 300
+}
+```
+
+- Generate pasangan key sekali: `webpush.GenerateVAPIDKeys()` (base64url tanpa padding). `private_key` cuma dipakai backend; browser mengambil public key dari `GET /api/push/vapid-public-key`.
+- `subscriber` diisi **email polos** atau URL `https://…` — library yang menambahkan prefix `mailto:` sendiri.
+- `enabled: false` atau key kosong → kanal dianggap tidak terkonfigurasi (`ErrPushNotConfigured`); dispatcher hanya menulis log dan SOS tetap sukses.
+- Alur: user menekan toggle **Push notifications** di Profile (butuh gesture untuk prompt izin) → browser `PushManager.subscribe()` → `POST /api/push/subscriptions` → saat SOS fan-out, `AlertDispatcher` mengenkripsi payload (RFC 8291) dan mengirim per langganan. Endpoint yang dijawab `404`/`410` oleh push service langsung dihapus dari `push_subscriptions`.
+- Butuh secure context: `https://` atau `localhost` (alamat LAN `http://` tidak bisa).
+- Kalau `kafka.producer.enabled: true`, dispatch pindah ke worker dan worker tidak punya akses database, sehingga web push tidak terkirim — jalankan web push dengan producer Kafka `false`.
 
 ### Menjalankan Database Migration
 ```bash
@@ -614,13 +642,21 @@ di-update, dan `ALERT_TRIAGE` disiarkan lewat WebSocket. Kalau STT
 belum dikonfigurasi/gagal, media tetap tersimpan dan triage awal tidak
 berubah.
 
+Feature **Web Push browser (VAPID)** sudah live dan terverifikasi end-to-end:
+`POST /api/sos` → `AlertDispatcher` → push terenkripsi (RFC 8291) → push service
+browser → `sw.js` menampilkan notifikasi OS, tanpa kredensial Firebase. Langganan
+disimpan di tabel `push_subscriptions` (satu baris per browser, `endpoint` unik),
+endpoint yang dijawab `404`/`410` dihapus otomatis, dan user tanpa langganan hanya
+dicatat di log. Konfigurasi + alur ada di §9.
+
 Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
 - **FCM/APNs/Twilio**: klien HTTP sudah ada dan dites dengan server
   tiruan, tapi belum pernah mengirim push/SMS sungguhan. Butuh
   `fcm.project_id` + access token OAuth2, `.p8` APNs + bundle id, dan
   SID/token/nomor Twilio, plus device token per user (`fcm_token` /
   `apns_token` via `PATCH /api/users/_current`; tanpa token, FCM
-  memakai topic `user_<id>`).
+  memakai topic `user_<id>`). Kanal ini terpisah dari Web Push browser
+  (§9) yang sudah terbukti mengirim notifikasi sungguhan.
 - **PSAP / 911 (RapidSOS/Noonlight)**, **komunikasi anonim WebRTC**,
   **Emergency Medical ID Card**, dan **Geofenced Safe Zones**: belum
   diimplementasi (integrasi eksternal / keputusan produk).
@@ -630,7 +666,7 @@ Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
   belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) belum di-wire;
   pesan gagal di-redelivery oleh consumer group.
 
-Jalankan semua migrasi (`migrate up`; versi terakhir `20261108000000_alert_media_transcription`)
+Jalankan semua migrasi (`migrate up`; versi terakhir `20261109000000_push_subscriptions`)
 sebelum memakai endpoint baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
 `{"safe_pin": "1234"}`) agar cancel bisa diverifikasi.
 

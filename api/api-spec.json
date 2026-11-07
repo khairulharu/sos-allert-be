@@ -37,6 +37,10 @@
       "description": "Tier-1 emergency contacts used for SMS/voice fallback."
     },
     {
+      "name": "Push API",
+      "description": "Browser Web Push (VAPID) subscriptions, an alternative push channel that needs no Firebase credentials."
+    },
+    {
       "name": "Observability",
       "description": "Operational endpoints."
     }
@@ -1748,6 +1752,176 @@
           }
         }
       }
+    },
+    "/api/push/vapid-public-key": {
+      "get": {
+        "operationId": "getPushVAPIDPublicKey",
+        "tags": [
+          "Push API"
+        ],
+        "description": "VAPID public key the browser needs to create a push subscription. `503` when `webpush.enabled` is false or the key pair is missing.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "VAPID public key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PushVAPIDKeyResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/push/subscriptions": {
+      "get": {
+        "operationId": "listPushSubscriptions",
+        "tags": [
+          "Push API"
+        ],
+        "description": "List the authenticated user's stored browser push subscriptions.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Subscriptions owned by the caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PushSubscriptionResponse"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "subscribePush",
+        "tags": [
+          "Push API"
+        ],
+        "description": "Store a browser push subscription. `endpoint` is unique, so re-subscribing the same browser upserts the row (and re-points it at the current user).",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushSubscribeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription stored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/PushSubscriptionResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "unsubscribePush",
+        "tags": [
+          "Push API"
+        ],
+        "description": "Remove one of the caller's subscriptions by endpoint. Unknown endpoints are a no-op (`200`) so the call is idempotent.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushUnsubscribeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2701,6 +2875,77 @@
           "created_at": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "PushSubscribeRequest": {
+        "type": "object",
+        "required": [
+          "endpoint",
+          "p256dh",
+          "auth"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 512,
+            "description": "PushSubscription.endpoint from the browser Push API."
+          },
+          "p256dh": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "base64url client public key (PushSubscription.getKey('p256dh'))."
+          },
+          "auth": {
+            "type": "string",
+            "maxLength": 255,
+            "description": "base64url auth secret (PushSubscription.getKey('auth'))."
+          },
+          "user_agent": {
+            "type": "string",
+            "maxLength": 255
+          }
+        }
+      },
+      "PushUnsubscribeRequest": {
+        "type": "object",
+        "required": [
+          "endpoint"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 512
+          }
+        }
+      },
+      "PushSubscriptionResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "PushVAPIDKeyResponse": {
+        "type": "object",
+        "properties": {
+          "public_key": {
+            "type": "string",
+            "description": "applicationServerKey for PushManager.subscribe()."
           }
         }
       }

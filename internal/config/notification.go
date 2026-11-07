@@ -56,6 +56,31 @@ func NewNotificationConfig(v *viper.Viper, log *logrus.Logger) *NotificationConf
 	return cfg
 }
 
+// WebPushConfig carries the VAPID key pair used for browser Web Push.
+// Missing or empty keys disable the channel (usecase.ErrPushNotConfigured).
+type WebPushConfig struct {
+	Enabled         bool
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	Subscriber      string
+	TTLSeconds      int
+}
+
+// NewWebPushConfig reads the `webpush` section. Defaults: TTL 300 s.
+func NewWebPushConfig(v *viper.Viper) *WebPushConfig {
+	ttl := v.GetInt("webpush.ttl_seconds")
+	if ttl <= 0 {
+		ttl = 300
+	}
+	return &WebPushConfig{
+		Enabled:         v.GetBool("webpush.enabled"),
+		VAPIDPublicKey:  v.GetString("webpush.vapid_public_key"),
+		VAPIDPrivateKey: v.GetString("webpush.vapid_private_key"),
+		Subscriber:      v.GetString("webpush.subscriber"),
+		TTLSeconds:      ttl,
+	}
+}
+
 // SOSConfig carries SOS tuning knobs with README defaults.
 type SOSConfig struct {
 	GracePeriod      time.Duration
