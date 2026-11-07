@@ -12,6 +12,12 @@ type TriggerSOSRequest struct {
 	// Description feeds the optional AI triage ("ai.*" config). It is
 	// advisory only: a missing or failing triage never blocks the SOS.
 	Description string `json:"description" validate:"omitempty,max=1000"`
+	// Severity and Summary are the optional classification a client
+	// already obtained from POST /api/sos/classify (audio). Explicit
+	// values win over the description-based triage so the very first
+	// fan-out already reflects the audio-derived severity.
+	Severity *float64 `json:"severity" validate:"omitempty,gte=0,lte=1"`
+	Summary  string   `json:"summary" validate:"omitempty,max=500"`
 }
 
 // TriggerSOSResult is the internal result of a trigger. The HTTP shape is
@@ -170,6 +176,23 @@ type AlertMediaResponse struct {
 	TranscriptionStatus string      `json:"transcription_status"`
 	TranscribedAt       *int64      `json:"transcribed_at,omitempty"`
 	Triage              *TriageInfo `json:"triage,omitempty"`
+	// Escalated reports that the audio transcription raised the incident
+	// severity enough to widen the responder fan-out; RecipientsAdded is
+	// how many newly reached responders were notified for it.
+	Escalated       bool `json:"escalated,omitempty"`
+	RecipientsAdded int  `json:"recipients_added,omitempty"`
+}
+
+// ClassifyResponse is the POST /api/sos/classify result: the
+// audio-derived classification plus its transcript. A client can pass
+// emergency_type/severity/summary into POST /api/sos so the first
+// fan-out already uses them.
+type ClassifyResponse struct {
+	EmergencyType       string  `json:"emergency_type"`
+	Severity            float64 `json:"severity"`
+	Summary             string  `json:"summary,omitempty"`
+	Transcript          string  `json:"transcript,omitempty"`
+	TranscriptionStatus string  `json:"transcription_status"`
 }
 
 // AlertTriageMessage is broadcast when audio transcription updates the

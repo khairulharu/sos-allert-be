@@ -44,6 +44,10 @@ func mapSOSError(err error) error {
 	case errors.Is(err, model.ErrNotAlertOwner),
 		errors.Is(err, model.ErrNotAlertParticipant):
 		return fiber.ErrForbidden
+	case errors.Is(err, model.ErrTranscriptionNotConfigured):
+		return fiber.NewError(fiber.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, model.ErrTranscriptionFailed):
+		return fiber.NewError(fiber.StatusBadGateway, err.Error())
 	default:
 		return err
 	}
@@ -93,6 +97,27 @@ func (s *SOSController) ListActive(ctx *fiber.Ctx) error {
 		return mapSOSError(err)
 	}
 	return ctx.JSON(model.WebResponse[[]*model.AlertDetailResponse]{Data: alerts})
+}
+
+// Classify transcribes and classifies a short audio clip before the SOS
+// trigger, so the first fan-out can already use the audio-derived level.
+// Nothing is persisted: the client passes the result into POST /api/sos.
+func (s *SOSController) Classify(ctx *fiber.Ctx) error {
+	file, err := ctx.FormFile("file")
+	if err != nil {
+		return fiber.ErrBadRequest
+	}
+	src, err := file.Open()
+	if err != nil {
+		return fiber.ErrBadRequest
+	}
+	defer src.Close()
+	result, err := s.UseCase.ClassifyAudio(ctx.UserContext(), file.Filename,
+		file.Header.Get("Content-Type"), file.Size, src)
+	if err != nil {
+		return mapSOSError(err)
+	}
+	return ctx.JSON(model.WebResponse[*model.ClassifyResponse]{Data: result})
 }
 
 func (s *SOSController) ListInbox(ctx *fiber.Ctx) error {

@@ -29,6 +29,9 @@ type fakeLocationRepository struct {
 	// nearbyDetailed is returned by GeoSearchWithDistance.
 	nearbyDetailed []entity.GeoLocation
 
+	// nearbyByRadius, when set, overrides nearby per requested radius.
+	nearbyByRadius map[float64][]string
+
 	// lastSeenMs keyed by userId; zero value means "not found" → returns error
 	lastSeenMs map[string]int64
 
@@ -62,6 +65,9 @@ func (f *fakeLocationRepository) GeoSearch(ctx context.Context, longitude float6
 	f.radii = append(f.radii, radiusMeters)
 	if f.nearbyErr != nil {
 		return nil, f.nearbyErr
+	}
+	if list, ok := f.nearbyByRadius[radiusMeters]; ok {
+		return list, nil
 	}
 	return f.nearby, nil
 }
@@ -291,6 +297,11 @@ func (f *fakeAlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB,
 	return nil
 }
 
+func (f *fakeAlertRepository) ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error) {
+	f.ensure()
+	return append([]string(nil), f.recipients[alertID]...), nil
+}
+
 func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {
 	f.ensure()
 	var out []*entity.Alert
@@ -318,12 +329,24 @@ type fakeNotifier struct {
 	lastAlert      model.Alert
 	notifyErr      error
 	notifyCalled   bool
+
+	recipientNotifyCalled bool
+	recipientSets         [][]string
+	escalatedAlert        model.Alert
 }
 
 func (f *fakeNotifier) Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error {
 	f.notifyCalled = true
 	f.lastRecipients = recipientIDs
 	f.lastAlert = alert
+	return f.notifyErr
+}
+
+// NotifyRecipients records the push-only escalation fan-out.
+func (f *fakeNotifier) NotifyRecipients(ctx context.Context, recipientIDs []string, alert model.Alert) error {
+	f.recipientNotifyCalled = true
+	f.recipientSets = append(f.recipientSets, append([]string(nil), recipientIDs...))
+	f.escalatedAlert = alert
 	return f.notifyErr
 }
 

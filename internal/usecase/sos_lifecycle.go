@@ -489,6 +489,13 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 		return nil, model.ErrStorageNotConfigured
 	}
 
+	// The severity before this clip: used to detect a post-trigger
+	// escalation that must widen the responder fan-out.
+	previousSeverity := 0.0
+	if alert.Severity != nil {
+		previousSeverity = *alert.Severity
+	}
+
 	isAudio := strings.HasPrefix(contentType, "audio/")
 	transcribe := isAudio && u.Deps.Transcriber != nil && size <= maxTranscriptionBytes
 
@@ -572,8 +579,24 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 		u.publishTriage(alertID, *triageInfo)
 	}
 
+	// Audio that raises the severity widens the fan-out: responders
+	// beyond the radius the description selected are notified here,
+	// still respecting the trigger's grace period.
+	recipientsAdded := 0
+	if triageInfo != nil {
+		added, err := u.escalateFanout(ctx, alert, *triageInfo, previousSeverity)
+		if err != nil {
+			u.Log.WithError(err).Warn("post-trigger escalation fan-out failed")
+		}
+		recipientsAdded = added
+	}
+
 	response := mediaToResponse(media)
 	response.Triage = triageInfo
+	if recipientsAdded > 0 {
+		response.Escalated = true
+		response.RecipientsAdded = recipientsAdded
+	}
 	return response, nil
 }
 
@@ -596,6 +619,48 @@ func (u *TriggerSOSUseCase) triageTranscript(ctx context.Context, transcript str
 		Severity:      result.Severity,
 		Summary:       result.Summary,
 	}
+}
+
+// ClassifyAudio transcribes a short clip and classifies it without
+// persisting anything (POST /api/sos/classify). It lets a client obtain
+// the audio-derived classification before POST /api/sos, so the first
+// fan-out already uses it; audio that arrives afterwards widens the
+// fan-out through UploadMedia instead.
+func (u *TriggerSOSUseCase) ClassifyAudio(ctx context.Context, filename, contentType string, size int64, r io.Reader) (*model.ClassifyResponse, error) {
+	if !strings.HasPrefix(contentType, "audio/") {
+		return nil, fiber.ErrBadRequest
+	}
+	if size > maxTranscriptionBytes {
+		return nil, fiber.ErrBadRequest
+	}
+	if u.Deps.Transcriber == nil {
+		return nil, model.ErrTranscriptionNotConfigured
+	}
+	audio, err := io.ReadAll(io.LimitReader(r, maxTranscriptionBytes+1))
+	if err != nil {
+		return nil, fiber.ErrInternalServerError
+	}
+	if int64(len(audio)) > maxTranscriptionBytes {
+		return nil, fiber.ErrBadRequest
+	}
+
+	response := &model.ClassifyResponse{TranscriptionStatus: "completed"}
+	transcript, err := u.Deps.Transcriber.Transcribe(ctx, filename, contentType, bytes.NewReader(audio))
+	if err != nil {
+		u.Log.WithError(err).Warn("audio classification transcription failed")
+		return nil, model.ErrTranscriptionFailed
+	}
+	if transcript == "" {
+		response.TranscriptionStatus = "empty"
+		return response, nil
+	}
+	response.Transcript = transcript
+	if info := u.triageTranscript(ctx, transcript); info != nil {
+		response.EmergencyType = info.EmergencyType
+		response.Severity = info.Severity
+		response.Summary = info.Summary
+	}
+	return response, nil
 }
 
 // publishTriage notifies tracking subscribers that post-trigger audio

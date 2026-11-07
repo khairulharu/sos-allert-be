@@ -14,6 +14,7 @@ import (
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
 
+	"github.com/gofiber/fiber/v2"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -642,5 +643,169 @@ func TestUploadMediaAudioOverTranscriptionLimit(t *testing.T) {
 	}
 	if up.TranscriptionStatus != "too_large" {
 		t.Fatalf("status = %q, want too_large", up.TranscriptionStatus)
+	}
+}
+
+// audioEscalationSetup wires a use case whose geo search returns a wider
+// set at 2 km than at 1 km, so a severity raise must widen the fan-out.
+func audioEscalationSetup(t *testing.T) (*TriggerSOSUseCase, *fakeAlertRepository, *fakeNotifier) {
+	t.Helper()
+	uc, locRepo, alertRepo, notifier := triggerSetup(t)
+	locRepo.nearbyByRadius = map[float64][]string{
+		1000: {"sender", "user-b", "user-c", "user-d"},
+		2000: {"sender", "user-b", "user-c", "user-d", "user-e"},
+		5000: {"sender", "user-b", "user-c", "user-d", "user-e", "user-f"},
+	}
+	locRepo.lastSeenMs["user-e"] = freshLastSeen()
+	locRepo.lastSeenMs["user-f"] = freshLastSeen()
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{text: "ada orang pingsan tidak sadar"}
+	uc.Deps.Triage = NewAITriage(noopLogger(), nil, NewOfflineClassifier())
+	return uc, alertRepo, notifier
+}
+
+func TestUploadMediaEscalationWidensFanout(t *testing.T) {
+	uc, alertRepo, notifier := audioEscalationSetup(t)
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	if created.RadiusMeters != 1000 {
+		t.Fatalf("initial radius = %v, want 1000", created.RadiusMeters)
+	}
+	if len(created.Recipients) != 3 {
+		t.Fatalf("initial recipients = %v", created.Recipients)
+	}
+
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"panic.webm", "audio/webm", int64(len("voice-bytes")), strings.NewReader("voice-bytes"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if !up.Escalated || up.RecipientsAdded != 2 {
+		t.Fatalf("escalation = escalated:%v added:%d, want true/2", up.Escalated, up.RecipientsAdded)
+	}
+	if got := alertRepo.recipients[created.Alert.ID]; len(got) != 5 {
+		t.Fatalf("recorded recipients = %v, want the original 3 plus user-e/user-f", got)
+	}
+	if !notifier.recipientNotifyCalled || len(notifier.recipientSets) != 1 ||
+		len(notifier.recipientSets[0]) != 2 {
+		t.Fatalf("escalation notify = %+v, want the two new responders only", notifier.recipientSets)
+	}
+	for _, id := range notifier.recipientSets[0] {
+		if id == "user-b" || id == "user-c" || id == "user-d" {
+			t.Fatalf("escalation re-notified an original recipient: %v", notifier.recipientSets[0])
+		}
+	}
+	if notifier.escalatedAlert.Severity <= 0 || notifier.escalatedAlert.EmergencyType != entity.EmergencyTypeMedical {
+		t.Fatalf("escalated payload = %+v", notifier.escalatedAlert)
+	}
+}
+
+func TestUploadMediaNoEscalationWhenSeverityUnchanged(t *testing.T) {
+	uc, alertRepo, notifier := audioEscalationSetup(t)
+	// "orang sakit" classifies as MEDICAL 0.6 with no urgent keyword,
+	// matching the explicit pre-trigger severity below.
+	uc.Deps.Transcriber = &fakeTranscriber{text: "orang sakit"}
+
+	severity := 0.6
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{Severity: &severity}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	if created.RadiusMeters != 2000 {
+		t.Fatalf("initial radius = %v, want 2000", created.RadiusMeters)
+	}
+	before := len(alertRepo.recipients[created.Alert.ID])
+
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"panic.webm", "audio/webm", int64(len("voice")), strings.NewReader("voice"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.Escalated || up.RecipientsAdded != 0 {
+		t.Fatalf("escalation = escalated:%v added:%d, want none", up.Escalated, up.RecipientsAdded)
+	}
+	if notifier.recipientNotifyCalled {
+		t.Fatal("must not re-notify when the severity did not raise the radius")
+	}
+	if len(alertRepo.recipients[created.Alert.ID]) != before {
+		t.Fatal("recipient set must not change without an escalation")
+	}
+}
+
+func TestTriggerSOSExplicitSeverityWidensFirstFanout(t *testing.T) {
+	uc, locRepo, _, notifier := triggerSetup(t)
+	locRepo.nearbyByRadius = map[float64][]string{
+		1000: {"sender", "user-b", "user-c", "user-d"},
+		5000: {"sender", "user-b", "user-c", "user-d", "user-e", "user-f"},
+	}
+	locRepo.lastSeenMs["user-e"] = freshLastSeen()
+	locRepo.lastSeenMs["user-f"] = freshLastSeen()
+
+	severity := 0.9
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{Severity: &severity}, "")
+	if err != nil {
+		t.Fatalf("ExecuteWithRequest error = %v", err)
+	}
+	if result.RadiusMeters != 5000 {
+		t.Fatalf("radius = %v, want 5000 (explicit severity must drive the fan-out)", result.RadiusMeters)
+	}
+	if len(result.Recipients) != 5 {
+		t.Fatalf("recipients = %v, want the full 5 km set", result.Recipients)
+	}
+	if result.Triage == nil || result.Triage.Severity != severity {
+		t.Fatalf("triage = %+v, want severity %v", result.Triage, severity)
+	}
+	if len(notifier.lastRecipients) != 5 {
+		t.Fatalf("notified = %v, want the wider set in the first wave", notifier.lastRecipients)
+	}
+}
+
+func TestClassifyAudio(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	uc.Deps.Transcriber = &fakeTranscriber{text: "ada orang pingsan tidak sadar"}
+	uc.Deps.Triage = NewAITriage(noopLogger(), nil, NewOfflineClassifier())
+
+	res, err := uc.ClassifyAudio(context.Background(), "clip.webm", "audio/webm",
+		int64(len("voice")), strings.NewReader("voice"))
+	if err != nil {
+		t.Fatalf("ClassifyAudio error = %v", err)
+	}
+	if res.TranscriptionStatus != "completed" || res.Transcript != "ada orang pingsan tidak sadar" {
+		t.Fatalf("classify = %+v", res)
+	}
+	if res.EmergencyType != entity.EmergencyTypeMedical || res.Severity <= 0 {
+		t.Fatalf("classification = %+v", res)
+	}
+}
+
+func TestClassifyAudioErrorsAndEmpty(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+
+	if _, err := uc.ClassifyAudio(context.Background(), "clip.txt", "text/plain",
+		5, strings.NewReader("hello")); !errors.Is(err, fiber.ErrBadRequest) {
+		t.Fatalf("non-audio error = %v, want bad request", err)
+	}
+	if _, err := uc.ClassifyAudio(context.Background(), "clip.webm", "audio/webm",
+		5, strings.NewReader("hello")); !errors.Is(err, model.ErrTranscriptionNotConfigured) {
+		t.Fatalf("unconfigured error = %v, want transcription not configured", err)
+	}
+
+	uc.Deps.Transcriber = &fakeTranscriber{err: errors.New("stt down")}
+	if _, err := uc.ClassifyAudio(context.Background(), "clip.webm", "audio/webm",
+		5, strings.NewReader("hello")); !errors.Is(err, model.ErrTranscriptionFailed) {
+		t.Fatalf("provider error = %v, want transcription failed", err)
+	}
+
+	uc.Deps.Transcriber = &fakeTranscriber{text: ""}
+	res, err := uc.ClassifyAudio(context.Background(), "clip.webm", "audio/webm",
+		5, strings.NewReader("hello"))
+	if err != nil {
+		t.Fatalf("empty transcript error = %v", err)
+	}
+	if res.TranscriptionStatus != "empty" || res.EmergencyType != "" {
+		t.Fatalf("empty transcript result = %+v", res)
 	}
 }

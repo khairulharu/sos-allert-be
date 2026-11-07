@@ -52,6 +52,49 @@ func NewAlertDispatcher(log *logrus.Logger, fcm *FCMNotifier, apns *APNsNotifier
 }
 
 func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error {
+	title, body, data := d.notificationContent(alert)
+	pushAttempted, pushFailed := d.pushToRecipients(ctx, recipientIDs, alert.ID, title, body, data)
+	if len(recipientIDs) == 0 {
+		d.Log.Infof("[SOS] alert %s: no recipients in range", alert.ID)
+	}
+
+	// Tier-1 fallback: SMS to the sender's emergency contacts with a
+	// Google Maps link, per README section 1.
+	smsErr := d.notifyEmergencyContacts(ctx, alert, body)
+	if pushFailed && d.Metrics != nil {
+		d.Metrics.IncPushFailures()
+	}
+	if smsErr != nil && d.Metrics != nil {
+		d.Metrics.IncPushFailures()
+	}
+	if pushAttempted && pushFailed && smsErr != nil {
+		return fmt.Errorf("push delivery failed and SMS fallback failed: %w", smsErr)
+	}
+	return nil
+}
+
+// NotifyRecipients pushes an alert to the given recipients without the
+// emergency-contact SMS fallback. Used when a post-trigger escalation
+// widens the fan-out: the extra responders must be reached, but the
+// sender's emergency contacts must not be texted twice.
+func (d *AlertDispatcher) NotifyRecipients(ctx context.Context, recipientIDs []string, alert model.Alert) error {
+	if len(recipientIDs) == 0 {
+		return nil
+	}
+	title, body, data := d.notificationContent(alert)
+	pushAttempted, pushFailed := d.pushToRecipients(ctx, recipientIDs, alert.ID, title, body, data)
+	if pushAttempted && pushFailed && d.Metrics != nil {
+		d.Metrics.IncPushFailures()
+	}
+	if pushAttempted && pushFailed {
+		return fmt.Errorf("push delivery failed for %d recipient(s)", len(recipientIDs))
+	}
+	return nil
+}
+
+// notificationContent builds the push title/body/data shared by the
+// initial fan-out and a post-trigger escalation.
+func (d *AlertDispatcher) notificationContent(alert model.Alert) (string, string, map[string]string) {
 	title := "SOS Alert"
 	body := fmt.Sprintf("Emergency %s nearby. Open the app for the live location.", alert.EmergencyType)
 	if alert.EmergencyType == "" {
@@ -73,9 +116,12 @@ func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, ale
 	if summary := strings.TrimSpace(alert.Summary); summary != "" {
 		data["summary"] = summary
 	}
+	return title, body, data
+}
 
-	pushFailed := false
-	pushAttempted := false
+// pushToRecipients fans a notification out over FCM/APNs/Web Push and
+// reports whether any push channel was attempted and whether one failed.
+func (d *AlertDispatcher) pushToRecipients(ctx context.Context, recipientIDs []string, alertID, title, body string, data map[string]string) (attempted bool, failed bool) {
 	for _, recipientID := range recipientIDs {
 		var fcmToken, apnsToken string
 		if d.Tokens != nil {
@@ -91,7 +137,7 @@ func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, ale
 			}
 		}
 		if d.FCM != nil {
-			pushAttempted = true
+			attempted = true
 			var err error
 			if fcmToken != "" {
 				err = d.FCM.SendToToken(ctx, fcmToken, title, body, data)
@@ -99,48 +145,32 @@ func (d *AlertDispatcher) Notify(ctx context.Context, recipientIDs []string, ale
 				err = d.FCM.SendToTopic(ctx, "user_"+recipientID, title, body, data)
 			}
 			if err != nil && !errors.Is(err, ErrPushNotConfigured) {
-				pushFailed = true
+				failed = true
 				d.Log.WithError(err).Errorf("FCM delivery failed for %s", recipientID)
 			} else if errors.Is(err, ErrPushNotConfigured) {
-				d.Log.Infof("[SOS] alert %s: FCM not configured, log-only for %s", alert.ID, recipientID)
+				d.Log.Infof("[SOS] alert %s: FCM not configured, log-only for %s", alertID, recipientID)
 			}
 		}
 		if d.APNs != nil && apnsToken != "" {
-			pushAttempted = true
-			if err := d.APNs.Send(ctx, apnsToken, title, body, alert.ID); err != nil && !errors.Is(err, ErrPushNotConfigured) {
-				pushFailed = true
+			attempted = true
+			if err := d.APNs.Send(ctx, apnsToken, title, body, alertID); err != nil && !errors.Is(err, ErrPushNotConfigured) {
+				failed = true
 				d.Log.WithError(err).Errorf("APNs delivery failed for %s", recipientID)
 			}
 		}
 		if d.Web != nil {
-			pushAttempted = true
+			attempted = true
 			if err := d.Web.SendToUser(ctx, recipientID, title, body, data); err != nil {
 				if errors.Is(err, ErrPushNotConfigured) {
-					d.Log.Infof("[SOS] alert %s: web push not configured, log-only for %s", alert.ID, recipientID)
+					d.Log.Infof("[SOS] alert %s: web push not configured, log-only for %s", alertID, recipientID)
 				} else {
-					pushFailed = true
+					failed = true
 					d.Log.WithError(err).Errorf("web push delivery failed for %s", recipientID)
 				}
 			}
 		}
 	}
-	if len(recipientIDs) == 0 {
-		d.Log.Infof("[SOS] alert %s: no recipients in range", alert.ID)
-	}
-
-	// Tier-1 fallback: SMS to the sender's emergency contacts with a
-	// Google Maps link, per README section 1.
-	smsErr := d.notifyEmergencyContacts(ctx, alert, body)
-	if pushFailed && d.Metrics != nil {
-		d.Metrics.IncPushFailures()
-	}
-	if smsErr != nil && d.Metrics != nil {
-		d.Metrics.IncPushFailures()
-	}
-	if pushAttempted && pushFailed && smsErr != nil {
-		return fmt.Errorf("push delivery failed and SMS fallback failed: %w", smsErr)
-	}
-	return nil
+	return attempted, failed
 }
 
 func (d *AlertDispatcher) notifyEmergencyContacts(ctx context.Context, alert model.Alert, body string) error {

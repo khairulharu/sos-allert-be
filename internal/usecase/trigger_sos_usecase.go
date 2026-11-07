@@ -49,6 +49,7 @@ type AlertStore interface {
 	GetMedia(ctx context.Context, db *gorm.DB, alertID, mediaID string) (*entity.AlertMedia, error)
 	UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error
 	CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error
+	ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error)
 	ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error)
 	PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error)
 }
@@ -62,6 +63,14 @@ type AlertSaver interface {
 // Satisfied by *AlertNotifier and *AlertDispatcher.
 type Notifier interface {
 	Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error
+}
+
+// RecipientNotifier is the optional push-only surface used when the
+// fan-out widens after a post-trigger escalation: the extra responders
+// must be reached, but the sender's emergency contacts must not be
+// texted a second time. Satisfied by *AlertDispatcher.
+type RecipientNotifier interface {
+	NotifyRecipients(ctx context.Context, recipientIDs []string, alert model.Alert) error
 }
 
 // IdempotencyStore maps X-Idempotency-Key values to finished alerts.
@@ -229,6 +238,17 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		}
 	}
 
+	// An explicit classification — typically the result of
+	// POST /api/sos/classify on the audio clip — wins over the
+	// description-based triage, so the very first fan-out already
+	// reflects the audio-derived severity.
+	if req.Severity != nil {
+		triageInfo.Severity = *req.Severity
+	}
+	if req.Summary != "" {
+		triageInfo.Summary = req.Summary
+	}
+
 	emergencyType := req.EmergencyType
 	if emergencyType == "" {
 		if triageInfo.EmergencyType != "" {
@@ -237,7 +257,6 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 			emergencyType = entity.EmergencyTypeDanger
 		}
 	}
-
 	radiusStart := 0
 	if triageInfo.Severity > 0 {
 		radiusStart = u.radiusStartIndex(triageInfo.Severity)
@@ -500,4 +519,132 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 		recipients = []string{}
 	}
 	return recipients, usedRadius, nil
+}
+
+// escalateFanout widens the responder fan-out after post-trigger audio
+// raised the incident severity. Only responders not already recorded
+// for the alert are notified, and the notification still respects the
+// trigger's grace period so a false alarm cancelled during the countdown
+// never reaches anyone new.
+func (u *TriggerSOSUseCase) escalateFanout(ctx context.Context, alert *entity.Alert, info model.TriageInfo, previousSeverity float64) (int, error) {
+	if u.Deps.Location == nil || u.Deps.Alerts == nil {
+		return 0, nil
+	}
+	oldStart := 0
+	if previousSeverity > 0 {
+		oldStart = u.radiusStartIndex(previousSeverity)
+	}
+	newStart := 0
+	if info.Severity > 0 {
+		newStart = u.radiusStartIndex(info.Severity)
+	}
+	if newStart <= oldStart {
+		return 0, nil
+	}
+
+	notified, err := u.Deps.Alerts.ListRecipients(ctx, u.DB, alert.ID)
+	if err != nil {
+		return 0, fmt.Errorf("list alert recipients: %w", err)
+	}
+	already := make(map[string]struct{}, len(notified))
+	for _, id := range notified {
+		already[id] = struct{}{}
+	}
+
+	wider, _, err := u.findRecipients(ctx, alert.SenderID, alert.Longitude, alert.Latitude, newStart)
+	if err != nil {
+		return 0, err
+	}
+	added := make([]string, 0, len(wider))
+	for _, id := range wider {
+		if _, seen := already[id]; seen {
+			continue
+		}
+		added = append(added, id)
+	}
+	if len(added) == 0 {
+		return 0, nil
+	}
+	if err := u.Deps.Alerts.CreateRecipients(ctx, u.DB, alert.ID, added, time.Now().UnixMilli()); err != nil {
+		u.Log.WithError(err).Warn("could not record escalated recipients")
+	}
+
+	emergencyType := alert.EmergencyType
+	if info.EmergencyType != "" {
+		emergencyType = info.EmergencyType
+	}
+	escalated := model.Alert{
+		ID:            alert.ID,
+		SenderId:      alert.SenderID,
+		TriggeredAt:   time.UnixMilli(alert.TriggeredAt),
+		Status:        alert.Status,
+		EmergencyType: emergencyType,
+		Severity:      info.Severity,
+		Summary:       info.Summary,
+		Location: model.LocationResponse{
+			Longitude: alert.Longitude,
+			Latitude:  alert.Latitude,
+		},
+	}
+
+	notify := func(nctx context.Context) {
+		// Mirror the trigger dispatch: re-check the status so a cancelled
+		// or resolved incident is never fanned out.
+		if current, err := u.Deps.Alerts.GetByID(nctx, u.DB, alert.ID); err == nil && current != nil {
+			if !current.IsActive() {
+				u.Log.Infof("alert %s is %s, skipping escalated fan-out", alert.ID, current.Status)
+				return
+			}
+		}
+		if u.Deps.Publisher != nil {
+			event := model.SOSEvent{
+				EventType:     "sos.dispatched",
+				AlertID:       alert.ID,
+				SenderID:      alert.SenderID,
+				Latitude:      alert.Latitude,
+				Longitude:     alert.Longitude,
+				EmergencyType: emergencyType,
+				Status:        alert.Status,
+				Recipients:    added,
+				TriggeredAt:   alert.TriggeredAt,
+				Severity:      info.Severity,
+				Summary:       info.Summary,
+			}
+			if err := u.Deps.Publisher.Send(nctx, event); err == nil {
+				return
+			}
+			u.Log.Warn("Kafka publish failed for escalation, falling back to direct notify")
+		}
+		u.notifyNewRecipients(nctx, added, escalated)
+	}
+
+	remaining := u.Deps.GracePeriod - time.Duration(time.Now().UnixMilli()-alert.TriggeredAt)*time.Millisecond
+	if remaining > 0 {
+		time.AfterFunc(remaining, func() {
+			nctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			notify(nctx)
+		})
+		return len(added), nil
+	}
+	notify(ctx)
+	return len(added), nil
+}
+
+// notifyNewRecipients pushes an escalated classification to responders
+// who were not part of the original fan-out. The push-only surface is
+// preferred so the sender's emergency contacts are not texted twice.
+func (u *TriggerSOSUseCase) notifyNewRecipients(ctx context.Context, recipients []string, alert model.Alert) {
+	if u.Deps.Notifier == nil || len(recipients) == 0 {
+		return
+	}
+	if rn, ok := u.Deps.Notifier.(RecipientNotifier); ok {
+		if err := rn.NotifyRecipients(ctx, recipients, alert); err != nil {
+			u.Log.WithError(err).Error("failed to notify escalated recipients")
+		}
+		return
+	}
+	if err := u.Deps.Notifier.Notify(ctx, recipients, alert); err != nil {
+		u.Log.WithError(err).Error("failed to notify escalated recipients")
+	}
 }

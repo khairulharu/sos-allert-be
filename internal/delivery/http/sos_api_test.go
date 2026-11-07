@@ -170,6 +170,11 @@ func (s *memAlerts) CreateRecipients(ctx context.Context, db *gorm.DB, alertID s
 	return nil
 }
 
+func (s *memAlerts) ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error) {
+	s.init()
+	return append([]string(nil), s.recipients[alertID]...), nil
+}
+
 func (s *memAlerts) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {
 	s.init()
 	var out []*entity.Alert
@@ -215,18 +220,33 @@ type memNotifier struct{}
 
 func (memNotifier) Notify(ctx context.Context, ids []string, alert model.Alert) error { return nil }
 
+// stubTranscriber satisfies usecase.Transcriber for the classify endpoint.
+type stubTranscriber struct {
+	text string
+	err  error
+}
+
+func (s *stubTranscriber) Transcribe(ctx context.Context, filename, contentType string, r io.Reader) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	_, _ = io.Copy(io.Discard, r)
+	return s.text, nil
+}
+
 func TestSOSAPIEndToEnd(t *testing.T) {
 	log := logrus.New()
 	log.SetOutput(io.Discard)
 	alerts := &memAlerts{}
 	store := storage.NewLocalStorage(t.TempDir())
 	uc := usecase.NewTriggerSOSUseCase(nil, log, usecase.TriggerSOSDeps{
-		Location:   &memLocation{lat: -6.2088, lng: 106.8456},
-		Alerts:     alerts,
-		Notifier:   memNotifier{},
-		MediaStore: store,
-		Triage:     usecase.NewAITriage(log, nil, usecase.NewOfflineClassifier()),
-		Radii:      []float64{1000, 2000, 5000},
+		Location:    &memLocation{lat: -6.2088, lng: 106.8456},
+		Alerts:      alerts,
+		Notifier:    memNotifier{},
+		MediaStore:  store,
+		Triage:      usecase.NewAITriage(log, nil, usecase.NewOfflineClassifier()),
+		Transcriber: &stubTranscriber{text: "ada orang pingsan tidak sadar"},
+		Radii:       []float64{1000, 2000, 5000},
 	})
 
 	app := fiber.New()
@@ -237,6 +257,7 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	})
 	ctl := deliveryhttp.NewSOSController(uc, log)
 	app.Post("/api/sos", ctl.Trigger)
+	app.Post("/api/sos/classify", ctl.Classify)
 	app.Get("/api/sos/inbox", ctl.ListInbox)
 	app.Get("/api/sos/active", ctl.ListActive)
 	app.Get("/api/sos/:alertId", ctl.Get)
@@ -343,5 +364,35 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	resp, _ = do("GET", "/api/sos/does-not-exist", "sender", "")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown alert status = %d, want 404", resp.StatusCode)
+	}
+
+	// POST /api/sos/classify: audio-only, nothing persisted.
+	var cbuf bytes.Buffer
+	cmw := multipart.NewWriter(&cbuf)
+	ch := make(textproto.MIMEHeader)
+	ch.Set("Content-Disposition", `form-data; name="file"; filename="clip.m4a"`)
+	ch.Set("Content-Type", "audio/mp4")
+	cp, _ := cmw.CreatePart(ch)
+	_, _ = cp.Write([]byte("voice-bytes"))
+	_ = cmw.Close()
+	classifyReq := httptest.NewRequest("POST", "/api/sos/classify", &cbuf)
+	classifyReq.Header.Set("Content-Type", cmw.FormDataContentType())
+	classifyReq.Header.Set("X-Test-User", "sender")
+	classifyResp, err := app.Test(classifyReq, -1)
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	classifyBody, _ := io.ReadAll(classifyResp.Body)
+	classifyResp.Body.Close()
+	if classifyResp.StatusCode != http.StatusOK {
+		t.Fatalf("classify status = %d body = %s", classifyResp.StatusCode, classifyBody)
+	}
+	var classified model.WebResponse[*model.ClassifyResponse]
+	if err := json.Unmarshal(classifyBody, &classified); err != nil {
+		t.Fatalf("classify decode: %v (%s)", err, classifyBody)
+	}
+	if classified.Data.EmergencyType != "MEDICAL" || classified.Data.Severity <= 0 ||
+		classified.Data.TranscriptionStatus != "completed" || classified.Data.Transcript == "" {
+		t.Fatalf("classify data = %+v", classified.Data)
 	}
 }

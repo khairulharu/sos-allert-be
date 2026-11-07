@@ -191,6 +191,18 @@ func (a *AlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB, ale
 	return db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
+// ListRecipients returns the user ids already notified for an incident.
+// Used to widen the fan-out after a post-trigger severity escalation
+// without re-notifying the original recipients.
+func (a *AlertRepository) ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error) {
+	var out []string
+	if err := db.WithContext(ctx).Model(&entity.AlertRecipient{}).
+		Where("alert_id = ?", alertID).Pluck("user_id", &out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ListInbox returns the active incidents a user was notified for,
 // newest first (the responder inbox behind GET /api/sos/inbox).
 func (a *AlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {

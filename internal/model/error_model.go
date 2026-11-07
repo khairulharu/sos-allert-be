@@ -20,4 +20,8 @@ var (
 	ErrDuplicateResponse    = errors.New("responder has already responded to this alert")
 	ErrStorageNotConfigured = errors.New("media storage is not configured")
 	ErrMediaNotFound        = errors.New("media not found")
+
+	// Audio transcription errors for POST /api/sos/classify.
+	ErrTranscriptionNotConfigured = errors.New("audio transcription is not configured")
+	ErrTranscriptionFailed        = errors.New("audio transcription failed")
 )
