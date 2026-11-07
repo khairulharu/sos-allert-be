@@ -157,7 +157,7 @@ belum ada, response-nya `404`. Panggil `PUT /api/location` dulu.
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun; hasilnya (`emergency_type`, `severity`, `summary`) dikirim ulang di body trigger agar fan-out pertama memakai level dari suara. |
 | `GET` | `/api/sos/active` | ✅ | Insiden aktif milik user (cold start). |
 | `GET` | `/api/sos/inbox` | ✅ | Insiden yang push-nya pernah diterima user (inbox responder). |
-| `GET` | `/api/sos/{alertId}` | ✅ | Detail insiden; koordinat dimask untuk non-peserta. |
+| `GET` | `/api/sos/{alertId}` | ✅ | Detail insiden; koordinat dimask untuk non-peserta. `responders[]` (nama + `distance_m`/`eta_seconds` + `responded_at`) hanya diisi untuk sender/responder terdaftar; non-peserta hanya dapat `responders_en_route`. |
 | `POST` | `/api/sos/{alertId}/cancel` | ✅ | Batalkan false alarm dengan `{ "pin": "1234", "reason": "FALSE_ALARM" }`. Sender saja. |
 | `POST` | `/api/sos/{alertId}/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED`. Response detail memakai sudut pandang pemanggil; koordinat dimask kalau bukan sender/responder. |
 | `POST` | `/api/sos/{alertId}/resolve` | ✅ | Tutup insiden. Sender saja. |
@@ -312,6 +312,20 @@ WS /ws/sos/{alertId}/track?token=<token>
   "severity": 0.8,
   "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
   "updated_at": 1730304075000
+}
+```
+
+- Server menyiarkan responder yang baru menjawab:
+
+```json
+{
+  "type": "RESPONDER_ADDED",
+  "alert_id": "alt_...",
+  "responder_id": "user-b",
+  "name": "Budi",
+  "distance_m": 240,
+  "eta_seconds": 180,
+  "responded_at": 1730304060000
 }
 ```
 

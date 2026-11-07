@@ -2871,6 +2871,13 @@
           "responders_en_route": {
             "type": "integer"
           },
+          "responders": {
+            "type": "array",
+            "description": "Who is coming, with the distance/ETA recorded when they answered. Only present for the incident's participants (sender or a recorded responder); other viewers keep the bare count.",
+            "items": {
+              "$ref": "#/components/schemas/ResponderSummary"
+            }
+          },
           "triggered_at": {
             "type": "integer",
             "format": "int64"
@@ -2888,6 +2895,29 @@
             "items": {
               "$ref": "#/components/schemas/BreadcrumbResponse"
             }
+          }
+        }
+      },
+      "ResponderSummary": {
+        "type": "object",
+        "description": "One responder en route, with the distance/ETA recorded when they answered.",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "distance_m": {
+            "type": "integer",
+            "description": "Victim distance at answer time."
+          },
+          "eta_seconds": {
+            "type": "integer"
+          },
+          "responded_at": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

@@ -79,6 +79,16 @@ func (f *fakeUserReader) GetByID(ctx context.Context, id string) (*entity.User, 
 	return nil, errors.New("user not found")
 }
 
+func (f *fakeUserReader) ListByIDs(ctx context.Context, ids []string) (map[string]*entity.User, error) {
+	out := make(map[string]*entity.User, len(ids))
+	for _, id := range ids {
+		if u, ok := f.users[id]; ok {
+			out[id] = u
+		}
+	}
+	return out, nil
+}
+
 func userWithPIN(id, pin string) *entity.User {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(pin), bcrypt.MinCost)
 	h := string(hash)
@@ -304,7 +314,12 @@ func TestCancelSOSWithoutPINConfigured(t *testing.T) {
 
 func TestRespondSOSAndDetailMasking(t *testing.T) {
 	uc, _, _, _ := triggerSetup(t)
-	uc.Deps.Users = &fakeUserReader{users: map[string]*entity.User{"sender": {ID: "sender", Name: "Jane Doe"}}}
+	uc.Deps.Users = &fakeUserReader{users: map[string]*entity.User{
+		"sender": {ID: "sender", Name: "Jane Doe"},
+		"user-b": {ID: "user-b", Name: "Budi"},
+	}}
+	hub := &fakeHub{}
+	uc.Deps.Hub = hub
 	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
 	if err != nil {
 		t.Fatalf("trigger error = %v", err)
@@ -323,7 +338,23 @@ func TestRespondSOSAndDetailMasking(t *testing.T) {
 	if resp.ETASeconds <= 0 || resp.VictimDistanceMeters <= 0 {
 		t.Fatalf("respond result = %+v", resp)
 	}
-	// Detail for the responder shows exact coords and 1 responder.
+
+	// The responder-arrival frame tells open views who is coming.
+	var added *model.ResponderAddedMessage
+	for _, payload := range hub.published[alertID] {
+		var msg model.ResponderAddedMessage
+		if json.Unmarshal(payload, &msg) == nil && msg.Type == "RESPONDER_ADDED" {
+			added = &msg
+		}
+	}
+	if added == nil || added.ResponderID != "user-b" || added.Name != "Budi" {
+		t.Fatalf("RESPONDER_ADDED frame = %+v", added)
+	}
+	if added.DistanceMeters <= 0 || added.ETASeconds <= 0 {
+		t.Fatalf("RESPONDER_ADDED distance/eta = %+v", added)
+	}
+
+	// Detail for the responder shows exact coords, the count and the list.
 	detail, err := uc.GetAlert(context.Background(), "user-b", alertID)
 	if err != nil {
 		t.Fatalf("get detail error = %v", err)
@@ -331,13 +362,32 @@ func TestRespondSOSAndDetailMasking(t *testing.T) {
 	if detail.Masked || detail.Status != entity.AlertStatusAcknowledged || detail.RespondersEnRoute != 1 {
 		t.Fatalf("responder detail = %+v", detail)
 	}
-	// Detail for a stranger is masked.
+	if len(detail.Responders) != 1 || detail.Responders[0].UserID != "user-b" || detail.Responders[0].Name != "Budi" {
+		t.Fatalf("responder detail list = %+v", detail.Responders)
+	}
+
+	// The sender sees who is coming, with distance and ETA.
+	senderDetail, err := uc.GetAlert(context.Background(), "sender", alertID)
+	if err != nil {
+		t.Fatalf("sender detail error = %v", err)
+	}
+	if len(senderDetail.Responders) != 1 {
+		t.Fatalf("sender responders = %+v, want one", senderDetail.Responders)
+	}
+	if r := senderDetail.Responders[0]; r.Name != "Budi" || r.DistanceMeters <= 0 || r.ETASeconds <= 0 {
+		t.Fatalf("sender responder entry = %+v", r)
+	}
+
+	// Detail for a stranger is masked and never names the responders.
 	stranger, err := uc.GetAlert(context.Background(), "stranger", alertID)
 	if err != nil {
 		t.Fatalf("stranger detail error = %v", err)
 	}
 	if !stranger.Masked {
 		t.Fatalf("stranger detail must be masked: %+v", stranger)
+	}
+	if len(stranger.Responders) != 0 {
+		t.Fatalf("stranger must not see responder identities: %+v", stranger.Responders)
 	}
 	if stranger.LatestLocation.Latitude == created.Alert.Location.Latitude {
 		t.Fatal("masked latitude equals exact latitude")

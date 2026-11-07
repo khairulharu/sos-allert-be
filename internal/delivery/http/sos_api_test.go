@@ -112,6 +112,11 @@ func (s *memAlerts) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.A
 	return nil
 }
 
+func (s *memAlerts) ListResponses(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertResponse, error) {
+	s.init()
+	return append([]*entity.AlertResponse(nil), s.responses[alertID]...), nil
+}
+
 func (s *memAlerts) CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error) {
 	return len(s.responses[alertID]), nil
 }
@@ -224,6 +229,21 @@ func (l *memLocation) GetLastSeenBatch(ctx context.Context, userIDs []string) (m
 	return out, nil
 }
 
+// memHub captures tracking frames published by the use case.
+type memHub struct{ frames map[string][][]byte }
+
+func (h *memHub) Publish(alertID string, payload []byte) {
+	if h.frames == nil {
+		h.frames = map[string][][]byte{}
+	}
+	h.frames[alertID] = append(h.frames[alertID], payload)
+}
+
+func (h *memHub) Subscribe(alertID string) (<-chan []byte, func()) {
+	ch := make(chan []byte)
+	return ch, func() { close(ch) }
+}
+
 type memNotifier struct{}
 
 func (memNotifier) Notify(ctx context.Context, ids []string, alert model.Alert) error { return nil }
@@ -247,6 +267,7 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	log.SetOutput(io.Discard)
 	alerts := &memAlerts{}
 	store := storage.NewLocalStorage(t.TempDir())
+	hub := &memHub{}
 	uc := usecase.NewTriggerSOSUseCase(nil, log, usecase.TriggerSOSDeps{
 		Location:    &memLocation{lat: -6.2088, lng: 106.8456},
 		Alerts:      alerts,
@@ -254,6 +275,7 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 		MediaStore:  store,
 		Triage:      usecase.NewAITriage(log, nil, usecase.NewOfflineClassifier()),
 		Transcriber: &stubTranscriber{text: "ada orang pingsan tidak sadar"},
+		Hub:         hub,
 		Radii:       []float64{1000, 2000, 5000},
 	})
 
@@ -266,6 +288,7 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	ctl := deliveryhttp.NewSOSController(uc, log)
 	app.Post("/api/sos", ctl.Trigger)
 	app.Post("/api/sos/classify", ctl.Classify)
+	app.Post("/api/sos/:alertId/respond", ctl.Respond)
 	app.Get("/api/sos/inbox", ctl.ListInbox)
 	app.Get("/api/sos/active", ctl.ListActive)
 	app.Get("/api/sos/:alertId", ctl.Get)
@@ -372,6 +395,53 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	resp, _ = do("GET", "/api/sos/does-not-exist", "sender", "")
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown alert status = %d, want 404", resp.StatusCode)
+	}
+
+	// A responder answers, then the incident detail lists who is coming.
+	respondReq := httptest.NewRequest("POST", "/api/sos/"+alertID+"/respond",
+		strings.NewReader(`{"responder_latitude":-6.2100,"responder_longitude":106.8470}`))
+	respondReq.Header.Set("Content-Type", "application/json")
+	respondReq.Header.Set("X-Test-User", "user-b")
+	respondResp, err := app.Test(respondReq, -1)
+	if err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	respondBody, _ := io.ReadAll(respondResp.Body)
+	respondResp.Body.Close()
+	if respondResp.StatusCode != http.StatusOK {
+		t.Fatalf("respond status = %d body = %s", respondResp.StatusCode, respondBody)
+	}
+
+	resp, body = do("GET", "/api/sos/"+alertID, "user-b", "")
+	var forResponder model.WebResponse[*model.AlertDetailResponse]
+	if err := json.Unmarshal(body, &forResponder); err != nil {
+		t.Fatalf("responder detail decode: %v (%s)", err, body)
+	}
+	if len(forResponder.Data.Responders) != 1 {
+		t.Fatalf("responder detail list = %+v", forResponder.Data.Responders)
+	}
+	if r := forResponder.Data.Responders[0]; r.UserID != "user-b" || r.DistanceMeters <= 0 || r.ETASeconds <= 0 {
+		t.Fatalf("responder entry = %+v", r)
+	}
+
+	resp, body = do("GET", "/api/sos/"+alertID, "user-x", "")
+	var forStranger model.WebResponse[*model.AlertDetailResponse]
+	if err := json.Unmarshal(body, &forStranger); err != nil {
+		t.Fatalf("stranger detail decode: %v (%s)", err, body)
+	}
+	if len(forStranger.Data.Responders) != 0 {
+		t.Fatalf("stranger must not see responder identities: %+v", forStranger.Data.Responders)
+	}
+
+	var sawResponderAdded bool
+	for _, payload := range hub.frames[alertID] {
+		var msg model.ResponderAddedMessage
+		if json.Unmarshal(payload, &msg) == nil && msg.Type == "RESPONDER_ADDED" && msg.ResponderID == "user-b" {
+			sawResponderAdded = true
+		}
+	}
+	if !sawResponderAdded {
+		t.Fatal("RESPONDER_ADDED frame not published")
 	}
 
 	// POST /api/sos/classify: audio-only, nothing persisted.

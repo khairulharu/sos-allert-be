@@ -121,7 +121,7 @@ sequenceDiagram
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
 | `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
-| `GET` | `/api/sos/:alertId` | ✅ | Detail insiden; lokasi dimask untuk viewer yang bukan sender/responder |
+| `GET` | `/api/sos/:alertId` | ✅ | Detail insiden; lokasi dimask untuk viewer yang bukan sender/responder. `responders[]` (nama + `distance_m`/`eta_seconds`) hanya untuk participant |
 | `POST` | `/api/sos/:alertId/cancel` | ✅ | Batalkan false alarm (PIN 4 digit + alasan) |
 | `POST` | `/api/sos/:alertId/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED` |
 | `POST` | `/api/sos/:alertId/resolve` | ✅ | `TRIGGERED`/`ACKNOWLEDGED` → `RESOLVED` (sender saja) |
@@ -257,6 +257,17 @@ Server -> Sender/Responders (triage dari audio yang baru ditranskrip):
   "severity": 0.8,
   "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
   "updated_at": 1730304075000
+}
+
+Server -> Sender/Responders (responder baru menjawab "saya datang"):
+{
+  "type": "RESPONDER_ADDED",
+  "alert_id": "alt_01HXYZ...",
+  "responder_id": "user-b",
+  "name": "Budi",
+  "distance_m": 240,
+  "eta_seconds": 180,
+  "responded_at": 1730304060000
 }
 ```
 

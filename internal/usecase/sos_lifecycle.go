@@ -135,6 +135,15 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 		latest = model.LocationPoint{Latitude: lat, Longitude: lng, UpdatedAt: latest.UpdatedAt}
 		detail.Masked = true
 	}
+	// Names and distances of the responders are participant-only: other
+	// viewers keep the bare count so the endpoint does not leak who is
+	// answering a stranger's incident.
+	if isSender || isResponder {
+		if err := u.fillResponders(ctx, detail, alert.ID); err != nil {
+			return nil, err
+		}
+	}
+
 	detail.InitialLocation = initial
 	detail.LatestLocation = latest
 
@@ -148,6 +157,39 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 		}
 	}
 	return detail, nil
+}
+
+// fillResponders loads the incident's responders (oldest first) and
+// resolves their display names in one query.
+func (u *TriggerSOSUseCase) fillResponders(ctx context.Context, detail *model.AlertDetailResponse, alertID string) error {
+	responses, err := u.Deps.Alerts.ListResponses(ctx, u.DB, alertID)
+	if err != nil {
+		return err
+	}
+	names := map[string]string{}
+	if u.Deps.Users != nil && len(responses) > 0 {
+		ids := make([]string, 0, len(responses))
+		for _, r := range responses {
+			ids = append(ids, r.ResponderID)
+		}
+		if users, err := u.Deps.Users.ListByIDs(ctx, ids); err != nil {
+			u.Log.WithError(err).Warn("could not load responder names")
+		} else {
+			for id, user := range users {
+				names[id] = user.Name
+			}
+		}
+	}
+	for _, r := range responses {
+		detail.Responders = append(detail.Responders, model.ResponderSummary{
+			UserID:         r.ResponderID,
+			Name:           names[r.ResponderID],
+			DistanceMeters: int(r.DistanceMeters + 0.5),
+			ETASeconds:     r.ETASeconds,
+			RespondedAt:    r.RespondedAt,
+		})
+	}
+	return nil
 }
 
 func breadcrumbToResponse(c *entity.AlertBreadcrumb) model.BreadcrumbResponse {
@@ -326,6 +368,7 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 			u.publishStatus(alertID, entity.AlertStatusAcknowledged, response.RespondedAt)
 		}
 	}
+	u.publishResponderAdded(ctx, alertID, response)
 	return &model.RespondSOSResponse{
 		ResponseID:           response.ID,
 		ETASeconds:           response.ETASeconds,
@@ -731,6 +774,32 @@ func mediaToResponse(m *entity.AlertMedia) *model.AlertMediaResponse {
 		Transcript:          m.Transcript,
 		TranscriptionStatus: status,
 		TranscribedAt:       m.TranscribedAt,
+	}
+}
+
+// publishResponderAdded tells tracking subscribers that someone is on
+// the way, so an open alert view can append them without re-polling.
+func (u *TriggerSOSUseCase) publishResponderAdded(ctx context.Context, alertID string, response *entity.AlertResponse) {
+	if u.Deps.Hub == nil {
+		return
+	}
+	name := ""
+	if u.Deps.Users != nil {
+		if user, err := u.Deps.Users.GetByID(ctx, response.ResponderID); err == nil && user != nil {
+			name = user.Name
+		}
+	}
+	msg := model.ResponderAddedMessage{
+		Type:           "RESPONDER_ADDED",
+		AlertID:        alertID,
+		ResponderID:    response.ResponderID,
+		Name:           name,
+		DistanceMeters: int(response.DistanceMeters + 0.5),
+		ETASeconds:     response.ETASeconds,
+		RespondedAt:    response.RespondedAt,
+	}
+	if data, err := json.Marshal(msg); err == nil {
+		u.Deps.Hub.Publish(alertID, data)
 	}
 }
 

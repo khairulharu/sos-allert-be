@@ -115,24 +115,38 @@ type SenderSummary struct {
 	Name string `json:"name,omitempty"`
 }
 
+// ResponderSummary is one responder en route, with the distance and ETA
+// recorded when they answered.
+type ResponderSummary struct {
+	UserID         string `json:"user_id"`
+	Name           string `json:"name,omitempty"`
+	DistanceMeters int    `json:"distance_m"`
+	ETASeconds     int    `json:"eta_seconds"`
+	RespondedAt    int64  `json:"responded_at"`
+}
+
 // AlertDetailResponse matches README GET /api/sos/:alertId.
 // LatestLocation is masked (rounded) for viewers who are neither the
 // sender nor a responder; Masked reports that.
 type AlertDetailResponse struct {
-	AlertID           string               `json:"alert_id"`
-	Sender            SenderSummary        `json:"sender"`
-	Status            string               `json:"status"`
-	EmergencyType     string               `json:"emergency_type"`
-	Severity          float64              `json:"severity,omitempty"`
-	Summary           string               `json:"summary,omitempty"`
-	InitialLocation   LocationPoint        `json:"initial_location"`
-	LatestLocation    LocationPoint        `json:"latest_location"`
-	Masked            bool                 `json:"masked,omitempty"`
-	RespondersEnRoute int                  `json:"responders_en_route"`
-	TriggeredAt       int64                `json:"triggered_at"`
-	ResolvedAt        *int64               `json:"resolved_at,omitempty"`
-	CancelledAt       *int64               `json:"cancelled_at,omitempty"`
-	Breadcrumbs       []BreadcrumbResponse `json:"breadcrumbs,omitempty"`
+	AlertID           string        `json:"alert_id"`
+	Sender            SenderSummary `json:"sender"`
+	Status            string        `json:"status"`
+	EmergencyType     string        `json:"emergency_type"`
+	Severity          float64       `json:"severity,omitempty"`
+	Summary           string        `json:"summary,omitempty"`
+	InitialLocation   LocationPoint `json:"initial_location"`
+	LatestLocation    LocationPoint `json:"latest_location"`
+	Masked            bool          `json:"masked,omitempty"`
+	RespondersEnRoute int           `json:"responders_en_route"`
+	// Responders lists who is coming with distance/ETA. Only populated
+	// for the incident's participants (sender or responder); other
+	// viewers keep the bare count.
+	Responders  []ResponderSummary   `json:"responders,omitempty"`
+	TriggeredAt int64                `json:"triggered_at"`
+	ResolvedAt  *int64               `json:"resolved_at,omitempty"`
+	CancelledAt *int64               `json:"cancelled_at,omitempty"`
+	Breadcrumbs []BreadcrumbResponse `json:"breadcrumbs,omitempty"`
 }
 
 // LocationPoint is a lat/lng pair with an optional timestamp.
@@ -204,6 +218,18 @@ type AlertTriageMessage struct {
 	Severity      float64 `json:"severity"`
 	Summary       string  `json:"summary,omitempty"`
 	UpdatedAt     int64   `json:"updated_at"`
+}
+
+// ResponderAddedMessage is broadcast on the tracking WebSocket when a
+// responder answers, so an open view can append them live.
+type ResponderAddedMessage struct {
+	Type           string `json:"type"`
+	AlertID        string `json:"alert_id"`
+	ResponderID    string `json:"responder_id"`
+	Name           string `json:"name,omitempty"`
+	DistanceMeters int    `json:"distance_m"`
+	ETASeconds     int    `json:"eta_seconds"`
+	RespondedAt    int64  `json:"responded_at"`
 }
 
 // AlertStatusMessage is broadcast on the tracking WebSocket when an

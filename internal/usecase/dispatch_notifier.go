@@ -20,9 +20,11 @@ type SOSMetrics interface {
 	SetActiveSOS(n int64)
 }
 
-// TokenReader loads a user (for push device tokens) by id.
+// TokenReader loads users by id: push device tokens for the dispatcher,
+// display names for the alert detail view.
 type TokenReader interface {
 	GetByID(ctx context.Context, id string) (*entity.User, error)
+	ListByIDs(ctx context.Context, ids []string) (map[string]*entity.User, error)
 }
 
 // ContactResolver loads SMS recipients for a sender.

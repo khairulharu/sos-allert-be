@@ -100,3 +100,20 @@ func (r *UserReaderRepository) GetByID(ctx context.Context, id string) (*entity.
 	}
 	return user, nil
 }
+
+// ListByIDs loads several users in one query. Ids that do not exist are
+// simply absent from the result map.
+func (r *UserReaderRepository) ListByIDs(ctx context.Context, ids []string) (map[string]*entity.User, error) {
+	out := make(map[string]*entity.User, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var users []*entity.User
+	if err := r.DB.WithContext(ctx).Where("id IN ?", ids).Find(&users).Error; err != nil {
+		return nil, err
+	}
+	for _, user := range users {
+		out[user.ID] = user
+	}
+	return out, nil
+}

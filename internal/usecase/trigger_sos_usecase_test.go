@@ -244,6 +244,11 @@ func (f *fakeAlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r
 	return nil
 }
 
+func (f *fakeAlertRepository) ListResponses(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertResponse, error) {
+	f.ensure()
+	return append([]*entity.AlertResponse(nil), f.responses[alertID]...), nil
+}
+
 func (f *fakeAlertRepository) CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error) {
 	f.ensure()
 	seen := map[string]struct{}{}

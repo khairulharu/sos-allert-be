@@ -131,6 +131,17 @@ func (a *AlertRepository) IsResponder(ctx context.Context, db *gorm.DB, alertID,
 	return count > 0, nil
 }
 
+// ListResponses returns the responders of an incident, oldest first,
+// backing the responder list on the alert detail view.
+func (a *AlertRepository) ListResponses(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertResponse, error) {
+	var out []*entity.AlertResponse
+	if err := db.WithContext(ctx).Where("alert_id = ?", alertID).
+		Order("responded_at ASC").Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CreateMedia records an uploaded media file.
 func (a *AlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
 	return db.WithContext(ctx).Create(m).Error

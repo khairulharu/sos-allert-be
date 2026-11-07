@@ -43,6 +43,7 @@ type AlertStore interface {
 	ListBreadcrumbs(ctx context.Context, db *gorm.DB, alertID string, limit int) ([]*entity.AlertBreadcrumb, error)
 	LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID string) (*entity.AlertBreadcrumb, error)
 	CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error
+	ListResponses(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertResponse, error)
 	CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error)
 	IsResponder(ctx context.Context, db *gorm.DB, alertID, userID string) (bool, error)
 	CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error
