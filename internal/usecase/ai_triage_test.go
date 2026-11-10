@@ -45,6 +45,23 @@ func TestOfflineClassifier(t *testing.T) {
 		{name: "uppercase", desc: "KECELAKAAN DI JALAN", wantType: entity.EmergencyTypeAccident, wantSeverity: 0.6, wantSummary: true},
 		{name: "medical wins tie by life-safety priority", desc: "kecelakaan, teman saya pingsan", wantType: entity.EmergencyTypeMedical, wantSeverity: 0.6, wantSummary: true},
 		{name: "severity capped at one", desc: "kecelakaan motor, diancam, darurat, kritis, banyak korban", wantType: entity.EmergencyTypeAccident, wantSeverity: 1.0, wantSummary: true},
+		// Expanded Indonesian coverage: disasters map to DANGER because the
+		// request model only accepts DANGER/MEDICAL/ACCIDENT.
+		{name: "house fire", desc: "kebakaran di rumah tetangga", wantType: entity.EmergencyTypeDanger, wantSeverity: 0.8, wantSummary: true},
+		{name: "flash flood", desc: "banjir bandang di kampung kami", wantType: entity.EmergencyTypeDanger, wantSeverity: 0.8, wantSummary: true},
+		{name: "earthquake", desc: "gempa bumi, plafon rumah retak", wantType: entity.EmergencyTypeDanger, wantSeverity: 0.8, wantSummary: true},
+		{name: "drowning", desc: "anak tenggelam di sungai", wantType: entity.EmergencyTypeMedical, wantSeverity: 0.8, wantSummary: true},
+		{name: "colloquial seizure", desc: "bapak kejang-kejang, hampir tidak sadarkan diri", wantType: entity.EmergencyTypeMedical, wantSeverity: 1.0, wantSummary: true},
+		{name: "stretched typing", desc: "tolonggg, anak saya pingsannn", wantType: entity.EmergencyTypeMedical, wantSeverity: 0.6, wantSummary: true},
+		{name: "transit harassment", desc: "dicolek orang di kereta", wantType: entity.EmergencyTypeDanger, wantSeverity: 0.6, wantSummary: true},
+		{name: "mugging", desc: "tetangga dibacok pencuri", wantType: entity.EmergencyTypeDanger, wantSeverity: 0.6, wantSummary: true},
+		{name: "overturned truck", desc: "truk terbalik masuk jurang", wantType: entity.EmergencyTypeAccident, wantSeverity: 0.6, wantSummary: true},
+		{name: "suffix tolerance", desc: "kecelakaannya banyak, korban luka", wantType: entity.EmergencyTypeAccident, wantSeverity: 0.8, wantSummary: true},
+		// False-positive guards: short roots must not match inside
+		// unrelated everyday words.
+		{name: "meeting time is not an attack", desc: "besok rapat pukul 10 pagi", wantSeverity: 0},
+		{name: "fruit is not arson", desc: "saya makan grape dan apel", wantSeverity: 0},
+		{name: "power outage is not a fire", desc: "mati lampu di rumah", wantSeverity: 0},
 	}
 
 	c := NewOfflineClassifier()
@@ -70,6 +87,28 @@ func TestOfflineClassifier(t *testing.T) {
 				t.Errorf("Summary = %q, want PRIORITAS TINGGI prefix", res.Summary)
 			}
 		})
+	}
+}
+
+func TestOfflineClassifierSummaryEvidence(t *testing.T) {
+	res, err := NewOfflineClassifier().Triage(context.Background(), TriageInput{Description: "kebakaran di rumah tetangga"})
+	if err != nil {
+		t.Fatalf("Triage() error = %v", err)
+	}
+	if !strings.Contains(res.Summary, "kebakaran") {
+		t.Errorf("Summary = %q, want matched evidence %q", res.Summary, "kebakaran")
+	}
+}
+
+func TestOfflineClassifierTokenMatching(t *testing.T) {
+	c := NewOfflineClassifier()
+	// Whole-suffix matching only: keywords must not match inside a
+	// longer, unrelated word.
+	if res, _ := c.Triage(context.Background(), TriageInput{Description: "motorik halus anak saya bagus"}); res.EmergencyType != "" {
+		t.Errorf("motorik classified as %q, want no signal", res.EmergencyType)
+	}
+	if res, _ := c.Triage(context.Background(), TriageInput{Description: "grape juice enak"}); res.EmergencyType != "" {
+		t.Errorf("grape classified as %q, want no signal", res.EmergencyType)
 	}
 }
 
