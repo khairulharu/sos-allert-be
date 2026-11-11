@@ -1,0 +1,3 @@
+# Known false positive — UUID test fixture from the forked tutorial base
+# (golang-clean-architecture by khannedy, 2023). Not a real credential.
+4d6075f05b2650b63aff10d521b6d20823843d4c:test/http-client.env.json:generic-api-key:3
