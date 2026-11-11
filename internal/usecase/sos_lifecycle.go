@@ -85,21 +85,7 @@ func (u *TriggerSOSUseCase) ListInbox(ctx context.Context, userID string) ([]*mo
 }
 
 func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert, requesterID string, includeBreadcrumbs bool) (*model.AlertDetailResponse, error) {
-	detail := &model.AlertDetailResponse{
-		AlertID:       alert.ID,
-		Sender:        model.SenderSummary{ID: alert.SenderID},
-		Status:        alert.Status,
-		EmergencyType: alert.EmergencyType,
-		TriggeredAt:   alert.TriggeredAt,
-		ResolvedAt:    alert.ResolvedAt,
-		CancelledAt:   alert.CancelledAt,
-	}
-	if alert.Severity != nil {
-		detail.Severity = *alert.Severity
-	}
-	if alert.Summary != nil {
-		detail.Summary = *alert.Summary
-	}
+	detail := alertDetailBase(alert)
 	if u.Deps.Users != nil {
 		if sender, err := u.Deps.Users.GetByID(ctx, alert.SenderID); err == nil && sender != nil {
 			detail.Sender.Name = sender.Name
@@ -128,13 +114,6 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 			return nil, err
 		}
 	}
-	if !isSender && !isResponder {
-		lat, lng := model.MaskCoordinates(initial.Latitude, initial.Longitude)
-		initial = model.LocationPoint{Latitude: lat, Longitude: lng}
-		lat, lng = model.MaskCoordinates(latest.Latitude, latest.Longitude)
-		latest = model.LocationPoint{Latitude: lat, Longitude: lng, UpdatedAt: latest.UpdatedAt}
-		detail.Masked = true
-	}
 	// Names and distances of the responders are participant-only: other
 	// viewers keep the bare count so the endpoint does not leak who is
 	// answering a stranger's incident.
@@ -144,8 +123,7 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 		}
 	}
 
-	detail.InitialLocation = initial
-	detail.LatestLocation = latest
+	setDetailLocations(detail, initial, latest, isSender || isResponder)
 
 	if includeBreadcrumbs {
 		crumbs, err := u.Deps.Alerts.ListBreadcrumbs(ctx, u.DB, alert.ID, 1000)
@@ -157,6 +135,44 @@ func (u *TriggerSOSUseCase) buildDetail(ctx context.Context, alert *entity.Alert
 		}
 	}
 	return detail, nil
+}
+
+// alertDetailBase maps an entity to the detail fields shared by every
+// response (sender id, status, triage, timestamps). Locations are set
+// afterwards because they depend on the viewer.
+func alertDetailBase(alert *entity.Alert) *model.AlertDetailResponse {
+	detail := &model.AlertDetailResponse{
+		AlertID:       alert.ID,
+		Sender:        model.SenderSummary{ID: alert.SenderID},
+		Status:        alert.Status,
+		EmergencyType: alert.EmergencyType,
+		TriggeredAt:   alert.TriggeredAt,
+		ResolvedAt:    alert.ResolvedAt,
+		CancelledAt:   alert.CancelledAt,
+	}
+	if alert.Severity != nil {
+		detail.Severity = *alert.Severity
+	}
+	if alert.Summary != nil {
+		detail.Summary = *alert.Summary
+	}
+	return detail
+}
+
+// setDetailLocations applies the single masking rule used by every
+// detail response: exact coordinates for the sender and recorded
+// responders, ~100 m (~3 decimals) for everyone else.
+func setDetailLocations(detail *model.AlertDetailResponse, initial, latest model.LocationPoint, isParticipant bool) {
+	if isParticipant {
+		detail.InitialLocation = initial
+		detail.LatestLocation = latest
+		return
+	}
+	lat, lng := model.MaskCoordinates(initial.Latitude, initial.Longitude)
+	detail.InitialLocation = model.LocationPoint{Latitude: lat, Longitude: lng}
+	lat, lng = model.MaskCoordinates(latest.Latitude, latest.Longitude)
+	detail.LatestLocation = model.LocationPoint{Latitude: lat, Longitude: lng, UpdatedAt: latest.UpdatedAt}
+	detail.Masked = true
 }
 
 // fillResponders loads the incident's responders (oldest first) and

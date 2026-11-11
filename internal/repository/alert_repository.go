@@ -240,3 +240,211 @@ func (a *AlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, bef
 	}
 	return res.RowsAffected, nil
 }
+
+// alertStatusesFor maps the API status filter to statuses. Empty means
+// "all" and returns nil; "active"/"closed" are the group shorthands the
+// frontend uses for its chips.
+func alertStatusesFor(filter string) []string {
+	switch filter {
+	case "":
+		return nil
+	case "active":
+		return []string{entity.AlertStatusTriggered, entity.AlertStatusAcknowledged}
+	case "closed":
+		return []string{entity.AlertStatusResolved, entity.AlertStatusCancelled, entity.AlertStatusExpired}
+	default:
+		return []string{filter}
+	}
+}
+
+// applyAlertHistoryFilter adds the status/window predicates shared by
+// both history queries (and their counts).
+func applyAlertHistoryFilter(tx *gorm.DB, req *model.SearchAlertHistoryRequest) *gorm.DB {
+	if statuses := alertStatusesFor(req.Status); len(statuses) > 0 {
+		tx = tx.Where("alerts.status IN ?", statuses)
+	}
+	if req.FromMs != nil {
+		tx = tx.Where("alerts.triggered_at >= ?", *req.FromMs)
+	}
+	if req.ToMs != nil {
+		tx = tx.Where("alerts.triggered_at <= ?", *req.ToMs)
+	}
+	return tx
+}
+
+func senderHistoryQuery(ctx context.Context, db *gorm.DB, senderID string) *gorm.DB {
+	return db.WithContext(ctx).Model(&entity.Alert{}).Where("alerts.sender_id = ?", senderID)
+}
+
+func recipientHistoryQuery(ctx context.Context, db *gorm.DB, userID string) *gorm.DB {
+	return db.WithContext(ctx).Model(&entity.Alert{}).
+		Joins("JOIN alert_recipients r ON r.alert_id = alerts.id").
+		Where("r.user_id = ?", userID)
+}
+
+// ListHistoryBySender returns one page of the caller's sent incidents
+// (all statuses) plus the total row count, newest first.
+func (a *AlertRepository) ListHistoryBySender(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error) {
+	var out []*entity.Alert
+	if err := applyAlertHistoryFilter(senderHistoryQuery(ctx, db, req.UserID), req).
+		Order("alerts.triggered_at DESC, alerts.id DESC").
+		Offset((req.Page - 1) * req.Size).Limit(req.Size).
+		Find(&out).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var total int64
+	if err := applyAlertHistoryFilter(senderHistoryQuery(ctx, db, req.UserID), req).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// ListHistoryForRecipient returns one page of the incidents the caller
+// was notified for, plus the total. The sender never enters
+// alert_recipients, so a user's own alerts are never listed here.
+func (a *AlertRepository) ListHistoryForRecipient(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error) {
+	var out []*entity.Alert
+	if err := applyAlertHistoryFilter(recipientHistoryQuery(ctx, db, req.UserID), req).
+		Select("alerts.*").
+		Order("alerts.triggered_at DESC, alerts.id DESC").
+		Offset((req.Page - 1) * req.Size).Limit(req.Size).
+		Find(&out).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var total int64
+	if err := applyAlertHistoryFilter(recipientHistoryQuery(ctx, db, req.UserID), req).
+		Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
+// statusCountRows is the scan target for the GROUP BY status queries.
+type statusCountRow struct {
+	Status string
+	Total  int64
+}
+
+func statusCountMap(rows []statusCountRow) map[string]int64 {
+	out := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		out[row.Status] = row.Total
+	}
+	return out
+}
+
+// CountBySenderStatus groups the caller's sent alerts by status.
+func (a *AlertRepository) CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error) {
+	var rows []statusCountRow
+	if err := db.WithContext(ctx).Model(&entity.Alert{}).
+		Select("status, COUNT(*) AS total").
+		Where("sender_id = ?", senderID).
+		Group("status").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return statusCountMap(rows), nil
+}
+
+// CountByRecipientStatus groups the alerts the caller was notified for
+// by status (all of them, active or closed).
+func (a *AlertRepository) CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error) {
+	var rows []statusCountRow
+	if err := db.WithContext(ctx).Model(&entity.Alert{}).
+		Select("alerts.status AS status, COUNT(*) AS total").
+		Joins("JOIN alert_recipients r ON r.alert_id = alerts.id").
+		Where("r.user_id = ?", userID).
+		Group("alerts.status").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	return statusCountMap(rows), nil
+}
+
+// CountResponded reports how many distinct incidents the caller answered
+// (total) and how many of those ended RESOLVED. COUNT(DISTINCT ...) is
+// required: alert_responses has no unique (alert_id, responder_id).
+func (a *AlertRepository) CountResponded(ctx context.Context, db *gorm.DB, userID string) (total, resolved int64, err error) {
+	if err = db.WithContext(ctx).Model(&entity.AlertResponse{}).
+		Where("responder_id = ?", userID).
+		Select("COUNT(DISTINCT alert_id)").Scan(&total).Error; err != nil {
+		return 0, 0, err
+	}
+	if err = db.WithContext(ctx).Table("alert_responses r").
+		Joins("JOIN alerts a ON a.id = r.alert_id").
+		Where("r.responder_id = ? AND a.status = ?", userID, entity.AlertStatusResolved).
+		Select("COUNT(DISTINCT r.alert_id)").Scan(&resolved).Error; err != nil {
+		return 0, 0, err
+	}
+	return total, resolved, nil
+}
+
+// CountRespondersByAlertIDs batches the responder count for a page of
+// alerts, so a history page costs one query instead of one per row.
+func (a *AlertRepository) CountRespondersByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]int, error) {
+	out := make(map[string]int, len(alertIDs))
+	if len(alertIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		AlertID string
+		Total   int64
+	}
+	if err := db.WithContext(ctx).Model(&entity.AlertResponse{}).
+		Select("alert_id, COUNT(DISTINCT responder_id) AS total").
+		Where("alert_id IN ?", alertIDs).
+		Group("alert_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.AlertID] = int(row.Total)
+	}
+	return out, nil
+}
+
+// LatestBreadcrumbsByAlertIDs batches the newest trail point for a page
+// of alerts (one derived-table query, MySQL 5.7+). Ties on recorded_at
+// keep the first row.
+func (a *AlertRepository) LatestBreadcrumbsByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]*entity.AlertBreadcrumb, error) {
+	out := make(map[string]*entity.AlertBreadcrumb, len(alertIDs))
+	if len(alertIDs) == 0 {
+		return out, nil
+	}
+	var rows []*entity.AlertBreadcrumb
+	if err := db.WithContext(ctx).Raw(`
+		SELECT b.* FROM alert_breadcrumbs b
+		JOIN (SELECT alert_id, MAX(recorded_at) AS max_recorded
+		      FROM alert_breadcrumbs
+		      WHERE alert_id IN ?
+		      GROUP BY alert_id) m
+		  ON m.alert_id = b.alert_id AND m.max_recorded = b.recorded_at
+		WHERE b.alert_id IN ?`, alertIDs, alertIDs).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, crumb := range rows {
+		if _, ok := out[crumb.AlertID]; !ok {
+			out[crumb.AlertID] = crumb
+		}
+	}
+	return out, nil
+}
+
+// ListRespondedAlertIDs reports which of alertIDs the user answered,
+// so a history page can apply the existing masking rule in one query.
+func (a *AlertRepository) ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, userID string, alertIDs []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(alertIDs))
+	if len(alertIDs) == 0 {
+		return out, nil
+	}
+	var ids []string
+	if err := db.WithContext(ctx).Model(&entity.AlertResponse{}).
+		Where("responder_id = ? AND alert_id IN ?", userID, alertIDs).
+		Distinct().Pluck("alert_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}

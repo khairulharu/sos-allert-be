@@ -1157,6 +1157,165 @@
         }
       }
     },
+    "/api/sos/history": {
+      "get": {
+        "operationId": "listAlertHistory",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "One page of incident history for the authenticated user. `role=sent` lists incidents they triggered; `role=received` lists incidents they were notified for (`alert_recipients`). Every status is included, so RESOLVED/CANCELLED/EXPIRED rows are returned, unlike `/api/sos/active` and `/api/sos/inbox`. Items use `AlertDetailResponse` without `responders[]`/`breadcrumbs`; coordinates are masked (~3 decimals) for callers who are neither the sender nor a recorded responder.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sent",
+                "received"
+              ],
+              "default": "sent"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "`active` = TRIGGERED+ACKNOWLEDGED, `closed` = RESOLVED+CANCELLED+EXPIRED, empty = all.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "TRIGGERED",
+                "ACKNOWLEDGED",
+                "RESOLVED",
+                "CANCELLED",
+                "EXPIRED",
+                "active",
+                "closed"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          },
+          {
+            "name": "from_ms",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive lower bound on `triggered_at` (epoch ms).",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "to_ms",
+            "in": "query",
+            "required": false,
+            "description": "Inclusive upper bound on `triggered_at` (epoch ms); must be >= `from_ms`.",
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History page, newest first (`triggered_at DESC, id DESC`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AlertDetailResponse"
+                      }
+                    },
+                    "paging": {
+                      "$ref": "#/components/schemas/PageMetadata"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/api/sos/summary": {
+      "get": {
+        "operationId": "getAlertSummary",
+        "tags": [
+          "SOS API"
+        ],
+        "description": "Aggregate counters for the alert list cards, counted over every status (not derived from the visible page). `active` groups TRIGGERED+ACKNOWLEDGED; `total` is the sum of every bucket. `responded` counts distinct incidents the caller answered, and how many of those ended RESOLVED.",
+        "security": [
+          {
+            "RawToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Summary counters.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/AlertSummaryResponse"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
     "/api/sos/{alertId}": {
       "parameters": [
         {
@@ -3095,6 +3254,58 @@
           "public_key": {
             "type": "string",
             "description": "applicationServerKey for PushManager.subscribe()."
+          }
+        }
+      },
+      "AlertStatusCounts": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "active": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "resolved": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cancelled": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expired": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AlertRespondedCounts": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "resolved": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AlertSummaryResponse": {
+        "type": "object",
+        "properties": {
+          "sent": {
+            "$ref": "#/components/schemas/AlertStatusCounts"
+          },
+          "received": {
+            "$ref": "#/components/schemas/AlertStatusCounts"
+          },
+          "responded": {
+            "$ref": "#/components/schemas/AlertRespondedCounts"
           }
         }
       }

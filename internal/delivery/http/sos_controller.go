@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"math"
 	"path/filepath"
 	"strconv"
 
@@ -127,6 +128,60 @@ func (s *SOSController) ListInbox(ctx *fiber.Ctx) error {
 		return mapSOSError(err)
 	}
 	return ctx.JSON(model.WebResponse[[]*model.AlertDetailResponse]{Data: alerts})
+}
+
+// ListHistory serves GET /api/sos/history: one page of the caller's sent
+// or received incidents, every status, newest first.
+func (s *SOSController) ListHistory(ctx *fiber.Ctx) error {
+	auth := middleware.GetUser(ctx)
+
+	request := &model.SearchAlertHistoryRequest{
+		UserID: auth.ID,
+		Role:   ctx.Query("role", "sent"),
+		Status: ctx.Query("status", ""),
+		Page:   ctx.QueryInt("page", 1),
+		Size:   ctx.QueryInt("size", 20),
+	}
+	if raw := ctx.Query("from_ms"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fiber.ErrBadRequest
+		}
+		request.FromMs = &v
+	}
+	if raw := ctx.Query("to_ms"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return fiber.ErrBadRequest
+		}
+		request.ToMs = &v
+	}
+
+	responses, total, err := s.UseCase.ListHistory(ctx.UserContext(), request)
+	if err != nil {
+		s.Log.WithError(err).Error("error listing alert history")
+		return mapSOSError(err)
+	}
+
+	paging := &model.PageMetadata{
+		Page:      request.Page,
+		Size:      request.Size,
+		TotalItem: total,
+		TotalPage: int64(math.Ceil(float64(total) / float64(request.Size))),
+	}
+	return ctx.JSON(model.WebResponse[[]*model.AlertDetailResponse]{Data: responses, Paging: paging})
+}
+
+// Summary serves GET /api/sos/summary: the aggregate counters behind the
+// alert list cards.
+func (s *SOSController) Summary(ctx *fiber.Ctx) error {
+	auth := middleware.GetUser(ctx)
+	result, err := s.UseCase.Summary(ctx.UserContext(), auth.ID)
+	if err != nil {
+		s.Log.WithError(err).Error("error loading alert summary")
+		return mapSOSError(err)
+	}
+	return ctx.JSON(model.WebResponse[*model.AlertSummaryResponse]{Data: result})
 }
 
 func (s *SOSController) Cancel(ctx *fiber.Ctx) error {

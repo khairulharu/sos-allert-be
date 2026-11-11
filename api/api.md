@@ -39,7 +39,7 @@ Sukses:
 { "data": { } }
 ```
 
-List dengan pagination (hanya `GET /api/contacts`):
+List dengan pagination (`GET /api/contacts` dan `GET /api/sos/history`):
 
 ```json
 {
@@ -62,7 +62,7 @@ Error ditangani global handler:
 | **Contact** | `/api/contacts` | CRUD kontak milik user, pencarian nama/telepon/email, dan pagination. |
 | **Address** | `/api/contacts/{contactId}/addresses` | CRUD alamat yang dimiliki sebuah kontak. |
 | **Location** | `/api/location` | Heartbeat lokasi user ke Redis GEO + histori MySQL, baca posisi terakhir, dan cari responder terdekat untuk peta. |
-| **SOS Incident** | `/api/sos`, `/api/sos/{alertId}` | Trigger insiden, query insiden aktif/detail/inbox, cancel, acknowledge, resolve, respond (ETA), breadcrumb, dan media bukti. |
+| **SOS Incident** | `/api/sos`, `/api/sos/{alertId}` | Trigger insiden, query insiden aktif/detail/inbox, **riwayat paged** (`/api/sos/history`) dan **ringkasan kartu** (`/api/sos/summary`), cancel, acknowledge, resolve, respond (ETA), breadcrumb, dan media bukti. |
 | **Emergency Contact** | `/api/emergency-contacts` | Kontak Tier-1 untuk fallback SMS/voice, terpisah dari tabel kontak biasa. |
 | **Push (Web Push browser)** | `/api/push` | Langganan Web Push browser (VAPID) — kanal push tanpa kredensial Firebase. |
 | **Live Tracking** | `WS /ws/sos/{alertId}/track` | Stream posisi korban dan perubahan status insiden secara real-time. |
@@ -157,6 +157,8 @@ belum ada, response-nya `404`. Panggil `PUT /api/location` dulu.
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun; hasilnya (`emergency_type`, `severity`, `summary`) dikirim ulang di body trigger agar fan-out pertama memakai level dari suara. |
 | `GET` | `/api/sos/active` | ✅ | Insiden aktif milik user (cold start). |
 | `GET` | `/api/sos/inbox` | ✅ | Insiden yang push-nya pernah diterima user (inbox responder). |
+| `GET` | `/api/sos/history` | ✅ | Riwayat paged (`role=sent\|received`, `status`, `page`, `size`, `from_ms`, `to_ms`), semua status termasuk `RESOLVED`/`CANCELLED`/`EXPIRED`. Item `AlertDetailResponse` tanpa `responders[]`/`breadcrumbs`. |
+| `GET` | `/api/sos/summary` | ✅ | Agregat kartu: `sent`/`received` per status + `responded.total`/`responded.resolved`. |
 | `GET` | `/api/sos/{alertId}` | ✅ | Detail insiden; koordinat dimask untuk non-peserta. `responders[]` (nama + `distance_m`/`eta_seconds` + `responded_at`) hanya diisi untuk sender/responder terdaftar; non-peserta hanya dapat `responders_en_route`. |
 | `POST` | `/api/sos/{alertId}/cancel` | ✅ | Batalkan false alarm dengan `{ "pin": "1234", "reason": "FALSE_ALARM" }`. Sender saja. |
 | `POST` | `/api/sos/{alertId}/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED`. Response detail memakai sudut pandang pemanggil; koordinat dimask kalau bukan sender/responder. |
@@ -218,6 +220,92 @@ stateDiagram-v2
 ```
 
 Hanya `TRIGGERED` dan `ACKNOWLEDGED` yang dianggap aktif.
+
+> Catatan `EXPIRED`: statusnya didukung penuh di filter `history` dan di
+> `summary`, tetapi transisi `TRIGGERED → EXPIRED` dijalankan oleh job
+> housekeeping yang saat ini belum dijadwalkan di deployment mana pun. Jadi di
+> data nyata `expired` bisa selalu `0` sampai job itu dipasang.
+
+`GET /api/sos/active` dan `GET /api/sos/inbox` **tetap aktif-only** (maks 20,
+`RESOLVED`/`CANCELLED` tidak muncul). Untuk riwayat dan angka kartu, pakai
+`GET /api/sos/history` dan `GET /api/sos/summary`, jangan menurunkan angka dari
+kedua endpoint lama itu.
+
+#### Riwayat alert (`GET /api/sos/history`)
+
+```http
+GET /api/sos/history?role=sent&status=closed&page=1&size=20
+```
+
+| Param | Default | Nilai |
+|---|---|---|
+| `role` | `sent` | `sent` (insiden yang saya trigger) \| `received` (saya pernah dinotifikasi lewat `alert_recipients`) |
+| `status` | *(kosong = semua)* | `TRIGGERED` \| `ACKNOWLEDGED` \| `RESOLVED` \| `CANCELLED` \| `EXPIRED` \| `active` (TRIGGERED+ACKNOWLEDGED) \| `closed` (RESOLVED+CANCELLED+EXPIRED) |
+| `page` | `1` | `>= 1` |
+| `size` | `20` | `1..100` |
+| `from_ms` / `to_ms` | — | epoch ms, filter `triggered_at`; `to_ms >= from_ms` |
+
+Nilai `page`/`size` non-numerik jatuh ke default; `from_ms`/`to_ms`
+non-numerik atau di luar rentang → `400`.
+
+```json
+{
+  "data": [
+    {
+      "alert_id": "alt_...",
+      "sender": { "id": "user-a", "name": "Budi" },
+      "status": "RESOLVED",
+      "emergency_type": "MEDICAL",
+      "severity": 0.8,
+      "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
+      "initial_location": { "latitude": -6.209, "longitude": 106.846 },
+      "latest_location": { "latitude": -6.209, "longitude": 106.846, "updated_at": 1730304050000 },
+      "responders_en_route": 3,
+      "triggered_at": 1730304000000,
+      "resolved_at": 1730304075000
+    }
+  ],
+  "paging": { "page": 1, "size": 20, "total_item": 42, "total_page": 3 }
+}
+```
+
+Aturan:
+
+- Urutan `triggered_at DESC, id DESC` (tie-break supaya paging stabil).
+- Item memakai bentuk detail yang sama, tetapi **tanpa** `responders[]` dan
+  `breadcrumbs`; `responders_en_route` tetap terisi.
+- Field opsional absen bila kosong (`omitempty`), bukan `null`: `severity`,
+  `summary`, `masked`, `resolved_at`, `cancelled_at`, `latest_location.updated_at`.
+- Masking sama dengan `GET /api/sos/{alertId}`: `masked: true` + koordinat ~3
+  desimal bila pemanggil bukan sender dan bukan responder terdaftar.
+- `role=received` tidak pernah memuat insiden yang dikirim sendiri.
+- `EXPIRED` tidak punya timestamp sendiri (pakai `triggered_at`).
+
+#### Ringkasan (`GET /api/sos/summary`)
+
+```http
+GET /api/sos/summary
+```
+
+```json
+{
+  "data": {
+    "sent":      { "total": 12, "active": 1, "resolved": 8, "cancelled": 2, "expired": 1 },
+    "received":  { "total": 6,  "active": 2, "resolved": 3, "cancelled": 1, "expired": 0 },
+    "responded": { "total": 4,  "resolved": 3 }
+  }
+}
+```
+
+- `sent.*` = `alerts.sender_id = me`; `received.*` = join `alert_recipients`.
+- `active` = `TRIGGERED + ACKNOWLEDGED`; `total` = jumlah semua bucket.
+- `responded.total` = jumlah insiden berbeda yang saya jawab
+  (`COUNT(DISTINCT alert_id)`); `responded.resolved` = subset yang berakhir
+  `RESOLVED`.
+- Semua nilai integer ≥ 0; kartu di UI tidak perlu menurunkan angka dari list.
+- Pemetaan kartu yang dipakai UI (`AlertsView`): kartu 1 `sent.total`, kartu 2
+  `responded.resolved`, kartu 3 `received.active`. Kalau request gagal,
+  tampilkan `—`, bukan `0`.
 
 ### Emergency Contact
 
@@ -353,9 +441,14 @@ autentikasi/otorisasi dikirim sebagai `{"error": "..."}` lalu koneksi ditutup.
   `user_id`/`contact_id` sehingga user tidak bisa mengakses data user lain.
 - `GET /api/sos/{alertId}` bisa diakses user terautentikasi mana pun, tetapi
   koordinat dibulatkan (~100 m) dan `masked: true` bila user bukan sender/responder.
+- `GET /api/sos/history` memakai aturan masking yang sama untuk setiap item.
+  `GET /api/sos/active` memakai sudut pandang sender; `GET /api/sos/inbox`
+  memakai sudut pandang pemanggil, jadi penerima yang belum pernah respond
+  tetap mendapat `masked: true`.
 - `PATCH /api/users/_current` perlu dipanggil untuk set `safe_pin` sebelum fitur
   cancel bisa dipakai.
 - Migrasi SOS harus dijalankan sebelum endpoint SOS dipakai: lihat
   `db/migrations/20261027000000_create_table_alerts*`,
-  `20261031000000_alerts_v2*`, `20261101000000_alerts_triage*`, dan
-  `20261102000000_alert_recipients*`.
+  `20261031000000_alerts_v2*`, `20261101000000_alerts_triage*`,
+  `20261102000000_alert_recipients*`, dan
+  `20261110000000_alert_history_indexes*` (index riwayat + hitung "helped").

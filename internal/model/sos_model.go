@@ -156,6 +156,44 @@ type LocationPoint struct {
 	UpdatedAt *int64  `json:"updated_at,omitempty"`
 }
 
+// SearchAlertHistoryRequest is the GET /api/sos/history query. The
+// controller fills the fields from the query string; validation happens
+// in the use case so both sides share one rule set.
+type SearchAlertHistoryRequest struct {
+	UserID string `json:"-" validate:"required"`
+	Role   string `json:"-" validate:"required,oneof=sent received"`
+	Status string `json:"-" validate:"omitempty,oneof=TRIGGERED ACKNOWLEDGED RESOLVED CANCELLED EXPIRED active closed"`
+	Page   int    `json:"-" validate:"min=1"`
+	Size   int    `json:"-" validate:"min=1,max=100"`
+	FromMs *int64 `json:"-" validate:"omitempty,gt=0"`
+	ToMs   *int64 `json:"-" validate:"omitempty,gt=0"`
+}
+
+// AlertStatusCounts is the per-status breakdown behind the summary
+// cards. Active groups TRIGGERED + ACKNOWLEDGED; Total is the sum of
+// every bucket.
+type AlertStatusCounts struct {
+	Total     int64 `json:"total"`
+	Active    int64 `json:"active"`
+	Resolved  int64 `json:"resolved"`
+	Cancelled int64 `json:"cancelled"`
+	Expired   int64 `json:"expired"`
+}
+
+// AlertRespondedCounts is how many incidents the caller answered.
+type AlertRespondedCounts struct {
+	Total    int64 `json:"total"`
+	Resolved int64 `json:"resolved"`
+}
+
+// AlertSummaryResponse is GET /api/sos/summary: aggregate cards over
+// every status, so the UI never derives them from the visible page.
+type AlertSummaryResponse struct {
+	Sent      AlertStatusCounts    `json:"sent"`
+	Received  AlertStatusCounts    `json:"received"`
+	Responded AlertRespondedCounts `json:"responded"`
+}
+
 // CreateEmergencyContactRequest is the POST /api/emergency-contacts body.
 type CreateEmergencyContactRequest struct {
 	UserID       string `json:"-" validate:"required"`
