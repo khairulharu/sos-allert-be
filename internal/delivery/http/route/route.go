@@ -70,6 +70,9 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Post("/api/sos/classify", c.SOSController.Classify)
 	c.App.Get("/api/sos/inbox", c.SOSController.ListInbox)
 	c.App.Get("/api/sos/active", c.SOSController.ListActive)
+	// Static paths must be registered before /api/sos/:alertId.
+	c.App.Get("/api/sos/history", c.SOSController.ListHistory)
+	c.App.Get("/api/sos/summary", c.SOSController.Summary)
 	c.App.Get("/api/sos/:alertId", c.SOSController.Get)
 	c.App.Get("/api/sos/:alertId/media", c.SOSController.ListMedia)
 	c.App.Get("/api/sos/:alertId/media/:mediaId", c.SOSController.DownloadMedia)

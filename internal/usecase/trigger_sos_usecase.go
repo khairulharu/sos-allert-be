@@ -53,6 +53,14 @@ type AlertStore interface {
 	CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error
 	ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error)
 	ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error)
+	ListHistoryBySender(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error)
+	ListHistoryForRecipient(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error)
+	CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error)
+	CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error)
+	CountResponded(ctx context.Context, db *gorm.DB, userID string) (total, resolved int64, err error)
+	CountRespondersByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]int, error)
+	LatestBreadcrumbsByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]*entity.AlertBreadcrumb, error)
+	ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, userID string, alertIDs []string) (map[string]bool, error)
 	PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error)
 }
 

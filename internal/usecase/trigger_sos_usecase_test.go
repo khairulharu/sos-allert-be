@@ -6,6 +6,7 @@ import (
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
 	"io"
+	"sort"
 	"testing"
 	"time"
 
@@ -128,6 +129,10 @@ type fakeAlertRepository struct {
 	triageSeverity float64
 	triageSummary  string
 	triageErr      error
+
+	// batch call counters guard against per-row queries in history.
+	countRespondersBatchCalls   int
+	latestBreadcrumbsBatchCalls int
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -343,6 +348,162 @@ func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID
 
 func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
 	return 0, nil
+}
+
+// historyFilters mirrors alertStatusesFor for the in-memory store.
+func historyStatusMatch(status, filter string) bool {
+	switch filter {
+	case "":
+		return true
+	case "active":
+		return status == entity.AlertStatusTriggered || status == entity.AlertStatusAcknowledged
+	case "closed":
+		return status == entity.AlertStatusResolved || status == entity.AlertStatusCancelled || status == entity.AlertStatusExpired
+	default:
+		return status == filter
+	}
+}
+
+// historyList applies the same filters/paging as the SQL implementation so
+// the usecase tests exercise real ordering and windowing.
+func (f *fakeAlertRepository) historyList(req *model.SearchAlertHistoryRequest, match func(*entity.Alert) bool) ([]*entity.Alert, int64, error) {
+	f.ensure()
+	var rows []*entity.Alert
+	for _, alert := range f.alerts {
+		if !match(alert) || !historyStatusMatch(alert.Status, req.Status) {
+			continue
+		}
+		if req.FromMs != nil && alert.TriggeredAt < *req.FromMs {
+			continue
+		}
+		if req.ToMs != nil && alert.TriggeredAt > *req.ToMs {
+			continue
+		}
+		cp := *alert
+		rows = append(rows, &cp)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].TriggeredAt != rows[j].TriggeredAt {
+			return rows[i].TriggeredAt > rows[j].TriggeredAt
+		}
+		return rows[i].ID > rows[j].ID
+	})
+	total := int64(len(rows))
+	start := (req.Page - 1) * req.Size
+	if start < 0 {
+		start = 0
+	}
+	if start > len(rows) {
+		start = len(rows)
+	}
+	end := start + req.Size
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[start:end], total, nil
+}
+
+func (f *fakeAlertRepository) isRecipient(alertID, userID string) bool {
+	for _, id := range f.recipients[alertID] {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeAlertRepository) ListHistoryBySender(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error) {
+	return f.historyList(req, func(a *entity.Alert) bool { return a.SenderID == req.UserID })
+}
+
+func (f *fakeAlertRepository) ListHistoryForRecipient(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error) {
+	return f.historyList(req, func(a *entity.Alert) bool { return f.isRecipient(a.ID, req.UserID) })
+}
+
+func (f *fakeAlertRepository) CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error) {
+	f.ensure()
+	out := map[string]int64{}
+	for _, alert := range f.alerts {
+		if alert.SenderID == senderID {
+			out[alert.Status]++
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAlertRepository) CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error) {
+	f.ensure()
+	out := map[string]int64{}
+	for alertID, alert := range f.alerts {
+		if f.isRecipient(alertID, userID) {
+			out[alert.Status]++
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAlertRepository) CountResponded(ctx context.Context, db *gorm.DB, userID string) (int64, int64, error) {
+	f.ensure()
+	total := map[string]struct{}{}
+	resolved := map[string]struct{}{}
+	for alertID, responses := range f.responses {
+		for _, r := range responses {
+			if r.ResponderID != userID {
+				continue
+			}
+			total[alertID] = struct{}{}
+			if alert, ok := f.alerts[alertID]; ok && alert.Status == entity.AlertStatusResolved {
+				resolved[alertID] = struct{}{}
+			}
+		}
+	}
+	return int64(len(total)), int64(len(resolved)), nil
+}
+
+func (f *fakeAlertRepository) CountRespondersByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]int, error) {
+	f.ensure()
+	f.countRespondersBatchCalls++
+	out := map[string]int{}
+	for _, alertID := range alertIDs {
+		seen := map[string]struct{}{}
+		for _, r := range f.responses[alertID] {
+			seen[r.ResponderID] = struct{}{}
+		}
+		out[alertID] = len(seen)
+	}
+	return out, nil
+}
+
+func (f *fakeAlertRepository) LatestBreadcrumbsByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]*entity.AlertBreadcrumb, error) {
+	f.ensure()
+	f.latestBreadcrumbsBatchCalls++
+	out := map[string]*entity.AlertBreadcrumb{}
+	for _, alertID := range alertIDs {
+		var latest *entity.AlertBreadcrumb
+		for _, crumb := range f.breadcrumbs[alertID] {
+			if latest == nil || crumb.RecordedAt > latest.RecordedAt {
+				latest = crumb
+			}
+		}
+		if latest != nil {
+			out[alertID] = latest
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeAlertRepository) ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, userID string, alertIDs []string) (map[string]bool, error) {
+	f.ensure()
+	out := map[string]bool{}
+	for _, alertID := range alertIDs {
+		for _, r := range f.responses[alertID] {
+			if r.ResponderID == userID {
+				out[alertID] = true
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // fakeNotifier satisfies Notifier without real push infra.
