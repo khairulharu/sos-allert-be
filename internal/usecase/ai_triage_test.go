@@ -166,6 +166,58 @@ func TestAITriageFallback(t *testing.T) {
 	})
 }
 
+func TestAITriageChainOrder(t *testing.T) {
+	jevDown := &fakeTriageEngine{err: errors.New("jev down")}
+	openAI := &fakeTriageEngine{res: TriageResult{EmergencyType: entity.EmergencyTypeDanger, Severity: 0.9, Summary: "openai"}}
+	offline := &fakeTriageEngine{res: TriageResult{EmergencyType: entity.EmergencyTypeAccident, Severity: 0.6, Summary: "offline"}}
+
+	t.Run("first healthy engine wins without calling the rest", func(t *testing.T) {
+		eng := NewAITriageChain(noopLogger(), jevDown, openAI, offline)
+		res, err := eng.Triage(context.Background(), TriageInput{Description: "x"})
+		if err != nil {
+			t.Fatalf("Triage() error = %v", err)
+		}
+		if res != openAI.res {
+			t.Errorf("result = %+v, want the OpenAI stage", res)
+		}
+		if len(offline.call) != 0 {
+			t.Errorf("offline called %d times, want 0", len(offline.call))
+		}
+	})
+
+	t.Run("all engines fail is fail-open zero", func(t *testing.T) {
+		eng := NewAITriageChain(noopLogger(),
+			&fakeTriageEngine{err: errors.New("jev down")},
+			&fakeTriageEngine{err: errors.New("openai down")},
+			&fakeTriageEngine{err: errors.New("offline down")})
+		res, err := eng.Triage(context.Background(), TriageInput{Description: "x"})
+		if err != nil {
+			t.Fatalf("Triage() must not fail the SOS, got %v", err)
+		}
+		if res != (TriageResult{}) {
+			t.Errorf("result = %+v, want zero", res)
+		}
+	})
+
+	t.Run("nil engines are dropped", func(t *testing.T) {
+		eng := NewAITriageChain(noopLogger(), nil, offline, nil)
+		if len(eng.Chain) != 1 {
+			t.Fatalf("chain length = %d, want 1", len(eng.Chain))
+		}
+		res, err := eng.Triage(context.Background(), TriageInput{Description: "x"})
+		if err != nil || res != offline.res {
+			t.Errorf("result = %+v err = %v, want offline", res, err)
+		}
+	})
+
+	t.Run("empty chain is fail-open zero", func(t *testing.T) {
+		res, err := NewAITriageChain(noopLogger()).Triage(context.Background(), TriageInput{Description: "x"})
+		if err != nil || res != (TriageResult{}) {
+			t.Errorf("result = %+v err = %v, want zero and no error", res, err)
+		}
+	})
+}
+
 func TestOllamaClientTriage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/chat" {
