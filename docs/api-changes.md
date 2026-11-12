@@ -63,6 +63,104 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 - `api/api.md` + `api/api-spec.json` diperbarui di backend.
 - Sudah disalin ke `../frontend/api/` (hash sama per saat handoff ini).
 - Baris "Last re-copy" di `../frontend/AGENTS.md` sudah diperbarui.
+- `backend/api/api.md` + `api-spec.json` tidak berubah untuk bagian media (sudah
+  memuat ketiga endpoint); mirror-nya di `../frontend/api/` masih identik.
+- Dokumen ini juga di-mirror ke `../frontend/docs/api-changes.md` (dengan banner
+  "jangan diedit di sini" dan path disesuaikan). Sumber kebenaran tetap salinan
+  backend ini — kalau ada perubahan, edit di sini lalu re-copy.
+
+## Media insiden (audio/video)
+
+**Tidak ada perubahan kontrak backend** di bagian ini: endpoint sudah ada dan
+aktif sejak `20261108000000_alert_media_transcription`. Bagian ini ditulis
+karena frontend baru memakai `uploadMedia` (sender saja), sedangkan sisi
+responder belum memanggil apa pun.
+
+| Method | Path | Akses |
+|---|---|---|
+| `POST` | `/api/sos/{alertId}/media` | **sender saja** |
+| `GET` | `/api/sos/{alertId}/media` | sender **atau** responder terdaftar |
+| `GET` | `/api/sos/{alertId}/media/{mediaId}` | sender **atau** responder terdaftar |
+
+Semua butuh header `Authorization: <token>` mentah (bukan `Bearer`).
+
+### `POST /api/sos/{alertId}/media`
+
+Multipart field `file`. Hanya `audio/*` atau `video/*`, maks **50 MB**
+(`maxMediaBytes`). Field lain opsional; sender tidak bisa upload ke insiden
+orang lain (`403`) dan insiden non-aktif ditolak (`409`).
+
+Response `{ "data": AlertMediaResponse }`:
+
+```json
+{ "id": "...", "alert_id": "...", "filename": "sos-....webm",
+  "content_type": "audio/webm", "size_bytes": 184320,
+  "uploaded_at": 1762500000000,
+  "url": "/api/sos/{alertId}/media/{mediaId}",
+  "transcript": "tolong saya terjatuh",
+  "transcription_status": "completed",
+  "transcribed_at": 1762500001200,
+  "triage": { "emergency_type": "MEDICAL", "severity": 0.75, "summary": "Kemungkinan darurat medis" },
+  "escalated": true, "recipients_added": 4 }
+```
+
+- `transcription_status`: `completed` | `empty` (tak ada suara) | `too_large`
+  (>25 MB) | `failed` (provider error, media tetap tersimpan) | `disabled`
+  (`ai.stt` mati / bukan audio).
+- `triage` absen kalau tidak ada sinyal; `transcript` absen kalau kosong.
+- `escalated`/`recipients_added` hanya muncul saat transkrip menaikkan
+  severity sehingga fan-out diperlebar. Frontend sudah memakainya
+  (`AlertFlow.svelte` → `recipientsAdded`) dan `triage` di response ini yang
+  **menimpa** klasifikasi dari `POST /api/sos/classify`.
+
+### `GET /api/sos/{alertId}/media`
+
+`{ "data": AlertMediaResponse[] }`, urut `uploaded_at ASC`. Item memakai bentuk
+yang sama dengan response upload (termasuk `transcript` + `triage`), jadi
+responder bisa menampilkan transkrip tanpa STT ulang. **Tidak** ada paging.
+
+### `GET /api/sos/{alertId}/media/{mediaId}`
+
+Stream biner: `Content-Type` sesuai `content_type`, `Content-Disposition:
+inline`, `Cache-Control: private, max-age=300`.
+
+**Gotcha:** endpoint ini butuh header `Authorization`, jadi tidak bisa dipakai
+langsung sebagai `<audio src>` / `<video src>`. Frontend harus `fetch` dulu lalu
+`URL.createObjectURL(blob)` (atau `<audio controls>` diisi dari objek itu).
+Tidak ada signed URL / `?token=` seperti WS tracking.
+
+### Error
+
+| Kondisi | Status |
+|---|---|
+| bukan sender/responder terdaftar | `403` |
+| alert atau media tidak ada | `404` |
+| `storage.backend` bukan `local` (S3 belum di-wire) | `412` |
+| non audio/video atau >50 MB | `400` |
+| upload ke insiden non-aktif | `409` |
+
+### Batasan yang harus disepakati sebelum UI responder dikerjakan
+
+1. **"Responder terdaftar"** = ada baris di `alert_responses`, yaitu sudah
+   `POST /api/sos/{alertId}/respond`. Penerima notifikasi yang belum menekan
+   "respond" dapat `403`, bukan `404`.
+2. **Tidak ada event WS untuk media.** Hub hanya broadcast `LOCATION_UPDATE`,
+   `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`. Tidak ada
+   `MEDIA_ADDED`, jadi client harus polling `GET .../media` sendiri.
+3. **`AlertDetailResponse` tidak memuat media.** `GET /api/sos/{alertId}`
+   (termasuk item `history`) tidak memberi tahu bahwa ada rekaman; informasi
+   media hanya lewat endpoint media di atas.
+4. **Transkrip/triage bisa berbeda dari `POST /api/sos/classify`** karena klip
+   diproses ulang (STT non-deterministik). Yang berlaku = hasil `media`
+   (menimpa `alerts.summary`/`alerts.severity` dan dikirim sebagai
+   `ALERT_TRIAGE`). Kalau upload gagal, nilai dari `classify` yang bertahan.
+5. **Storage masih disk lokal** (`storage.local_dir`, default `./uploads`).
+   File hilang kalau container di-redeploy tanpa volume persisten, dan
+   multi-instance tidak berbagi file.
+
+Pekerjaan frontend yang tersisa: wrapper `listMedia`/`mediaUrl` di `api.js`,
+fetch+object URL untuk player, UI player di layar responder, dan keputusan
+apakah perlu event `MEDIA_ADDED` (kalau ya, itu perubahan backend terpisah).
 
 ## Yang belum dikerjakan
 
@@ -70,3 +168,5 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
   `received.active`, jangan berlabel "Nearby" dulu.
 - Tidak ada perubahan pada `GET /api/sos/active`, `GET /api/sos/inbox`, atau
   `GET /api/sos/{alertId}`.
+- Playback media untuk responder belum ada di frontend (lihat bagian "Media
+  insiden" di atas); endpoint backend sudah siap.
