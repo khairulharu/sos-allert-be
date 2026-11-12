@@ -73,8 +73,8 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 
 **Tidak ada perubahan kontrak backend** di bagian ini: endpoint sudah ada dan
 aktif sejak `20261108000000_alert_media_transcription`. Bagian ini ditulis
-karena frontend baru memakai `uploadMedia` (sender saja), sedangkan sisi
-responder belum memanggil apa pun.
+karena frontend memakai `uploadMedia` (sender) dan sekarang juga
+`listMedia`/`mediaBlob` (responder yang sudah `respond`).
 
 | Method | Path | Akses |
 |---|---|---|
@@ -116,8 +116,10 @@ Response `{ "data": AlertMediaResponse }`:
 ### `GET /api/sos/{alertId}/media`
 
 `{ "data": AlertMediaResponse[] }`, urut `uploaded_at ASC`. Item memakai bentuk
-yang sama dengan response upload (termasuk `transcript` + `triage`), jadi
-responder bisa menampilkan transkrip tanpa STT ulang. **Tidak** ada paging.
+yang sama dengan response upload, kecuali `triage`/`escalated`/`recipients_added`
+yang hanya ada di response upload (tidak disimpan per baris media). `transcript`
+tetap ikut, jadi responder bisa menampilkan transkrip tanpa STT ulang. **Tidak**
+ada paging.
 
 ### `GET /api/sos/{alertId}/media/{mediaId}`
 
@@ -139,14 +141,16 @@ Tidak ada signed URL / `?token=` seperti WS tracking.
 | non audio/video atau >50 MB | `400` |
 | upload ke insiden non-aktif | `409` |
 
-### Batasan yang harus disepakati sebelum UI responder dikerjakan
+### Batasan yang perlu diketahui UI responder
 
 1. **"Responder terdaftar"** = ada baris di `alert_responses`, yaitu sudah
    `POST /api/sos/{alertId}/respond`. Penerima notifikasi yang belum menekan
    "respond" dapat `403`, bukan `404`.
 2. **Tidak ada event WS untuk media.** Hub hanya broadcast `LOCATION_UPDATE`,
    `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`. Tidak ada
-   `MEDIA_ADDED`, jadi client harus polling `GET .../media` sendiri.
+   `MEDIA_ADDED`, jadi client harus polling `GET .../media` sendiri. Frontend
+   sudah memilih polling (`AlertMedia.svelte`, 12 detik) — tidak perlu event
+   baru di backend.
 3. **`AlertDetailResponse` tidak memuat media.** `GET /api/sos/{alertId}`
    (termasuk item `history`) tidak memberi tahu bahwa ada rekaman; informasi
    media hanya lewat endpoint media di atas.
@@ -158,9 +162,13 @@ Tidak ada signed URL / `?token=` seperti WS tracking.
    File hilang kalau container di-redeploy tanpa volume persisten, dan
    multi-instance tidak berbagi file.
 
-Pekerjaan frontend yang tersisa: wrapper `listMedia`/`mediaUrl` di `api.js`,
-fetch+object URL untuk player, UI player di layar responder, dan keputusan
-apakah perlu event `MEDIA_ADDED` (kalau ya, itu perubahan backend terpisah).
+**Status: selesai.** Sisi frontend sudah jalan (PR `feat/media-audio`):
+`sosApi.listMedia`/`mediaBlob` di `api.js`, `AlertMedia.svelte` mem-`fetch` blob
+lalu membuat `URL.createObjectURL` (di-revoke saat sheet ditutup), daftar
+di-poll tiap 12 detik selama sheet insiden terbuka, dan player + transkrip tampil
+untuk responder yang sudah `POST .../respond` (`AlertIncoming.svelte` →
+`enabled={!!responded}`). Jadi user yang menerima alert bisa memutar audio/video
+dari pengirim SOS. Tidak ada perubahan kontrak backend yang dibutuhkan.
 
 ## Yang belum dikerjakan
 
@@ -168,5 +176,3 @@ apakah perlu event `MEDIA_ADDED` (kalau ya, itu perubahan backend terpisah).
   `received.active`, jangan berlabel "Nearby" dulu.
 - Tidak ada perubahan pada `GET /api/sos/active`, `GET /api/sos/inbox`, atau
   `GET /api/sos/{alertId}`.
-- Playback media untuk responder belum ada di frontend (lihat bagian "Media
-  insiden" di atas); endpoint backend sudah siap.
