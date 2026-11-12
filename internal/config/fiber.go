@@ -16,6 +16,10 @@ func NewFiber(config *viper.Viper) *fiber.App {
 		AppName:      config.GetString("app.name"),
 		ErrorHandler: NewErrorHandler(),
 		Prefork:      config.GetBool("web.prefork"),
+		// fasthttp reads the body (multipart included) before the handler,
+		// so a route-level limit cannot raise this: it must cover the
+		// largest incident upload. Keep in sync with usecase.maxMediaBytes.
+		BodyLimit: 50 << 20,
 		// Set web.proxy_header (e.g. "X-Forwarded-For") only when the
 		// app sits behind a trusted reverse proxy; ctx.IP() then uses
 		// the client address for the auth rate limiter.

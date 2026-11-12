@@ -138,7 +138,8 @@ Tidak ada signed URL / `?token=` seperti WS tracking.
 | bukan sender/responder terdaftar | `403` |
 | alert atau media tidak ada | `404` |
 | `storage.backend` bukan `local` (S3 belum di-wire) | `412` |
-| non audio/video atau >50 MB | `400` |
+| non audio/video | `400` |
+| body upload >50 MB (batas server, bukan handler) | `413` |
 | upload ke insiden non-aktif | `409` |
 
 ### Batasan yang perlu diketahui UI responder
