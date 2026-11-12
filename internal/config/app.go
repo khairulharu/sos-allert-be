@@ -110,24 +110,44 @@ func Bootstrap(config *BootstrapConfig) {
 	}
 
 	// Optional AI triage: offline keyword classifier by default; a live
-	// Ollama/OpenAI provider takes over when configured. Provider
-	// errors fall back to the offline classifier, so the SOS trigger
-	// never depends on AI being up.
+	// Jev/Ollama/OpenAI provider takes over when configured. Provider
+	// errors and low-confidence answers fall through the chain
+	// (jev > openai > offline), so the SOS trigger never depends on AI
+	// being up.
 	var triageEngine usecase.EmergencyTriage
 	if aiConfig.Enabled {
-		var llmEngine usecase.EmergencyTriage
-		switch aiConfig.Provider {
-		case AITriageProviderOllama:
-			llmEngine = usecase.NewOllamaClient(aiConfig.OllamaBaseURL, aiConfig.OllamaModel, aiConfig.Timeout)
-		case AITriageProviderOpenAI:
+		engines := make([]usecase.EmergencyTriage, 0, 3)
+		openAIEngine := func() usecase.EmergencyTriage {
 			if aiConfig.OpenAIAPIKey == "" {
-				config.Log.Warn("ai.provider=openai but ai.openai.api_key is empty; using offline classifier")
+				return nil
+			}
+			return usecase.NewOpenAIClient(aiConfig.OpenAIBaseURL, aiConfig.OpenAIAPIKey, aiConfig.OpenAIModel, aiConfig.Timeout)
+		}
+		switch aiConfig.Provider {
+		case AITriageProviderJev:
+			if aiConfig.JevAPIKey == "" {
+				config.Log.Warn("ai.provider=jev but ai.jev.api_key is empty; skipping Jev")
 			} else {
-				llmEngine = usecase.NewOpenAIClient(aiConfig.OpenAIBaseURL, aiConfig.OpenAIAPIKey, aiConfig.OpenAIModel, aiConfig.Timeout)
+				engines = append(engines, usecase.NewJevClient(aiConfig.JevBaseURL, aiConfig.JevAPIKey, aiConfig.JevModel, aiConfig.Timeout))
+			}
+			// Fallback chain for Jev: jev > openai > offline.
+			if engine := openAIEngine(); engine != nil {
+				engines = append(engines, engine)
+			} else {
+				config.Log.Warn("ai.provider=jev but ai.openai.api_key is empty; falling back from Jev to the offline classifier")
+			}
+		case AITriageProviderOllama:
+			engines = append(engines, usecase.NewOllamaClient(aiConfig.OllamaBaseURL, aiConfig.OllamaModel, aiConfig.Timeout))
+		case AITriageProviderOpenAI:
+			if engine := openAIEngine(); engine != nil {
+				engines = append(engines, engine)
+			} else {
+				config.Log.Warn("ai.provider=openai but ai.openai.api_key is empty; using offline classifier")
 			}
 		}
-		triageEngine = usecase.NewAITriage(config.Log, llmEngine, usecase.NewOfflineClassifier())
-		config.Log.Infof("AI triage enabled, provider=%q (live LLM=%v, offline fallback=on)", aiConfig.Provider, llmEngine != nil)
+		engines = append(engines, usecase.NewOfflineClassifier())
+		triageEngine = usecase.NewAITriageChain(config.Log, engines...)
+		config.Log.Infof("AI triage enabled, provider=%q (live engines=%d, offline fallback=on)", aiConfig.Provider, len(engines)-1)
 	}
 
 	// Optional speech-to-text for post-trigger audio evidence. Groq is

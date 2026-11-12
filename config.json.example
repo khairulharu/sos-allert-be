@@ -98,6 +98,11 @@
       "language": "id",
       "timeout_seconds": 30
     },
+    "jev": {
+      "base_url": "https://api.typesafe.ai/v1",
+      "model": "jev-latest",
+      "api_key": ""
+    },
     "ollama": {
       "base_url": "http://localhost:11434",
       "model": "llama3"

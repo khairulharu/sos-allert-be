@@ -31,36 +31,50 @@ type EmergencyTriage interface {
 	Triage(ctx context.Context, in TriageInput) (TriageResult, error)
 }
 
-// AITriage is the composed triage engine: an optional live LLM provider
-// (Ollama/OpenAI) with the always-available offline keyword classifier
-// as fallback. A failing provider is logged and degrades gracefully, so
-// the SOS trigger never depends on AI being up.
+// AITriage is the composed triage engine: an ordered chain of
+// classifiers, typically Jev/OpenAI/offline or Ollama/offline. The first
+// engine that returns a usable answer wins; a failing or low-confidence
+// engine is logged and the next one is tried, so the SOS trigger never
+// depends on any single AI provider being up.
 type AITriage struct {
-	Log     *logrus.Logger
-	LLM     EmergencyTriage // optional live provider; nil = offline only
-	Offline EmergencyTriage // deterministic fallback
+	Log   *logrus.Logger
+	Chain []EmergencyTriage // tried in order; nil entries are dropped
 }
 
-// NewAITriage builds the composed engine. offline may be nil, in which
-// case a failing/absent LLM yields a zero result (caller keeps defaults).
+// NewAITriage builds a two-stage engine (live provider + offline
+// fallback). It is the backwards-compatible shorthand for
+// NewAITriageChain; either argument may be nil.
 func NewAITriage(log *logrus.Logger, llm EmergencyTriage, offline EmergencyTriage) *AITriage {
-	return &AITriage{Log: log, LLM: llm, Offline: offline}
+	return NewAITriageChain(log, llm, offline)
 }
 
+// NewAITriageChain builds the composed engine from an ordered list of
+// classifiers, e.g. jev, then openai, then the offline keyword
+// classifier. Nil engines are skipped. With an empty chain Triage is a
+// zero result, which makes the caller keep its own defaults.
+func NewAITriageChain(log *logrus.Logger, engines ...EmergencyTriage) *AITriage {
+	chain := make([]EmergencyTriage, 0, len(engines))
+	for _, engine := range engines {
+		if engine != nil {
+			chain = append(chain, engine)
+		}
+	}
+	return &AITriage{Log: log, Chain: chain}
+}
+
+// Triage walks the chain and returns the first successful result. It
+// always fails open: when every engine errors (or the chain is empty)
+// the result is zero and the error is nil, so a life-safety alert still
+// goes out with the request/default classification.
 func (t *AITriage) Triage(ctx context.Context, in TriageInput) (TriageResult, error) {
-	if t.LLM != nil {
-		res, err := t.LLM.Triage(ctx, in)
+	for i, engine := range t.Chain {
+		res, err := engine.Triage(ctx, in)
 		if err == nil {
 			return res, nil
 		}
 		if t.Log != nil {
-			t.Log.WithError(err).Warn("AI triage provider failed, falling back to offline classifier")
-		} else if t.Offline == nil {
-			return TriageResult{}, err
+			t.Log.WithError(err).Warnf("AI triage stage %d/%d failed, trying the next classifier", i+1, len(t.Chain))
 		}
-	}
-	if t.Offline != nil {
-		return t.Offline.Triage(ctx, in)
 	}
 	return TriageResult{}, nil
 }
