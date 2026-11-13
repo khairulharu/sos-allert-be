@@ -192,6 +192,26 @@ sudah dihapus), tampilkan state "insiden tidak tersedia", bukan retry loop.
 `POST .../respond`.
 3. `GET /api/sos/active` dan `GET /api/sos/inbox` tidak berubah.
 
+## `GET /api/location/nearby`: `distance_m` dibulatkan (pentest F-1)
+
+`distance_m` sekarang dibulatkan ke kelipatan 100 m terdekat. Tidak ada field
+lain yang berubah; `user_id`, koordinat termask, dan `count` tetap seperti
+sebelumnya.
+
+```json
+{"data":{"radius_m":1000,"count":1,"masked":true,"responders":[
+  {"user_id":"user-2","latitude":-6.209,"longitude":106.846,"distance_m":500,"last_seen":1731650000000}
+]}}
+```
+
+Alasan: dua `distance_m` presisi cukup untuk menginterseksi dua lingkaran dan
+mendapat posisi di dalam sel yang sudah diblur. Dengan bucket 100 m, dua
+lingkaran tidak lagi bertemu di satu titik.
+
+Yang perlu dicek di UI: label jarak jadi `500 m` / `1.2 km`, bukan `502 m`.
+Sortir "nearest" tetap jalan (nilainya masih naik monoton). Pin di peta tidak
+berubah sama sekali — berasal dari `latitude`/`longitude` yang sudah diblur.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

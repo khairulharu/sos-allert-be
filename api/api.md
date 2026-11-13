@@ -121,7 +121,7 @@ Field alamat: `street`, `city`, `province`, `postal_code`, `country`.
 | Method | Path | Auth | Kegunaan |
 |---|---|:---:|---|
 | `GET` | `/api/location` | ✅ | Baca posisi terakhir user dari Redis: `user_id`, `latitude`, `longitude`, `last_seen`, `stale`. `404` jika belum pernah heartbeat. |
-| `GET` | `/api/location/nearby` | ✅ | List responder aktif di sekitar user. Query `radius_m` (default 1000, min 100, max 5000). User yang `last_seen`-nya > 2 menit dan diri sendiri difilter; koordinat dibulatkan ~100 m (`masked: true`), maksimal 50, urut terdekat. `404` jika user belum punya heartbeat. |
+| `GET` | `/api/location/nearby` | ✅ | List responder aktif di sekitar user. Query `radius_m` (default 1000, min 100, max 5000). User yang `last_seen`-nya > 2 menit dan diri sendiri difilter; koordinat dibulatkan ~100 m (`masked: true`), `distance_m` dibulatkan ke kelipatan 100 m terdekat, maksimal 50, urut terdekat. `404` jika user belum punya heartbeat. |
 | `PUT` | `/api/location` | ✅ | Kirim `{ "latitude": number, "longitude": number }`. Menulis Redis GEO + `users:last_seen` dan upsert satu baris histori ke MySQL `locations`. |
 
 Kirim heartbeat minimal tiap **2 menit** saat user aktif. User yang
@@ -129,7 +129,8 @@ Kirim heartbeat minimal tiap **2 menit** saat user aktif. User yang
 SOS di sekitar lokasi.
 
 Contoh `GET /api/location/nearby?radius_m=1000` (koordinat sudah dimask
-~100 m; user sendiri dan user stale tidak muncul):
+~100 m, `distance_m` sudah dibulatkan ke kelipatan 100 m; user sendiri dan user
+stale tidak muncul):
 
 ```json
 {
@@ -142,7 +143,7 @@ Contoh `GET /api/location/nearby?radius_m=1000` (koordinat sudah dimask
         "user_id": "user-b",
         "latitude": -6.21,
         "longitude": 106.848,
-        "distance_m": 262,
+        "distance_m": 300,
         "last_seen": 1730304000000
       }
     ]
@@ -152,6 +153,11 @@ Contoh `GET /api/location/nearby?radius_m=1000` (koordinat sudah dimask
 
 `GET /api/location/nearby` membutuhkan heartbeat user itu sendiri; kalau
 belum ada, response-nya `404`. Panggil `PUT /api/location` dulu.
+
+`distance_m` sengaja hanya seakurat ~100 m: jarak presisi dari dua titik vantage
+pilihan pemanggil cukup untuk menginterseksi dua lingkaran dan merekonstruksi
+posisi user di dalam sel yang sudah diblur. Filter radius tetap memakai jarak
+asli, jadi siapa yang muncul tidak terpengaruh pembulatan ini.
 
 ### SOS Incident
 

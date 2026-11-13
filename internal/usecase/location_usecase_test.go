@@ -112,13 +112,13 @@ func TestListNearbyMasksAndFilters(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", got)
 	}
 	first := got.Responders[0]
-	if first.UserId != "user-2" || first.DistanceMeters != 123 {
+	if first.UserId != "user-2" || first.DistanceMeters != 100 {
 		t.Fatalf("unexpected first responder: %+v", first)
 	}
 	if first.Latitude != -6.209 || first.Longitude != 106.846 {
 		t.Fatalf("coordinates not masked: %+v", first)
 	}
-	if got.Responders[1].UserId != "user-4" {
+	if got.Responders[1].UserId != "user-4" || got.Responders[1].DistanceMeters != 900 {
 		t.Fatalf("unexpected second responder: %+v", got.Responders[1])
 	}
 }
@@ -192,5 +192,20 @@ func TestUpdateLocationUpsertsHistory(t *testing.T) {
 	}
 	if history.calls != 1 || history.userID != "user-1" || history.longitude != longitude || history.latitude != latitude {
 		t.Fatalf("history upsert = %+v", history)
+	}
+}
+
+func TestQuantizeDistance(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want int
+	}{
+		{0, 0}, {49, 0}, {50, 100}, {123.4, 100}, {149, 100},
+		{150, 200}, {502, 500}, {900, 900}, {5000, 5000},
+	}
+	for _, c := range cases {
+		if got := quantizeDistance(c.in); got != c.want {
+			t.Fatalf("quantizeDistance(%v) = %d, want %d", c.in, got, c.want)
+		}
 	}
 }

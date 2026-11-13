@@ -1,9 +1,11 @@
 package http_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -162,15 +164,24 @@ func TestListNearbyHTTP(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read error = %v", err)
+	}
+	// Issue #11: the distance must not be finer than the coordinate masking.
+	if bytes.Contains(raw, []byte(`"distance_m":123`)) {
+		t.Fatalf("nearby payload leaks a precise distance: %s", raw)
+	}
+
 	var body model.WebResponse[*model.NearbyLocationResponse]
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("decode error = %v", err)
 	}
 	if body.Data == nil || body.Data.Count != 1 || body.Data.RadiusMeters != 2000 || !body.Data.Masked {
 		t.Fatalf("unexpected response: %+v", body.Data)
 	}
 	responder := body.Data.Responders[0]
-	if responder.UserId != "user-2" || responder.Latitude != -6.209 || responder.Longitude != 106.846 || responder.DistanceMeters != 123 {
+	if responder.UserId != "user-2" || responder.Latitude != -6.209 || responder.Longitude != 106.846 || responder.DistanceMeters != 100 {
 		t.Fatalf("unexpected responder: %+v", responder)
 	}
 }

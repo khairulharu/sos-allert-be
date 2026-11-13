@@ -109,6 +109,15 @@ func (l *LocationUsecase) GetLocation(ctx context.Context, userId string) (*mode
 	}, nil
 }
 
+// quantizeDistance snaps a measured distance to its nearest 100 m bucket, so
+// the label stays usable while two bearings from two chosen vantages no longer
+// intersect at a point.
+// shortcut: the bucket boundary is still findable by moving one's own reported
+// position; upgrade to a participant-scoped nearby if that matters.
+func quantizeDistance(meters float64) int {
+	return int((meters+50)/100) * 100
+}
+
 // ListNearby returns active users around the requester for the responder
 // map. The requester must have a heartbeat, stale users are dropped, and
 // coordinates are rounded (~100 m) so the endpoint never leaks a precise
@@ -172,7 +181,7 @@ func (l *LocationUsecase) ListNearby(ctx context.Context, userId string, radiusM
 			UserId:         result.UserId,
 			Latitude:       latitude,
 			Longitude:      longitude,
-			DistanceMeters: int(result.DistanceMeters + 0.5),
+			DistanceMeters: quantizeDistance(result.DistanceMeters),
 			LastSeen:       lastSeen,
 		})
 		if len(responders) >= maxNearbyResponders {

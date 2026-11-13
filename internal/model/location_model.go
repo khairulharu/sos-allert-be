@@ -27,7 +27,8 @@ type LocationStatusResponse struct {
 }
 
 // NearbyResponder is one active user inside the requested radius.
-// Coordinates are always rounded (~100 m) before leaving the server.
+// Coordinates are always rounded (~100 m) before leaving the server, and the
+// distance is snapped to a ~100 m bucket for the same reason.
 type NearbyResponder struct {
 	UserId         string  `json:"user_id"`
 	Latitude       float64 `json:"latitude"`
