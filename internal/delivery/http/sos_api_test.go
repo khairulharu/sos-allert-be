@@ -203,6 +203,17 @@ func (s *memAlerts) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs 
 	return 0, nil
 }
 
+func (s *memAlerts) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {
+	s.init()
+	var n int64
+	for _, alert := range s.alerts {
+		if alert.IsActive() {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // historyStatusMatch mirrors the repository's status-group helper.
 func historyStatusMatch(status, filter string) bool {
 	switch filter {

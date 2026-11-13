@@ -882,6 +882,27 @@ func (u *TriggerSOSUseCase) publishStatus(alertID, status string, updatedAt int6
 	}
 }
 
+// RunActiveSOSGauge refreshes the active_sos_count gauge from the alerts
+// table so it cannot drift when a status transition is missed. Blocks
+// until ctx is cancelled.
+func (u *TriggerSOSUseCase) RunActiveSOSGauge(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		n, err := u.Deps.Alerts.CountActive(ctx, u.DB)
+		if err != nil {
+			u.Log.WithError(err).Warn("active_sos_count refresh failed")
+		} else if u.Deps.Metrics != nil {
+			u.Deps.Metrics.SetActiveSOS(n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // ExpireOldAlerts moves TRIGGERED alerts older than ExpireAfter to EXPIRED.
 func (u *TriggerSOSUseCase) ExpireOldAlerts(ctx context.Context) (int64, error) {
 	before := time.Now().Add(-u.Deps.ExpireAfter).UnixMilli()

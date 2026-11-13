@@ -78,6 +78,18 @@ func (a *AlertRepository) ExpireOlderThan(ctx context.Context, db *gorm.DB, befo
 	return res.RowsAffected, nil
 }
 
+// CountActive counts live incidents (TRIGGERED/ACKNOWLEDGED), the source
+// of truth for the active_sos_count gauge.
+func (a *AlertRepository) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {
+	var n int64
+	if err := db.WithContext(ctx).Model(&entity.Alert{}).
+		Where("status IN ?", []string{entity.AlertStatusTriggered, entity.AlertStatusAcknowledged}).
+		Count(&n).Error; err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // CreateBreadcrumb appends one trajectory point.
 func (a *AlertRepository) CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error {
 	return db.WithContext(ctx).Create(b).Error
