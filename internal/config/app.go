@@ -225,7 +225,11 @@ func Bootstrap(config *BootstrapConfig) {
 		EmergencyContactController: emergencyContactController,
 		PushController:             pushController,
 		SOSTrackController:         sosTrackController,
-		MetricsHandler:             appMetrics.Handler(),
+	}
+	// /metrics stays unregistered unless a token is configured, so the
+	// Prometheus body is never public.
+	if metricsToken := config.Config.GetString("metrics.token"); metricsToken != "" {
+		routeConfig.MetricsHandler = appMetrics.Handler(metricsToken)
 	}
 	routeConfig.Setup()
 }

@@ -14,7 +14,11 @@ Endpoint publik (tanpa token):
 
 - `POST /api/users` (register)
 - `POST /api/users/_login` (login)
-- `GET /metrics`
+
+`GET /metrics` bukan endpoint publik: hanya aktif bila `metrics.token` diisi,
+dan wajib dikirim sebagai header `Authorization: <token>` (`Bearer <token>`
+juga diterima). Tanpa token yang cocok → `401`; bila `metrics.token` kosong
+route tidak didaftarkan → `404`.
 
 `POST /api/users` dan `POST /api/users/_login` dibatasi per IP klien:
 **5 percobaan/menit**, lalu **lockout 15 menit** (`429` + header
@@ -345,7 +349,7 @@ langganan otomatis. Butuh `webpush.*` di `config.json` (lihat
 
 | Method | Path | Auth | Kegunaan |
 |---|---|:---:|---|
-| `GET` | `/metrics` | - | Metrik Prometheus (text/plain). |
+| `GET` | `/metrics` | token | Metrik Prometheus (text/plain). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>`. |
 
 ## WebSocket live tracking
 
