@@ -350,6 +350,17 @@ func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB,
 	return 0, nil
 }
 
+func (f *fakeAlertRepository) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {
+	f.ensure()
+	var n int64
+	for _, alert := range f.alerts {
+		if alert.IsActive() {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // historyFilters mirrors alertStatusesFor for the in-memory store.
 func historyStatusMatch(status, filter string) bool {
 	switch filter {

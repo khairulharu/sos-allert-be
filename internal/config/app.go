@@ -1,6 +1,9 @@
 package config
 
 import (
+	"context"
+	"time"
+
 	"golang-clean-architecture/internal/delivery/http"
 	"golang-clean-architecture/internal/delivery/http/middleware"
 	"golang-clean-architecture/internal/delivery/http/route"
@@ -195,6 +198,11 @@ func Bootstrap(config *BootstrapConfig) {
 		RateLimitDisabled: sosConfig.RateLimitDisabled,
 		ExpireAfter:       sosConfig.ExpireAfter,
 	})
+
+	// Keep active_sos_count honest: recompute it from the alerts table
+	// instead of incrementing on each transition, so a missed transition
+	// or a restart cannot leave the gauge stuck.
+	go triggerSOSUseCase.RunActiveSOSGauge(context.Background(), 30*time.Second)
 
 	// setup controller
 	userController := http.NewUserController(userUseCase, config.Log)

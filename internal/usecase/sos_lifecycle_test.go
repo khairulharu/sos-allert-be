@@ -878,3 +878,46 @@ func TestClassifyAudioErrorsAndEmpty(t *testing.T) {
 		t.Fatalf("empty transcript result = %+v", res)
 	}
 }
+
+// gaugeMetrics records SetActiveSOS so the refresh loop can be asserted.
+type gaugeMetrics struct {
+	mu     sync.Mutex
+	active int64
+}
+
+func (g *gaugeMetrics) ObserveDispatchDuration(float64) {}
+func (g *gaugeMetrics) IncPushFailures()                {}
+
+func (g *gaugeMetrics) SetActiveSOS(n int64) {
+	g.mu.Lock()
+	g.active = n
+	g.mu.Unlock()
+}
+
+func (g *gaugeMetrics) value() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active
+}
+
+func TestRunActiveSOSGaugeRecomputesFromStore(t *testing.T) {
+	alerts := &fakeAlertRepository{alerts: map[string]*entity.Alert{
+		"a1": {ID: "a1", Status: entity.AlertStatusTriggered},
+		"a2": {ID: "a2", Status: entity.AlertStatusAcknowledged},
+		"a3": {ID: "a3", Status: entity.AlertStatusResolved},
+	}}
+	met := &gaugeMetrics{}
+	uc := newUseCaseWithDeps(TriggerSOSDeps{Alerts: alerts, Metrics: met})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go uc.RunActiveSOSGauge(ctx, time.Millisecond)
+
+	deadline := time.Now().Add(time.Second)
+	for met.value() != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := met.value(); got != 2 {
+		t.Fatalf("active_sos_count = %d, want 2", got)
+	}
+}

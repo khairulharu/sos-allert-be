@@ -37,6 +37,7 @@ type AlertStore interface {
 	Create(ctx context.Context, db *gorm.DB, alert *entity.Alert) error
 	GetByID(ctx context.Context, db *gorm.DB, id string) (*entity.Alert, error)
 	ListActiveBySender(ctx context.Context, db *gorm.DB, senderID string, limit int) ([]*entity.Alert, error)
+	CountActive(ctx context.Context, db *gorm.DB) (int64, error)
 	Transition(ctx context.Context, db *gorm.DB, id string, fromStatuses []string, updates map[string]any) (bool, error)
 	ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error)
 	CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error
