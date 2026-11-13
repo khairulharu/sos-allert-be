@@ -331,6 +331,10 @@ func TestRespondSOSAndDetailMasking(t *testing.T) {
 	if _, err := uc.Respond(context.Background(), "sender", alertID, &model.RespondSOSRequest{ResponderLatitude: &lat, ResponderLongitude: &lng}); err == nil {
 		t.Fatal("self-response must fail")
 	}
+	// A user who was never notified cannot self-enroll as a responder.
+	if _, err := uc.Respond(context.Background(), "stranger", alertID, &model.RespondSOSRequest{ResponderLatitude: &lat, ResponderLongitude: &lng}); !errors.Is(err, model.ErrNotAlertParticipant) {
+		t.Fatalf("stranger respond error = %v, want ErrNotAlertParticipant", err)
+	}
 	resp, err := uc.Respond(context.Background(), "user-b", alertID, &model.RespondSOSRequest{ResponderLatitude: &lat, ResponderLongitude: &lng})
 	if err != nil {
 		t.Fatalf("respond error = %v", err)
@@ -378,19 +382,10 @@ func TestRespondSOSAndDetailMasking(t *testing.T) {
 		t.Fatalf("sender responder entry = %+v", r)
 	}
 
-	// Detail for a stranger is masked and never names the responders.
-	stranger, err := uc.GetAlert(context.Background(), "stranger", alertID)
-	if err != nil {
-		t.Fatalf("stranger detail error = %v", err)
-	}
-	if !stranger.Masked {
-		t.Fatalf("stranger detail must be masked: %+v", stranger)
-	}
-	if len(stranger.Responders) != 0 {
-		t.Fatalf("stranger must not see responder identities: %+v", stranger.Responders)
-	}
-	if stranger.LatestLocation.Latitude == created.Alert.Location.Latitude {
-		t.Fatal("masked latitude equals exact latitude")
+	// A stranger gets 404, not a masked payload, so alert ids stay
+	// unenumerable.
+	if _, err := uc.GetAlert(context.Background(), "stranger", alertID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("stranger detail error = %v, want ErrAlertNotFound", err)
 	}
 }
 
@@ -567,19 +562,26 @@ func (f *fakeMediaStorage) Open(ctx context.Context, path string) (io.ReadCloser
 	return io.NopCloser(bytes.NewReader(b)), nil
 }
 
-func TestAcknowledgeMasksForOutsider(t *testing.T) {
+func TestAcknowledgeRejectsOutsider(t *testing.T) {
 	uc, _, _, _ := triggerSetup(t)
 	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
 	if err != nil {
 		t.Fatalf("trigger error = %v", err)
 	}
 
-	outsider, err := uc.Acknowledge(context.Background(), "stranger", created.Alert.ID)
+	// Only participants may move someone else's incident.
+	if _, err := uc.Acknowledge(context.Background(), "stranger", created.Alert.ID); !errors.Is(err, model.ErrNotAlertParticipant) {
+		t.Fatalf("outsider acknowledge error = %v, want ErrNotAlertParticipant", err)
+	}
+
+	// A notified recipient may acknowledge but still sees masked coords
+	// until they respond.
+	outsider, err := uc.Acknowledge(context.Background(), "user-b", created.Alert.ID)
 	if err != nil {
 		t.Fatalf("acknowledge error = %v", err)
 	}
 	if !outsider.Masked {
-		t.Fatalf("outsider acknowledge must be masked: %+v", outsider)
+		t.Fatalf("recipient acknowledge must be masked: %+v", outsider)
 	}
 	if outsider.LatestLocation.Latitude == created.Alert.Location.Latitude {
 		t.Fatal("masked latitude equals exact latitude")

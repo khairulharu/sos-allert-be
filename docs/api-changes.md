@@ -171,9 +171,29 @@ untuk responder yang sudah `POST .../respond` (`AlertIncoming.svelte` →
 `enabled={!!responded}`). Jadi user yang menerima alert bisa memutar audio/video
 dari pengirim SOS. Tidak ada perubahan kontrak backend yang dibutuhkan.
 
+## Participant gate (pentest F-2/F-3/F-4)
+
+Tiga endpoint sekarang hanya melayani **participant** = sender, penerima
+notifikasi (`alert_recipients`), atau user yang sudah `respond`.
+
+| Endpoint | Sebelum | Sesudah |
+|---|---|---|
+| `GET /api/sos/{alertId}` | `200` termask untuk user mana pun | `404` untuk non-participant |
+| `POST /api/sos/{alertId}/acknowledge` | `200` untuk user mana pun | `403` untuk non-participant |
+| `POST /api/sos/{alertId}/respond` | `200` untuk user mana pun | `403` untuk non-participant |
+
+Yang perlu dicek di UI:
+
+1. **`404` pada detail bukan berarti alert hilang.** Kalau sheet insiden dibuka
+dari sumber selain inbox/active (mis. link lama, atau alert yang recipient-nya
+sudah dihapus), tampilkan state "insiden tidak tersedia", bukan retry loop.
+2. **Recipient yang belum respond tetap dapat payload termask** (`masked: true`,
+`responders: []`). Itu disengaja: koordinat persis baru terbuka setelah
+`POST .../respond`.
+3. `GET /api/sos/active` dan `GET /api/sos/inbox` tidak berubah.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai
   `received.active`, jangan berlabel "Nearby" dulu.
-- Tidak ada perubahan pada `GET /api/sos/active`, `GET /api/sos/inbox`, atau
-  `GET /api/sos/{alertId}`.
+- Tidak ada perubahan pada `GET /api/sos/active` atau `GET /api/sos/inbox`.
