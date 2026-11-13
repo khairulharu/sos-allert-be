@@ -898,7 +898,7 @@
         "tags": [
           "Location API"
         ],
-        "description": "List active users within `radius_m` of the authenticated user's last heartbeat. The requester must have a heartbeat (`404` otherwise). The requester and users whose `last_seen` is older than 2 minutes are excluded. Results are capped at 50, nearest first, and coordinates are rounded to ~100 m (`masked: true`) so the endpoint never exposes a precise home/office position.",
+        "description": "List active users within `radius_m` of the authenticated user's last heartbeat. The requester must have a heartbeat (`404` otherwise). The requester and users whose `last_seen` is older than 2 minutes are excluded. Results are capped at 50, nearest first, and coordinates are rounded to ~100 m (`masked: true`) so the endpoint never exposes a precise home/office position. `distance_m` is snapped to the nearest 100 m bucket for the same reason; the radius filter still uses the exact distance, so rounding never changes who appears.",
         "security": [
           {
             "RawToken": []
@@ -2615,7 +2615,7 @@
           },
           "distance_m": {
             "type": "integer",
-            "description": "Distance from the requester in meters."
+            "description": "Distance from the requester in meters, rounded to the nearest 100 m bucket."
           },
           "last_seen": {
             "type": "integer",
