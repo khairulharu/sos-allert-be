@@ -55,6 +55,9 @@
     "rate_limit_per_minute": 5,
     "lockout_minutes": 15
   },
+  "metrics": {
+    "token": ""
+  },
   "fcm": {
     "enabled": false,
     "project_id": "",

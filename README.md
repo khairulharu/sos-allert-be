@@ -60,7 +60,7 @@ When a user in distress triggers an emergency SOS:
 | **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
 | **Anti-Abuse & Rate Limiting** | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. Wajib set `web.proxy_header` kalau deploy di belakang proxy/tunnel (§9), kalau tidak limit per-IP jadi satu bucket global untuk semua user. |
 | | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
-| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. |
+| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. Route hanya didaftarkan bila `metrics.token` diisi dan scrape wajib mengirim `Authorization: <token>`. |
 
 ---
 
@@ -135,7 +135,7 @@ sequenceDiagram
 | `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` saat `webpush.enabled: false` atau key kosong |
 | `GET/POST` | `/api/push/subscriptions` | ✅ | Daftar / simpan langganan Web Push browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → re-subscribe = upsert |
 | `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan milik user (body `{"endpoint": "..."}`); endpoint tak dikenal tetap `200` |
-| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`) |
+| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>` (`401` tanpa token, `404` bila token kosong) |
 | `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
 | `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
 

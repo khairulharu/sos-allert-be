@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "SOS Allert Backend API",
-    "description": "HTTP API for the SOS Allert life-safety backend, used by the web frontend.\n\nAuthentication: every protected endpoint expects the raw session token returned by `POST /api/users/_login` in the `Authorization` header. Do not prefix it with `Bearer `. Guest endpoints are `POST /api/users`, `POST /api/users/_login`, and `GET /metrics`.\n\nResponse envelope: success responses are `{\"data\": ...}` and, for paginated lists, also `{\"paging\": {...}}`. Errors are rendered by the global error handler as `{\"errors\": \"<message>\"}` with the matching HTTP status.\n\nLive tracking uses a WebSocket at `ws://localhost:3000/ws/sos/{alertId}/track?token=<token>`. OpenAPI 3.0 cannot describe WebSocket frames; see `api/api.md` for the message contract.",
+    "description": "HTTP API for the SOS Allert life-safety backend, used by the web frontend.\n\nAuthentication: every protected endpoint expects the raw session token returned by `POST /api/users/_login` in the `Authorization` header. Do not prefix it with `Bearer `. Guest endpoints are `POST /api/users` and `POST /api/users/_login`. `GET /metrics` is registered only when `metrics.token` is set and requires `Authorization: <token>` (`Bearer <token>` accepted); otherwise it returns 401 (or 404 when no token is configured).\n\nResponse envelope: success responses are `{\"data\": ...}` and, for paginated lists, also `{\"paging\": {...}}`. Errors are rendered by the global error handler as `{\"errors\": \"<message>\"}` with the matching HTTP status.\n\nLive tracking uses a WebSocket at `ws://localhost:3000/ws/sos/{alertId}/track?token=<token>`. OpenAPI 3.0 cannot describe WebSocket frames; see `api/api.md` for the message contract.",
     "version": "1.0.0"
   },
   "servers": [
@@ -1962,7 +1962,7 @@
         "tags": [
           "Observability"
         ],
-        "description": "Prometheus metrics in text exposition format. Guest endpoint. Includes `sos_dispatch_latency_ms`, `push_delivery_failures_total`, and `active_sos_count`.",
+        "description": "Prometheus metrics in text exposition format. Includes `sos_dispatch_latency_ms`, `push_delivery_failures_total`, and `active_sos_count`. Only registered when `metrics.token` is configured; send `Authorization: <token>` (`Bearer <token>` also accepted).",
         "responses": {
           "200": {
             "description": "Prometheus text format.",
@@ -1973,8 +1973,19 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or wrong metrics token."
+          },
+          "404": {
+            "description": "Monitoring disabled (`metrics.token` empty), route not registered."
           }
-        }
+        },
+        "security": [
+          {
+            "RawToken": []
+          }
+        ]
       }
     },
     "/api/push/vapid-public-key": {

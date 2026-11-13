@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"strings"
 	"sync"
@@ -55,9 +56,17 @@ func (m *Metrics) SetActiveSOS(n int64) {
 	atomic.StoreInt64(&m.activeSOS, n)
 }
 
-// Handler serves GET /metrics in Prometheus text format.
-func (m *Metrics) Handler() fiber.Handler {
+// Handler serves GET /metrics in Prometheus text format, gated by token:
+// the client must send `Authorization: <token>` (or `Bearer <token>`).
+// Monitoring is disabled entirely when the configured token is empty (the
+// route is not registered), so metrics are never public by default.
+func (m *Metrics) Handler(token string) fiber.Handler {
+	want := []byte(token)
 	return func(c *fiber.Ctx) error {
+		got := strings.TrimSpace(strings.TrimPrefix(c.Get("Authorization"), "Bearer "))
+		if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+			return fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+		}
 		c.Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		return c.SendString(m.Render())
 	}
