@@ -39,12 +39,49 @@ const (
 	maxTranscriptionBytes = 25_000_000 // Groq free tier: 25 MB (decimal)
 )
 
-// GetAlert returns one incident detail, masking the exact location for
-// viewers who are neither the sender nor a responder.
+// isParticipant reports whether a user may act on an incident. Recipients
+// are recorded at trigger time, before the grace-period dispatch, so a
+// notified user qualifies while the countdown is still running.
+func (u *TriggerSOSUseCase) isParticipant(ctx context.Context, alert *entity.Alert, userID string) (bool, error) {
+	if alert.SenderID == userID {
+		return true, nil
+	}
+	isResponder, err := u.Deps.Alerts.IsResponder(ctx, u.DB, alert.ID, userID)
+	if err != nil {
+		return false, err
+	}
+	if isResponder {
+		return true, nil
+	}
+	recipients, err := u.Deps.Alerts.ListRecipients(ctx, u.DB, alert.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range recipients {
+		if id == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// GetAlert returns one incident detail to a participant; everybody else
+// gets ErrAlertNotFound. The exact location stays masked until the viewer
+// is the sender or a responder.
 func (u *TriggerSOSUseCase) GetAlert(ctx context.Context, requesterID, alertID string) (*model.AlertDetailResponse, error) {
 	alert, err := u.Deps.Alerts.GetByID(ctx, u.DB, alertID)
 	if err != nil {
 		return nil, err
+	}
+	// Non-participants get 404 instead of 403 so the endpoint also stops
+	// confirming which alert ids exist. The payload itself stays masked
+	// for a recipient until they actually respond.
+	participant, err := u.isParticipant(ctx, alert, requesterID)
+	if err != nil {
+		return nil, err
+	}
+	if !participant {
+		return nil, model.ErrAlertNotFound
 	}
 	return u.buildDetail(ctx, alert, requesterID, false)
 }
@@ -287,6 +324,13 @@ func (u *TriggerSOSUseCase) Acknowledge(ctx context.Context, requesterID, alertI
 	if err != nil {
 		return nil, err
 	}
+	participant, err := u.isParticipant(ctx, alert, requesterID)
+	if err != nil {
+		return nil, err
+	}
+	if !participant {
+		return nil, model.ErrNotAlertParticipant
+	}
 	if alert.Status == entity.AlertStatusAcknowledged {
 		return u.buildDetail(ctx, alert, requesterID, false)
 	}
@@ -346,6 +390,13 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 	alert, err := u.Deps.Alerts.GetByID(ctx, u.DB, alertID)
 	if err != nil {
 		return nil, err
+	}
+	participant, err := u.isParticipant(ctx, alert, responderID)
+	if err != nil {
+		return nil, err
+	}
+	if !participant {
+		return nil, model.ErrNotAlertParticipant
 	}
 	if alert.SenderID == responderID {
 		return nil, fiber.ErrForbidden

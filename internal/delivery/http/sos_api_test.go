@@ -491,6 +491,15 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 		t.Fatalf("inbox user-x status = %d body = %s", resp.StatusCode, body)
 	}
 
+	// Non-participants cannot read the alert (404 hides its existence) or
+	// enroll themselves as a responder.
+	if resp, body = do("GET", "/api/sos/"+alertID, "user-x", ""); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("stranger detail status = %d body = %s, want 404", resp.StatusCode, body)
+	}
+	if resp, body = do("POST", "/api/sos/"+alertID+"/respond", "user-x", `{"responder_latitude":-6.2100,"responder_longitude":106.8470}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("stranger respond status = %d body = %s, want 403", resp.StatusCode, body)
+	}
+
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 	partHeader := make(textproto.MIMEHeader)
@@ -565,13 +574,9 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 		t.Fatalf("responder entry = %+v", r)
 	}
 
-	resp, body = do("GET", "/api/sos/"+alertID, "user-x", "")
-	var forStranger model.WebResponse[*model.AlertDetailResponse]
-	if err := json.Unmarshal(body, &forStranger); err != nil {
-		t.Fatalf("stranger detail decode: %v (%s)", err, body)
-	}
-	if len(forStranger.Data.Responders) != 0 {
-		t.Fatalf("stranger must not see responder identities: %+v", forStranger.Data.Responders)
+	// After a real responder answered, the stranger still gets 404.
+	if resp, body = do("GET", "/api/sos/"+alertID, "user-x", ""); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("stranger detail status = %d body = %s, want 404", resp.StatusCode, body)
 	}
 
 	var sawResponderAdded bool
