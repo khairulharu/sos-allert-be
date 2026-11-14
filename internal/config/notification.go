@@ -83,9 +83,10 @@ func NewWebPushConfig(v *viper.Viper) *WebPushConfig {
 
 // SOSConfig carries SOS tuning knobs with README defaults.
 type SOSConfig struct {
-	GracePeriod      time.Duration
-	RateLimitPerHour int
-	RateLimitWindow  time.Duration
+	GracePeriod              time.Duration
+	RateLimitPerHour         int
+	ClassifyRateLimitPerHour int
+	RateLimitWindow          time.Duration
 	// RateLimitDisabled turns the per-user trigger limit off entirely
 	// (`sos.rate_limit_disabled`). It defaults to false, so an absent
 	// key keeps the README behaviour.
@@ -106,19 +107,26 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 	if limit <= 0 {
 		limit = 3
 	}
+	// Every classification call pays for STT + LLM tokens, so it gets its
+	// own cap; the default keeps a demo session well inside the budget.
+	classifyLimit := v.GetInt("sos.classify_rate_limit_per_hour")
+	if classifyLimit <= 0 {
+		classifyLimit = 10
+	}
 	maxRecipients := v.GetInt("sos.max_recipients")
 	if maxRecipients <= 0 {
 		maxRecipients = 50
 	}
 	return &SOSConfig{
-		GracePeriod:       time.Duration(grace) * time.Second,
-		RateLimitPerHour:  limit,
-		RateLimitWindow:   time.Hour,
-		RateLimitDisabled: v.GetBool("sos.rate_limit_disabled"),
-		MaxRecipients:     maxRecipients,
-		AdaptiveRadiiM:    []float64{1000, 2000, 5000},
-		MinRecipients:     3,
-		ExpireAfter:       24 * time.Hour,
+		GracePeriod:              time.Duration(grace) * time.Second,
+		RateLimitPerHour:         limit,
+		RateLimitWindow:          time.Hour,
+		ClassifyRateLimitPerHour: classifyLimit,
+		RateLimitDisabled:        v.GetBool("sos.rate_limit_disabled"),
+		MaxRecipients:            maxRecipients,
+		AdaptiveRadiiM:           []float64{1000, 2000, 5000},
+		MinRecipients:            3,
+		ExpireAfter:              24 * time.Hour,
 	}
 }
 

@@ -274,6 +274,22 @@ Deadline frame pertama 10 detik.
 Deploy backend dan frontend harus bersamaan: frontend lama yang masih memakai
 `?token=` akan gagal terhubung setelah backend ini naik.
 
+## Rate limit `POST /api/sos/classify`
+
+Route ini sekarang punya kuota per user: **10 panggilan per jam** (sliding
+window di Redis, key `ratelimit:classify:<userID>`), diatur lewat
+`sos.classify_rate_limit_per_hour`. Alasan: setiap call memakai STT (Whisper)
++ LLM berbayar.
+
+- `429` + header `Retry-After` (detik, batas atas = panjang window, 3600)
+  ketika kuota habis. Body tetap `{"errors": ...}`.
+- `503` ketika store limiter (Redis) error — endpoint ini **fail-closed**,
+  beda dengan limiter login yang fail-open.
+
+Frontend: tangani `429` (tampilkan pesan kuota + jangan retry otomatis) dan
+`503` (fallback ke trigger tanpa klasifikasi audio). Tidak ada perubahan pada
+`POST /api/sos`.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

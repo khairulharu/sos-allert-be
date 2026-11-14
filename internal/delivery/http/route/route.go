@@ -19,6 +19,7 @@ type RouteConfig struct {
 	MetricsHandler             fiber.Handler
 	AuthMiddleware             fiber.Handler
 	AuthRateLimit              fiber.Handler
+	ClassifyRateLimit          fiber.Handler
 }
 
 func (c *RouteConfig) Setup() {
@@ -68,7 +69,12 @@ func (c *RouteConfig) SetupAuthRoute() {
 	c.App.Put("/api/location", c.LocationController.Update)
 
 	c.App.Post("/api/sos", c.SOSController.Trigger)
-	c.App.Post("/api/sos/classify", c.SOSController.Classify)
+	classifyRateLimit := c.ClassifyRateLimit
+	if classifyRateLimit == nil {
+		classifyRateLimit = func(ctx *fiber.Ctx) error { return ctx.Next() }
+	}
+	// Classification spends STT + LLM tokens, so it is throttled per user.
+	c.App.Post("/api/sos/classify", classifyRateLimit, c.SOSController.Classify)
 	c.App.Get("/api/sos/inbox", c.SOSController.ListInbox)
 	c.App.Get("/api/sos/active", c.SOSController.ListActive)
 	// Static paths must be registered before /api/sos/:alertId.
