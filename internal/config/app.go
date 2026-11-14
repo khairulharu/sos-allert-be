@@ -225,6 +225,8 @@ func Bootstrap(config *BootstrapConfig) {
 	authMiddleware := middleware.NewAuth(userUseCase, config.Log)
 	authRateLimit := middleware.NewAuthRateLimit(rateLimitRepository, config.Log,
 		authConfig.RateLimitPerMinute, authConfig.Window, authConfig.Lockout)
+	classifyRateLimit := middleware.NewClassifyRateLimit(rateLimitRepository, config.Log,
+		sosConfig.ClassifyRateLimitPerHour, sosConfig.RateLimitWindow)
 
 	routeConfig := route.RouteConfig{
 		App:                        config.App,
@@ -233,6 +235,7 @@ func Bootstrap(config *BootstrapConfig) {
 		AddressController:          addressController,
 		AuthMiddleware:             authMiddleware,
 		AuthRateLimit:              authRateLimit,
+		ClassifyRateLimit:          classifyRateLimit,
 		LocationController:         locationController,
 		SOSController:              sosController,
 		EmergencyContactController: emergencyContactController,

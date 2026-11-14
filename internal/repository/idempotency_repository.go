@@ -70,21 +70,34 @@ local key = KEYS[1]
 local now = tonumber(ARGV[1])
 local windowMs = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
+local member = ARGV[4]
 redis.call("ZREMRANGEBYSCORE", key, 0, now - windowMs)
 local count = redis.call("ZCARD", key)
 if count >= limit then
   return 0
 end
-redis.call("ZADD", key, now, now)
+redis.call("ZADD", key, now, member)
 redis.call("PEXPIRE", key, windowMs)
 return 1
 `)
 
 // Allow returns true when the trigger is within the limit.
 func (r *RateLimitRepository) Allow(ctx context.Context, userID string, limit int, window time.Duration) (bool, error) {
+	return r.allow(ctx, rateLimitKeyPrefix+userID, limit, window)
+}
+
+// AllowClassify limits the paid pre-trigger classification calls per user.
+func (r *RateLimitRepository) AllowClassify(ctx context.Context, userID string, limit int, window time.Duration) (bool, error) {
+	return r.allow(ctx, classifyRateLimitKeyPrefix+userID, limit, window)
+}
+
+func (r *RateLimitRepository) allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
 	now := time.Now().UnixMilli()
-	res, err := rateLimitScript.Run(ctx, r.Client, []string{rateLimitKeyPrefix + userID},
-		now, window.Milliseconds(), limit).Int()
+	// Unique member: calls inside the same millisecond must still each
+	// count, otherwise a parallel burst slips past the limit.
+	member := fmt.Sprintf("%d-%d", now, time.Now().UnixNano())
+	res, err := rateLimitScript.Run(ctx, r.Client, []string{key},
+		now, window.Milliseconds(), limit, member).Int()
 	if err != nil {
 		return false, fmt.Errorf("redis rate limit: %w", err)
 	}

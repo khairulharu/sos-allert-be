@@ -31,3 +31,16 @@ func TestNewSOSConfigRateLimitDisabled(t *testing.T) {
 		t.Fatalf("RateLimitPerHour = %d, want 3", cfg.RateLimitPerHour)
 	}
 }
+
+func TestNewSOSConfigClassifyLimitDefaultsOn(t *testing.T) {
+	cfg := NewSOSConfig(viper.New())
+	if cfg.ClassifyRateLimitPerHour != 10 {
+		t.Fatalf("ClassifyRateLimitPerHour = %d, want 10", cfg.ClassifyRateLimitPerHour)
+	}
+
+	v := viper.New()
+	v.Set("sos.classify_rate_limit_per_hour", 4)
+	if got := NewSOSConfig(v).ClassifyRateLimitPerHour; got != 4 {
+		t.Fatalf("ClassifyRateLimitPerHour = %d, want 4", got)
+	}
+}
