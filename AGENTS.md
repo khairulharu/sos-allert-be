@@ -38,6 +38,7 @@ go test ./test/ -run '^TestCalculateDistance$' -v -count=1
 - Guest routes: `POST /api/users`, `POST /api/users/_login`. All other routes go through `AuthMiddleware`.
 - Guest auth routes are rate-limited per client IP by `middleware.NewAuthRateLimit`: 5 attempts/minute, then a 15-minute lockout (`429` + `Retry-After`). Register and login share the same bucket. The limiter fails open on Redis errors so auth stays available; config is `auth.rate_limit_per_minute` / `auth.lockout_minutes`. Behind a reverse proxy set `web.proxy_header` (e.g. `X-Forwarded-For`) so `ctx.IP()` is the real client IP.
 - `Authorization` is the raw token returned by login, not `Bearer <token>`.
+- Sessions live only in Redis: `auth:token:<token>` → user id and `auth:user:<user_id>` → token, both with the `auth.token_ttl_hours` TTL (default 168 h; 0/negative falls back to the default, so sessions always expire). There is no `users.token` column; `SessionRepository` (Redis Lua) replaces the old token on login (single-session) and logout deletes both keys. `Verify` reads Redis only — no MySQL per request — and returns `401` for an unknown token, `503` when the store errors so clients do not discard their token on an outage. Deploying the session change invalidates every existing token (force re-login); deploy the binary before running migration `20261114000000_drop_users_token`.
 - Middleware loads the user ID into `ctx.Locals("auth")`; controllers get it with `middleware.GetUser(ctx)` and set `UserId` fields marked `json:"-"`.
 
 ## Location / SOS status
@@ -85,6 +86,9 @@ note in docs/api-changes.md instead). `subscriber` is a bare email (the library 
   state machine alert.
 - Test internal lainnya mencakup TriggerSOS, lifecycle, AI triage, dispatch
   client via `httptest`, HTTP SOS, Kafka consumer, tracking hub, dan metrics.
+- `internal/repository/session_repository_test.go` menjalankan Lua session
+  store terhadap `miniredis` (TTL, single-session replace, logout, expiry),
+  jadi tetap jalan di CI tanpa Redis live.
 - Jalankan suite tanpa live infra dengan `go test ./internal/... -v -count=1`.
 - Build dan static check: `go build ./... && go vet ./...`.
 

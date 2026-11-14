@@ -212,6 +212,35 @@ Yang perlu dicek di UI: label jarak jadi `500 m` / `1.2 km`, bukan `502 m`.
 Sortir "nearest" tetap jalan (nilainya masih naik monoton). Pin di peta tidak
 berubah sama sekali — berasal dari `latitude`/`longitude` yang sudah diblur.
 
+## Sesi login pindah ke Redis (pentest F-8)
+
+Kontrak `POST /api/users/_login` dan `DELETE /api/users` **tidak berubah**:
+login tetap mengembalikan `{ "data": { "token": "<raw token>" } }` dan token
+tetap dikirim mentah di header `Authorization`. Yang berubah hanya cara backend
+menyimpannya:
+
+- Token sekarang punya masa berlaku (`auth.token_ttl_hours`, default 168 jam).
+  Setelah lewat, request berikutnya `401`.
+- Login baru **selalu membatalkan token lama** (single-session). Kalau user
+  login di device lain, device pertama langsung `401`.
+- Logout menghapus sesi di Redis, jadi token langsung mati.
+- Saat deploy perubahan ini, **semua token lama tidak berlaku** (kolom
+  `users.token` dihapus). Semua user harus login ulang sekali.
+
+Yang perlu dicek di UI:
+
+1. Tangani `401` dengan menghapus token lokal lalu kembali ke layar login.
+   Saat ini `src/lib/api.js` belum punya jalur khusus untuk `401`; setelah
+   deploy, request pertama dengan token lama akan `401` sekali.
+2. `503` pada endpoint ber-auth berarti session store (Redis) sedang down —
+   tampilkan pesan "coba lagi", **jangan** hapus token.
+3. Perilaku single-session: login di device kedua membuat device pertama
+   menerima `401` pada request/heartbeat berikutnya.
+
+Catatan: autentikasi WebSocket `?token=` belum berubah di PR ini. Penggantinya
+(first-frame `{"type":"auth","token":"..."}`, tanpa token di URL) menyusul di PR
+terpisah; handoff frontend-nya akan ditambahkan di sini.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

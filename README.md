@@ -110,7 +110,7 @@ sequenceDiagram
 | Method | Path | Auth | Keterangan |
 |---|---|:---:|---|
 | `POST` | `/api/users` | ❌ | Registrasi user baru |
-| `POST` | `/api/users/_login` | ❌ | Login, return raw session token |
+| `POST` | `/api/users/_login` | ❌ | Login, return raw session token. Token disimpan di Redis (`auth:token:<token>`) dengan TTL (`auth.token_ttl_hours`, default 7 hari); login baru membatalkan token lama (single-session) |
 | `DELETE` | `/api/users` | ✅ | Logout session |
 | `PATCH` | `/api/users/_current` | ✅ | Update profil user saat ini; kirim `safe_pin` (4 digit, disimpan sebagai hash), `fcm_token`, atau `apns_token` untuk mengaturnya |
 | `GET` | `/api/users/_current` | ✅ | Ambil profil user saat ini |
@@ -139,7 +139,7 @@ sequenceDiagram
 | `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
 | `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
 
-> **Format Auth**: Header `Authorization: <token>` (raw token langsung, tanpa prefix `Bearer `).
+> **Format Auth**: Header `Authorization: <token>` (raw token langsung, tanpa prefix `Bearer `). Token sesi hanya hidup di Redis (`auth:token:<token>` → user id, `auth:user:<user_id>` → token) dengan TTL `auth.token_ttl_hours` (default 168 jam); tidak ada kolom token di MySQL. Logout menghapus kedua key, dan login berikutnya membatalkan token sebelumnya (single-session).
 
 ---
 
@@ -547,8 +547,16 @@ CREATE TABLE emergency_contacts (
 - Dipakai saat upload audio: transcript disimpan bersama media dan hasil triage
   di-update ke tabel `alerts`.
 
-Semua migrasi sudah diterapkan di DB development saat ini (versi
-`20261108000000`). Untuk environment lain, jalankan `migrate up`.
+### Migrasi sesi Redis (`20261114000000_drop_users_token.*.sql`)
+
+- Menghapus kolom plaintext `users.token`; sesi sekarang hanya di Redis dengan
+  TTL (lihat §7).
+- **Semua token lama otomatis tidak berlaku** — user harus login ulang. Urutan
+  deploy: deploy binary baru dulu, baru `migrate up` (kalau migrasi dijalankan
+  duluan, binary lama gagal saat auth). Rollback: `migrate down` dulu, baru
+  deploy binary lama; token tetap tidak bisa dipulihkan.
+
+Untuk environment lain, jalankan `migrate up` (termasuk migrasi sesi di atas).
 
 ---
 
@@ -560,6 +568,8 @@ Semua migrasi sudah diterapkan di DB development saat ini (versi
 - **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, `sos.rate_limit_per_hour` trigger SOS per jam per user (default 3). `sos.rate_limit_disabled: true` melewati pemeriksaan ini (idempotency & grace period tetap jalan).
 - **Redis Sorted Set** (`ratelimit:auth:{ip}`): sliding window 5 percobaan auth per menit per IP.
 - **Redis Key Value** (`lockout:auth:{ip}`): TTL 15 menit setelah limit auth terlampaui.
+- **Redis Key Value** (`auth:token:{token}`): user id pemilik sesi, TTL `auth.token_ttl_hours` (default 168 jam). Satu-satunya tempat token sesi disimpan.
+- **Redis Key Value** (`auth:user:{userId}`): token sesi aktif user, TTL sama. Dipakai login baru untuk menghapus token lama (single-session) dan logout untuk menghapus sesi tanpa membaca MySQL.
 - **MySQL** (`locations` table): Satu baris histori per user (unique `user_id`), di-upsert pada setiap `PUT /api/location`. Dipakai untuk audit/riwayat, bukan untuk pencarian radius real-time.
 - **MySQL** (`alerts` & `alert_breadcrumbs`): Persistence insiden resmi untuk audit dan investigasi forensik.
 
@@ -620,7 +630,7 @@ service:
 - Anti-spoofing: set `web.trusted_proxies` (IP/CIDR proxy yang dipercaya, mis. `[\"127.0.0.1\",\"::1\"]` untuk cloudflared/nginx di host yang sama) supaya `X-Forwarded-For` hanya dipakai kalau request datang dari alamat itu; dari luar daftar itu header diabaikan dan `ctx.IP()` memakai IP TCP asli. Tanpa `trusted_proxies`, header dipakai apa adanya (kompatibel config lama) tapi bisa dipalsukan kalau app bisa diakses langsung — backend log warning saat startup.
 - Biarkan `""` untuk dev lokal / saat app diekspos langsung.
 - Cek setelah deploy: 5 login gagal dari satu device tidak boleh memblokir device lain, dan key Redis `ratelimit:auth:<ip>` harus memuat IP klien, bukan IP proxy.
-- Tanpa section `auth`, limiter memakai default `rate_limit_per_minute: 5` dan `lockout_minutes: 15`.
+- Tanpa section `auth`, limiter memakai default `rate_limit_per_minute: 5`, `lockout_minutes: 15`, dan `token_ttl_hours: 168`. Nilai `token_ttl_hours` 0/negatif dianggap tidak valid dan jatuh ke default 168 jam; sesi tidak pernah dibuat tanpa expiry.
 
 ### Web Push ke browser (VAPID)
 

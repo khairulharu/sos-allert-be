@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "SOS Allert Backend API",
-    "description": "HTTP API for the SOS Allert life-safety backend, used by the web frontend.\n\nAuthentication: every protected endpoint expects the raw session token returned by `POST /api/users/_login` in the `Authorization` header. Do not prefix it with `Bearer `. Guest endpoints are `POST /api/users` and `POST /api/users/_login`. `GET /metrics` is registered only when `metrics.token` is set and requires `Authorization: <token>` (`Bearer <token>` accepted); otherwise it returns 401 (or 404 when no token is configured).\n\nResponse envelope: success responses are `{\"data\": ...}` and, for paginated lists, also `{\"paging\": {...}}`. Errors are rendered by the global error handler as `{\"errors\": \"<message>\"}` with the matching HTTP status.\n\nLive tracking uses a WebSocket at `ws://localhost:3000/ws/sos/{alertId}/track?token=<token>`. OpenAPI 3.0 cannot describe WebSocket frames; see `api/api.md` for the message contract.",
+    "description": "HTTP API for the SOS Allert life-safety backend, used by the web frontend.\n\nAuthentication: every protected endpoint expects the raw session token returned by `POST /api/users/_login` in the `Authorization` header. Do not prefix it with `Bearer `. Session tokens live only in Redis with the `auth.token_ttl_hours` TTL (default 168 hours); a new login invalidates the previous token (single-session) and logout deletes the session immediately, so clients must handle `401` by clearing the local token and logging in again. Anonymous Redis/store failures return `503` (retry, keep the token). Guest endpoints are `POST /api/users` and `POST /api/users/_login`. `GET /metrics` is registered only when `metrics.token` is set and requires `Authorization: <token>` (`Bearer <token>` accepted); otherwise it returns 401 (or 404 when no token is configured).\n\nResponse envelope: success responses are `{\"data\": ...}` and, for paginated lists, also `{\"paging\": {...}}`. Errors are rendered by the global error handler as `{\"errors\": \"<message>\"}` with the matching HTTP status.\n\nLive tracking uses a WebSocket at `ws://localhost:3000/ws/sos/{alertId}/track?token=<token>`. OpenAPI 3.0 cannot describe WebSocket frames; see `api/api.md` for the message contract.",
     "version": "1.0.0"
   },
   "servers": [
@@ -98,7 +98,7 @@
         "tags": [
           "User API"
         ],
-        "description": "Log out the authenticated user by clearing the stored session token.",
+        "description": "Log out the authenticated user by deleting the Redis session (`auth:token:<token>` and `auth:user:<user_id>`). The token is immediately unusable; other requests with it return `401`.",
         "security": [
           {
             "RawToken": []
@@ -139,7 +139,7 @@
         "tags": [
           "User API"
         ],
-        "description": "Authenticate a user. The returned token is the raw value for the `Authorization` header on protected calls. Rate limited per client IP together with registration: 5 attempts/minute, then a 15-minute lockout (`429` + `Retry-After`).",
+        "description": "Authenticate a user. The returned token is the raw value for the `Authorization` header on protected calls; it is stored in Redis with a TTL (`auth.token_ttl_hours`, default 168 hours) and replaces any previous token for the same user. Rate limited per client IP together with registration: 5 attempts/minute, then a 15-minute lockout (`429` + `Retry-After`).",
         "requestBody": {
           "required": true,
           "content": {

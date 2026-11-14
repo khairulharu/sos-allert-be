@@ -32,8 +32,11 @@ Endpoint lain wajib mengirim token mentah hasil login:
 Authorization: <token>
 ```
 
-Jangan memakai prefix `Bearer `. Token disimpan di kolom `users.token` dan
-dihapus saat logout. WebSocket memakai query `?token=<token>`.
+Jangan memakai prefix `Bearer `. Token sesi hanya disimpan di Redis
+(`auth:token:<token>`) dengan masa berlaku `auth.token_ttl_hours` (default
+168 jam). Login baru membatalkan token sebelumnya (single-session) dan logout
+langsung menghapus sesi. Setelah TTL habis atau setelah login di device lain,
+request berikutnya akan `401`. WebSocket memakai query `?token=<token>`.
 
 ## Response envelope
 

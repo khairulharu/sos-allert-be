@@ -36,6 +36,7 @@ type BootstrapConfig struct {
 func Bootstrap(config *BootstrapConfig) {
 	// setup repositories
 	userRepository := repository.NewUserRepository(config.Log)
+	sessionRepository := repository.NewSessionRepository(config.RedisClient)
 	contactRepository := repository.NewContactRepository(config.Log)
 	addressRepository := repository.NewAddressRepository(config.Log)
 	locationCacheRepository := repository.NewLocationCacheRepository(config.RedisClient, config.Log)
@@ -68,6 +69,9 @@ func Bootstrap(config *BootstrapConfig) {
 	trackHub := tracking.NewHub()
 	sosConfig := NewSOSConfig(config.Config)
 	authConfig := NewAuthConfig(config.Config)
+	if config.Config.IsSet("auth.token_ttl_hours") && config.Config.GetInt("auth.token_ttl_hours") <= 0 {
+		config.Log.Warn("auth.token_ttl_hours must be positive; using the 168h default so sessions expire")
+	}
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
 	webPushConfig := NewWebPushConfig(config.Config)
 	storageConfig := NewStorageConfig(config.Config)
@@ -170,7 +174,8 @@ func Bootstrap(config *BootstrapConfig) {
 	}
 
 	// setup use cases
-	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository, userProducer)
+	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository,
+		sessionRepository, authConfig.TokenTTL, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
 	addressUseCase := usecase.NewAddressUseCase(config.DB, config.Log, config.Validate, contactRepository, addressRepository, addressProducer)
 	locationUseCase := usecase.NewLocationUseCase(locationCacheRepository, locationRepository, config.Validate, config.Log)
@@ -217,7 +222,7 @@ func Bootstrap(config *BootstrapConfig) {
 	sosTrackController := http.NewSOSTrackController(triggerSOSUseCase, userUseCase, trackHub, config.Log)
 
 	// setup middleware
-	authMiddleware := middleware.NewAuth(userUseCase)
+	authMiddleware := middleware.NewAuth(userUseCase, config.Log)
 	authRateLimit := middleware.NewAuthRateLimit(rateLimitRepository, config.Log,
 		authConfig.RateLimitPerMinute, authConfig.Window, authConfig.Lockout)
 
