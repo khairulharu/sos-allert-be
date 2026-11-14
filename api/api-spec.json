@@ -954,7 +954,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Trigger an SOS incident. The request body is optional: when coordinates are omitted, the sender's last Redis GEO position is used.\n\n- `X-Idempotency-Key` deduplicates retried submissions for 5 minutes.\n- Rate limit: `sos.rate_limit_per_hour` triggers per user per hour (default 3); HTTP 429 beyond that, with the active limit quoted in the message. The backend can turn it off with `sos.rate_limit_disabled: true` (default false).\n- `description` feeds optional AI triage (fail-open). `emergency_type` sent explicitly wins over the classifier.\n- `severity`/`summary` (from `POST /api/sos/classify`) also win, so an audio-classified incident fans out with the right radius on the first wave.\n- A clip transcribed after the trigger that raises the severity widens the fan-out to the new radius; only the newly reached responders are notified.\n- The response returns `201 Created`.\n\nRecipients are chosen from nearby active users with adaptive radius (1/2/5 km, capped at 50) plus the sender's emergency contacts.",
+        "description": "Trigger an SOS incident. The request body is optional: when coordinates are omitted, the sender's last Redis GEO position is used.\n\n- `X-Idempotency-Key` deduplicates retried submissions for 5 minutes.\n- Rate limit: `sos.rate_limit_per_hour` triggers per user per hour (default 3); HTTP 429 beyond that, with the active limit quoted in the message. The backend can turn it off with `sos.rate_limit_disabled: true` (default false).\n- Triage and fan-out radius are always computed server-side, from the audio classification of the same user's last `POST /api/sos/classify` (valid 2 minutes, single use) or from `description` (optional AI triage, fail-open). An explicit `emergency_type` wins over the classifier. Server severity is clamped to 0..1.\n- `client_severity`/`client_summary` are the sender's claim only: they never set the triage or the radius, are echoed in the response and reach responders labelled \"Pelapor menyebut: ...\". The legacy `severity`/`summary` keys are ignored, so older clients keep working.\n- A clip transcribed after the trigger that raises the severity widens the fan-out to the new radius; only the newly reached responders are notified.\n- The response returns `201 Created`.\n\nRecipients are chosen from nearby active users with adaptive radius (1/2/5 km, capped at 50) plus the sender's emergency contacts.",
         "security": [
           {
             "RawToken": []
@@ -1018,7 +1018,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Classify a short audio clip before triggering an SOS. Nothing is persisted. The response carries the audio-derived `emergency_type`, `severity` and `summary`; send them in the `POST /api/sos` body so the first fan-out already uses the audio classification (explicit values win over the description triage, and severity selects the adaptive radius). `400` for non-audio or audio above 25 MB, `503` when `ai.stt` is not configured, `502` when the provider fails.",
+        "description": "Classify a short audio clip before triggering an SOS. Nothing is persisted to the database: the server-computed triage (`emergency_type`, `severity`, `summary`) is cached in Redis for 2 minutes and consumed by the caller's next `POST /api/sos`, so the first fan-out already uses the audio classification without the client sending a severity back. `400` for non-audio or audio above 25 MB, `503` when `ai.stt` is not configured, `502` when the provider fails. Throttled per user (`sos.classify_rate_limit_per_hour`, default 10/hour): `429` with `Retry-After`, and `503` when the limiter store is unavailable (fail-closed, because every call costs STT + LLM tokens).",
         "security": [
           {
             "RawToken": []
@@ -1069,10 +1069,13 @@
             "description": "The speech-to-text provider failed."
           },
           "503": {
-            "description": "Speech-to-text is not configured (`ai.stt.enabled` false or missing API key)."
+            "description": "`ai.stt` not configured, or the rate-limit store is unavailable (fail-closed)."
           },
           "500": {
             "$ref": "#/components/responses/InternalServerError"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
           }
         }
       }
@@ -1835,7 +1838,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Stream one media file (sender or responder). Success returns the raw file bytes with the original `Content-Type` and an inline `Content-Disposition`, not a JSON envelope.",
+        "description": "Download one media file (sender or responder). Success returns the raw bytes with an `attachment` `Content-Disposition` and a `Content-Type` from the allowlist (`audio/webm`, `audio/mp4`, `audio/mpeg`, `audio/ogg`, `audio/wav`, `video/webm`, `video/mp4`, `image/jpeg`, `image/png`); any other stored type is served as `application/octet-stream`, so an uploader-controlled type can never render inline. Not a JSON envelope.",
         "security": [
           {
             "RawToken": []
@@ -2069,7 +2072,7 @@
         "tags": [
           "Push API"
         ],
-        "description": "Store a browser push subscription. `endpoint` is unique, so re-subscribing the same browser upserts the row (and re-points it at the current user).",
+        "description": "Store a browser push subscription. `endpoint` is unique, so re-subscribing the same browser upserts the row (and re-points it at the current user). The endpoint host must be one of the configured push services (`webpush.allowed_hosts`; default `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `web.push.apple.com`), otherwise the call is rejected with `400` — a stored row would otherwise become an outbound POST target (SSRF). Subscriptions whose endpoint no longer passes the allowlist are dropped and deleted at send time.",
         "security": [
           {
             "RawToken": []
@@ -2704,17 +2707,17 @@
             "maxLength": 1000,
             "description": "Free text fed to optional AI triage."
           },
-          "severity": {
+          "client_severity": {
             "type": "number",
             "format": "float",
             "minimum": 0,
             "maximum": 1,
-            "description": "Pre-trigger classification from POST /api/sos/classify. Wins over the description triage and selects the adaptive fan-out radius."
+            "description": "The sender's own severity claim. It never sets the alert triage and never picks the fan-out radius; it is echoed in the response and quoted as \"Pelapor menyebut: ...\" in the notification. Legacy `severity` is ignored."
           },
-          "summary": {
+          "client_summary": {
             "type": "string",
             "maxLength": 500,
-            "description": "Pre-trigger summary from POST /api/sos/classify; quoted in the push body."
+            "description": "The sender's own summary claim (max 500 chars). Labelled as a claim in the notification, never used as the system triage. Legacy `summary` is ignored."
           }
         }
       },
@@ -2802,6 +2805,17 @@
           },
           "triage": {
             "$ref": "#/components/schemas/TriageInfo"
+          },
+          "client_severity": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Echo of the sender claim, absent when not sent."
+          },
+          "client_summary": {
+            "type": "string",
+            "description": "Echo of the sender claim, absent when not sent."
           }
         }
       },

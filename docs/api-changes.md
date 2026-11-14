@@ -60,14 +60,19 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 
 ## Status copy
 
-- `api/api.md` + `api/api-spec.json` diperbarui di backend.
-- Sudah disalin ke `../frontend/api/` (hash sama per saat handoff ini).
+- Re-copy terakhir: pentest F-6/F-7/F-9/F-11/F-12 (klaim client vs triage
+  server, rate limit `classify`, allowlist endpoint push, recover + security
+  headers, media download) dari backend `d931206`.
+- `api/api.md` + `api/api-spec.json` diperbarui di backend untuk keempat
+  perubahan itu (`TriggerSOSRequest.client_*`, `SOSCreatedResponse.client_*`,
+  `SOSCreatedResponse.triage`, `classify` 429/503, `push/subscriptions` 400,
+  media `attachment` + allowlist Content-Type).
+- Sudah disalin ke `../frontend/api/` — `md5sum` keempat file sama per saat
+  handoff ini.
 - Baris "Last re-copy" di `../frontend/AGENTS.md` sudah diperbarui.
-- `backend/api/api.md` + `api-spec.json` tidak berubah untuk bagian media (sudah
-  memuat ketiga endpoint); mirror-nya di `../frontend/api/` masih identik.
 - Dokumen ini juga di-mirror ke `../frontend/docs/api-changes.md` (dengan banner
-  "jangan diedit di sini" dan path disesuaikan). Sumber kebenaran tetap salinan
-  backend ini — kalau ada perubahan, edit di sini lalu re-copy.
+  "jangan diedit di sini"). Sumber kebenaran tetap salinan backend ini — kalau
+  ada perubahan, edit di sini lalu re-copy.
 
 ## Media insiden (audio/video)
 

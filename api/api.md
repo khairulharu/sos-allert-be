@@ -170,7 +170,7 @@ asli, jadi siapa yang muncul tidak terpengaruh pembulatan ini.
 | Method | Path | Auth | Kegunaan |
 |---|---|:---:|---|
 | `POST` | `/api/sos` | ✅ | Trigger SOS. Body opsional; fallback ke lokasi Redis terakhir. Response `201`. |
-| `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun; hasilnya (`emergency_type`, `severity`, `summary`) dikirim ulang di body trigger agar fan-out pertama memakai level dari suara. |
+| `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun ke DB. Hasil server (`emergency_type`, `severity`, `summary`) disimpan 2 menit sekali-pakai dan **otomatis** dipakai `POST /api/sos` berikutnya dari user yang sama; trigger tidak perlu mengirim ulang nilainya. Rate limit `sos.classify_rate_limit_per_hour` (default **10/jam**) → `429` + `Retry-After`; store limiter error → `503` (fail-closed). |
 | `GET` | `/api/sos/active` | ✅ | Insiden aktif milik user (cold start). |
 | `GET` | `/api/sos/inbox` | ✅ | Insiden yang push-nya pernah diterima user (inbox responder). |
 | `GET` | `/api/sos/history` | ✅ | Riwayat paged (`role=sent\|received`, `status`, `page`, `size`, `from_ms`, `to_ms`), semua status termasuk `RESOLVED`/`CANCELLED`/`EXPIRED`. Item `AlertDetailResponse` tanpa `responders[]`/`breadcrumbs`. |
@@ -184,17 +184,25 @@ asli, jadi siapa yang muncul tidak terpengaruh pembulatan ini.
 | `POST` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Simpan satu titik tracking. Sender saja, insiden harus aktif. |
 | `GET` | `/api/sos/{alertId}/media` | ✅ | List media insiden (sender/responder). |
 | `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. Audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible), lalu transcript masuk triage dan response memuat `transcript`, `transcription_status`, `triage`. Kalau severity naik, fan-out diperluas ke responder baru (`escalated: true`, `recipients_added: N`). |
-| `GET` | `/api/sos/{alertId}/media/{mediaId}` | ✅ | Download/stream media (sender/responder). |
+| `GET` | `/api/sos/{alertId}/media/{mediaId}` | ✅ | Download media (sender/responder). Selalu `Content-Disposition: attachment`; `Content-Type` hanya dari allowlist (`audio/webm|mp4|mpeg|ogg|wav`, `video/webm|mp4`, `image/jpeg|png`), selain itu `application/octet-stream`. |
 
 Detail trigger:
 
 - Request body: `latitude`, `longitude`, `accuracy_meters`, `battery_percentage`,
   `emergency_type` (`DANGER|MEDICAL|ACCIDENT`), `description`, dan opsional
-  `severity` (0–1) + `summary` dari `POST /api/sos/classify`.
+  `client_severity` (0–1) + `client_summary` (maks 500) — **klaim pelapor**,
+  bukan triage.
 - Header `X-Idempotency-Key` mencegah duplikasi saat retry (TTL 5 menit).
 - Rate limit: `sos.rate_limit_per_hour` trigger per user per jam (default **3**); lebih dari itu `429` dengan pesan yang menyebut limit aktif. Bisa dimatikan di backend dengan `sos.rate_limit_disabled: true` (default `false`).
-- `description` dipakai AI triage opsional (fail-open). `emergency_type`,
-  `severity`, dan `summary` eksplisit menang atas hasil klasifikasi.
+- **Triage dan radius selalu dihitung server**, dari dua sumber: (a) hasil
+  `POST /api/sos/classify` milik user yang sama — dipakai otomatis dalam 2
+  menit, sekali pakai — atau (b) `description` (AI triage opsional, fail-open).
+  `emergency_type` eksplisit menang atas klasifikasi. `severity` server
+  di-clamp ke `0..1`.
+- `client_severity`/`client_summary` **tidak** memengaruhi triage atau radius:
+  hanya di-echo di response dan dikirim ke notifikasi berlabel
+  `Pelapor menyebut: ...`. Nama lama `severity`/`summary` diabaikan (bukan
+  error), jadi aplikasi versi lama tetap jalan.
 - Radius fan-out adaptif 1/2/5 km, maksimal 50 penerima, ditambah emergency contacts.
 - Klip audio yang baru ditranskrip setelah trigger dan menaikkan severity
   memperlebar fan-out ke radius baru: hanya responder baru yang dinotifikasi,
@@ -214,10 +222,15 @@ Response trigger:
       "emergency_type": "MEDICAL",
       "severity": 0.8,
       "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis"
-    }
+    },
+    "client_severity": 0.9,
+    "client_summary": "sesak napas"
   }
 }
 ```
+
+`triage` = penilaian server. `client_severity`/`client_summary` = klaim
+pelapor, hanya muncul kalau dikirim, dan tidak disimpan ke DB.
 
 Status insiden:
 
@@ -339,7 +352,7 @@ biasa. Belum ada endpoint update/delete.
 |---|---|:---:|---|
 | `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` kalau kanal belum dikonfigurasi. |
 | `GET` | `/api/push/subscriptions` | ✅ | List langganan push milik user. |
-| `POST` | `/api/push/subscriptions` | ✅ | Simpan langganan browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → upsert. |
+| `POST` | `/api/push/subscriptions` | ✅ | Simpan langganan browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → upsert. `endpoint` wajib menunjuk host push service yang diizinkan (`webpush.allowed_hosts`, default `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `web.push.apple.com`) — selain itu `400`. |
 | `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan (`{"endpoint": "..."}`); endpoint tak dikenal tetap `200`. |
 
 ```json
