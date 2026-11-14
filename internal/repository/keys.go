@@ -9,6 +9,9 @@ const (
 	rateLimitKeyPrefix = "ratelimit:sos:"
 	// classifyRateLimitKeyPrefix + user id -> sorted set of paid STT/LLM calls.
 	classifyRateLimitKeyPrefix = "ratelimit:classify:"
+	// classifyStoreKey + user id -> the last server-side audio triage, consumed
+	// by the next SOS trigger (single use, short TTL).
+	classifyStoreKey = "classify:pending:"
 	// authRateLimitKeyPrefix + client IP -> sorted set of auth attempts.
 	authRateLimitKeyPrefix = "ratelimit:auth:"
 	// authLockoutKeyPrefix + client IP -> lockout marker with TTL.

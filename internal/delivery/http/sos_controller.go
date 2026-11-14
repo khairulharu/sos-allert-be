@@ -79,6 +79,8 @@ func (s *SOSController) Trigger(ctx *fiber.Ctx) error {
 		RecipientsNotified: len(result.Recipients),
 		TriggeredAt:        result.Alert.TriggeredAt.UnixMilli(),
 		Triage:             result.Triage,
+		ClientSeverity:     result.Alert.ClientSeverity,
+		ClientSummary:      result.Alert.ClientSummary,
 	}
 	return ctx.Status(fiber.StatusCreated).JSON(model.WebResponse[*model.SOSCreatedResponse]{Data: data})
 }
@@ -105,6 +107,7 @@ func (s *SOSController) ListActive(ctx *fiber.Ctx) error {
 // trigger, so the first fan-out can already use the audio-derived level.
 // Nothing is persisted: the client passes the result into POST /api/sos.
 func (s *SOSController) Classify(ctx *fiber.Ctx) error {
+	auth := middleware.GetUser(ctx)
 	file, err := ctx.FormFile("file")
 	if err != nil {
 		return fiber.ErrBadRequest
@@ -114,7 +117,7 @@ func (s *SOSController) Classify(ctx *fiber.Ctx) error {
 		return fiber.ErrBadRequest
 	}
 	defer src.Close()
-	result, err := s.UseCase.ClassifyAudio(ctx.UserContext(), file.Filename,
+	result, err := s.UseCase.ClassifyAudio(ctx.UserContext(), auth.ID, file.Filename,
 		file.Header.Get("Content-Type"), file.Size, src)
 	if err != nil {
 		return mapSOSError(err)

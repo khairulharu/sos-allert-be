@@ -105,6 +105,11 @@ func (d *AlertDispatcher) notificationContent(alert model.Alert) (string, string
 	if summary := strings.TrimSpace(alert.Summary); summary != "" {
 		body = summary + " — " + body
 	}
+	// The sender's own claim is labelled as such, so a responder never
+	// reads it as the system's assessment.
+	if claim := strings.TrimSpace(alert.ClientSummary); claim != "" {
+		body = "Pelapor menyebut: " + claim + " — " + body
+	}
 	data := map[string]string{
 		"alert_id":       alert.ID,
 		"sender_id":      alert.SenderId,
@@ -117,6 +122,12 @@ func (d *AlertDispatcher) notificationContent(alert model.Alert) (string, string
 	}
 	if summary := strings.TrimSpace(alert.Summary); summary != "" {
 		data["summary"] = summary
+	}
+	if alert.ClientSeverity != nil {
+		data["client_severity"] = fmt.Sprintf("%.2f", *alert.ClientSeverity)
+	}
+	if claim := strings.TrimSpace(alert.ClientSummary); claim != "" {
+		data["client_summary"] = claim
 	}
 	return title, body, data
 }

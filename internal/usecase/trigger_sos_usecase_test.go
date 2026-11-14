@@ -753,3 +753,86 @@ func TestTriggerSOSUseCaseExecuteAlertSaveError(t *testing.T) {
 		t.Errorf("GeoSearch() called %d times, want 0 after save failure", locRepo.geoSearchCalls)
 	}
 }
+
+// fakeClassifyStore stands in for the Redis handoff of the audio triage.
+type fakeClassifyStore struct {
+	info    *model.TriageInfo
+	saves   int
+	taken   int
+	saveErr error
+	takeErr error
+}
+
+func (f *fakeClassifyStore) Save(ctx context.Context, userID string, info model.TriageInfo) error {
+	f.saves++
+	if f.saveErr != nil {
+		return f.saveErr
+	}
+	f.info = &info
+	return nil
+}
+
+func (f *fakeClassifyStore) Take(ctx context.Context, userID string) (*model.TriageInfo, error) {
+	f.taken++
+	if f.takeErr != nil {
+		return nil, f.takeErr
+	}
+	info := f.info
+	f.info = nil
+	return info, nil
+}
+
+// A client-supplied severity/summary is only a claim: it must not widen the
+// fan-out, must not become the stored triage, and must be labelled as the
+// sender's claim in the notification.
+func TestTriggerSOSClientClaimIsNotTrustedAsTriage(t *testing.T) {
+	uc, locRepo, _, notifier := triggerSetup(t)
+	locRepo.nearbyByRadius = map[float64][]string{
+		1000: {"sender", "user-b", "user-c", "user-d"},
+		5000: {"sender", "user-b", "user-c", "user-d", "user-e", "user-f"},
+	}
+	locRepo.lastSeenMs["user-e"] = freshLastSeen()
+	locRepo.lastSeenMs["user-f"] = freshLastSeen()
+
+	claimSeverity := 0.9
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{
+		ClientSeverity: &claimSeverity,
+		ClientSummary:  "TRIAGE-OVERRIDE-WITNESS",
+	}, "")
+	if err != nil {
+		t.Fatalf("ExecuteWithRequest error = %v", err)
+	}
+	if result.RadiusMeters != 1000 {
+		t.Fatalf("radius = %v, want 1000 (a claim must not widen the fan-out)", result.RadiusMeters)
+	}
+	if result.Triage != nil {
+		t.Fatalf("triage = %+v, want no server triage for an empty description", result.Triage)
+	}
+	if notifier.lastAlert.Severity != 0 || notifier.lastAlert.Summary != "" {
+		t.Fatalf("stored triage = %v/%q, want empty", notifier.lastAlert.Severity, notifier.lastAlert.Summary)
+	}
+	if notifier.lastAlert.ClientSeverity == nil || *notifier.lastAlert.ClientSeverity != claimSeverity {
+		t.Fatalf("client claim = %v, want it recorded as a claim", notifier.lastAlert.ClientSeverity)
+	}
+	if notifier.lastAlert.ClientSummary != "TRIAGE-OVERRIDE-WITNESS" {
+		t.Fatalf("client summary = %q, want the claim kept verbatim", notifier.lastAlert.ClientSummary)
+	}
+	if result.Alert.ClientSummary != "TRIAGE-OVERRIDE-WITNESS" {
+		t.Fatalf("result claim = %q, want it echoed to the client", result.Alert.ClientSummary)
+	}
+}
+
+// A server triage out of range is clamped before it reaches the radius picker.
+func TestTriggerSOSClampsServerSeverity(t *testing.T) {
+	uc, locRepo, _, _ := triggerSetup(t)
+	locRepo.nearbyByRadius = map[float64][]string{5000: {"sender", "user-b"}}
+	uc.Deps.Classify = &fakeClassifyStore{info: &model.TriageInfo{Severity: 4.2}}
+
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("ExecuteWithRequest error = %v", err)
+	}
+	if result.Triage == nil || result.Triage.Severity != 1 {
+		t.Fatalf("triage = %+v, want severity clamped to 1", result.Triage)
+	}
+}
