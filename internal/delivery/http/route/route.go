@@ -37,8 +37,9 @@ func (c *RouteConfig) SetupGuestRoute() {
 	if c.MetricsHandler != nil {
 		c.App.Get("/metrics", c.MetricsHandler)
 	}
-	// WebSocket tracking authenticates with ?token=, so it is
-	// registered before the header-based auth middleware.
+	// WebSocket tracking authenticates in-band (first frame, or the
+	// Authorization header for native clients), so it is registered before
+	// the header-based auth middleware.
 	if c.SOSTrackController != nil {
 		c.App.Get("/ws/sos/:alertId/track", c.SOSTrackController.Handler())
 	}

@@ -130,7 +130,7 @@ sequenceDiagram
 | `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible) lalu transcript masuk triage; response memuat `url`, `transcript`, `transcription_status`, `triage`. Kalau triage audio menaikkan severity, fan-out diperluas ke radius lebih lebar: `escalated: true` + `recipients_added: N` |
 | `GET` | `/api/sos/:alertId/media` | ✅ | Daftar media insiden (sender/responder saja) |
 | `GET` | `/api/sos/:alertId/media/:mediaId` | ✅ | Stream/download media; header `Authorization`, `Content-Type` asli |
-| `WS` | `/ws/sos/:alertId/track?token=<token>` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`) |
+| `WS` | `/ws/sos/:alertId/track` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`). Auth lewat frame pertama `{"type":"auth","token":"..."}` (atau header `Authorization` untuk klien native); server balas `{"type":"auth_ok"}`. Token tidak pernah di URL |
 | `GET/POST` | `/api/emergency-contacts` | ✅ | CRUD Tier-1 emergency contacts untuk SMS fallback |
 | `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` saat `webpush.enabled: false` atau key kosong |
 | `GET/POST` | `/api/push/subscriptions` | ✅ | Daftar / simpan langganan Web Push browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → re-subscribe = upsert |
@@ -219,8 +219,33 @@ Response 200 OK:
 #### 2. Live Tracking Stream (WebSocket)
 
 ```
-WS /ws/sos/:alertId/track?token=<token>
+WS /ws/sos/:alertId/track
+```
 
+Autentikasi tidak lewat URL. Browser mengirim frame pertama (deadline 10 detik)
+dan menunggu `auth_ok` sebelum mengirim breadcrumb:
+
+```json
+Client -> Server (frame pertama, wajib):
+{
+  "type": "auth",
+  "token": "<raw session token>"
+}
+
+Server -> Client:
+{
+  "type": "auth_ok"
+}
+```
+
+Klien native (mobile) boleh mengirim token mentah di header
+`Authorization` saat handshake dan langsung mengirim breadcrumb tanpa frame
+`auth`; server tetap membalas `auth_ok`. Query `?token=` sudah tidak
+dipakai/diabaikan. Hanya sender atau responder terdaftar yang boleh
+berlangganan; kegagalan auth/otorisasi dikirim sebagai
+`{"error":"..."}` lalu koneksi ditutup.
+
+```
 Client -> Server (Pelapor kirim breadcrumb):
 {
   "latitude": -6.2092,
