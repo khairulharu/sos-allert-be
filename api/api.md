@@ -36,7 +36,10 @@ Jangan memakai prefix `Bearer `. Token sesi hanya disimpan di Redis
 (`auth:token:<token>`) dengan masa berlaku `auth.token_ttl_hours` (default
 168 jam). Login baru membatalkan token sebelumnya (single-session) dan logout
 langsung menghapus sesi. Setelah TTL habis atau setelah login di device lain,
-request berikutnya akan `401`. WebSocket memakai query `?token=<token>`.
+request berikutnya akan `401`. WebSocket **tidak** memakai query `?token=`:
+browser mengirim frame pertama `{"type":"auth","token":"<token>"}` lalu
+menunggu `{"type":"auth_ok"}`; klien native boleh memakai header
+`Authorization` saat handshake.
 
 ## Response envelope
 
@@ -363,9 +366,23 @@ langganan otomatis. Butuh `webpush.*` di `config.json` (lihat
 ## WebSocket live tracking
 
 ```
-WS /ws/sos/{alertId}/track?token=<token>
+WS /ws/sos/{alertId}/track
 ```
 
+- Browser membuka socket tanpa token di URL, lalu mengirim frame pertama
+  (deadline 10 detik) dan menunggu `auth_ok` sebelum mengirim breadcrumb:
+
+```json
+{ "type": "auth", "token": "<token>" }
+```
+
+```json
+{ "type": "auth_ok" }
+```
+
+- Klien native boleh mengirim header `Authorization: <token>` saat handshake
+  dan langsung mengirim breadcrumb; server tetap membalas `auth_ok`.
+  Query `?token=` diabaikan.
 - Pengirim (sender) mengirim frame JSON breadcrumb:
 
 ```json

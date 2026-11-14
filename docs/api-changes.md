@@ -129,7 +129,8 @@ inline`, `Cache-Control: private, max-age=300`.
 **Gotcha:** endpoint ini butuh header `Authorization`, jadi tidak bisa dipakai
 langsung sebagai `<audio src>` / `<video src>`. Frontend harus `fetch` dulu lalu
 `URL.createObjectURL(blob)` (atau `<audio controls>` diisi dari objek itu).
-Tidak ada signed URL / `?token=` seperti WS tracking.
+Tidak ada signed URL / token di query string (WS tracking juga tidak lagi
+memakai `?token=`).
 
 ### Error
 
@@ -237,9 +238,41 @@ Yang perlu dicek di UI:
 3. Perilaku single-session: login di device kedua membuat device pertama
    menerima `401` pada request/heartbeat berikutnya.
 
-Catatan: autentikasi WebSocket `?token=` belum berubah di PR ini. Penggantinya
-(first-frame `{"type":"auth","token":"..."}`, tanpa token di URL) menyusul di PR
-terpisah; handoff frontend-nya akan ditambahkan di sini.
+## WebSocket tracking: auth lewat frame pertama (pentest F-8)
+
+Token sesi tidak lagi dikirim di URL (`?token=...`). URL sekarang hanya
+`/ws/sos/{alertId}/track`; query `?token=` diabaikan server (socket akan
+ditutup sebagai unauthorized setelah 10 detik).
+
+Alur baru:
+
+1. Buka `new WebSocket(wsUrl(alertId))` — tanpa query token.
+2. Di `onopen`, kirim frame pertama:
+   ```json
+   { "type": "auth", "token": "<raw session token>" }
+   ```
+3. Tunggu balasan `{ "type": "auth_ok" }` **sebelum** mengirim/flush breadcrumb
+   dan sebelum menandai channel `open`.
+4. `{ "error": "..." }` tetap terminal seperti sekarang: tampilkan
+   `lastError`, `stopReconnecting()`, jangan reconnect.
+
+Yang perlu diubah di `../frontend/src/lib/tracking.js`:
+
+- `wsUrl()` tidak lagi menambah `?token=`; cukup `${WS_BASE}/ws/sos/${alertId}/track`.
+- `ws.onopen` saat ini langsung flush `queue` dan `patch({connection:'open'})`.
+  Ubah menjadi: kirim frame auth, lalu flush queue + set `open` di handler
+  `auth_ok` (frame auth tidak boleh masuk antrean breadcrumb).
+- Reconnect memakai token terbaru (`getToken()`); kalau `401`, auth frame
+  berikutnya akan menerima `error` dan channel berhenti.
+- `sendBreadcrumb` tetap diantrekan selama socket `CONNECTING`/sebelum
+  `auth_ok`; jangan kirim breadcrumb sebagai frame pertama.
+
+Klien native (mobile) tidak wajib mengirim frame auth: token mentah di header
+`Authorization` saat handshake diterima dan server tetap membalas `auth_ok`.
+Deadline frame pertama 10 detik.
+
+Deploy backend dan frontend harus bersamaan: frontend lama yang masih memakai
+`?token=` akan gagal terhubung setelah backend ini naik.
 
 ## Yang belum dikerjakan
 
