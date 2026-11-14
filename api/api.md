@@ -169,11 +169,11 @@ asli, jadi siapa yang muncul tidak terpengaruh pembulatan ini.
 | `GET` | `/api/sos/inbox` | ✅ | Insiden yang push-nya pernah diterima user (inbox responder). |
 | `GET` | `/api/sos/history` | ✅ | Riwayat paged (`role=sent\|received`, `status`, `page`, `size`, `from_ms`, `to_ms`), semua status termasuk `RESOLVED`/`CANCELLED`/`EXPIRED`. Item `AlertDetailResponse` tanpa `responders[]`/`breadcrumbs`. |
 | `GET` | `/api/sos/summary` | ✅ | Agregat kartu: `sent`/`received` per status + `responded.total`/`responded.resolved`. |
-| `GET` | `/api/sos/{alertId}` | ✅ | Detail insiden; koordinat dimask untuk non-peserta. `responders[]` (nama + `distance_m`/`eta_seconds` + `responded_at`) hanya diisi untuk sender/responder terdaftar; non-peserta hanya dapat `responders_en_route`. |
+| `GET` | `/api/sos/{alertId}` | ✅ | Detail insiden; `404` untuk non-peserta (bukan sender, penerima notifikasi, atau responder terdaftar). Koordinat dimask untuk peserta yang belum respond. `responders[]` (nama + `distance_m`/`eta_seconds` + `responded_at`) hanya diisi untuk sender/responder terdaftar; peserta lain hanya dapat `responders_en_route`. |
 | `POST` | `/api/sos/{alertId}/cancel` | ✅ | Batalkan false alarm dengan `{ "pin": "1234", "reason": "FALSE_ALARM" }`. Sender saja. |
-| `POST` | `/api/sos/{alertId}/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED`. Response detail memakai sudut pandang pemanggil; koordinat dimask kalau bukan sender/responder. |
+| `POST` | `/api/sos/{alertId}/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED`. Hanya peserta; non-peserta `403`. Response detail memakai sudut pandang pemanggil; koordinat dimask kalau bukan sender/responder. |
 | `POST` | `/api/sos/{alertId}/resolve` | ✅ | Tutup insiden. Sender saja. |
-| `POST` | `/api/sos/{alertId}/respond` | ✅ | Responder menjawab dengan koordinatnya; response berisi `eta_seconds` dan jarak. |
+| `POST` | `/api/sos/{alertId}/respond` | ✅ | Responder menjawab dengan koordinatnya; response berisi `eta_seconds` dan jarak. Hanya peserta; non-peserta dan sender `403`. |
 | `GET` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Riwayat posisi insiden (sender/responder). |
 | `POST` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Simpan satu titik tracking. Sender saja, insiden harus aktif. |
 | `GET` | `/api/sos/{alertId}/media` | ✅ | List media insiden (sender/responder). |
@@ -449,8 +449,12 @@ autentikasi/otorisasi dikirim sebagai `{"error": "..."}` lalu koneksi ditutup.
 
 - Kontak dan alamat adalah data milik user yang login; semua query menyertakan
   `user_id`/`contact_id` sehingga user tidak bisa mengakses data user lain.
-- `GET /api/sos/{alertId}` bisa diakses user terautentikasi mana pun, tetapi
-  koordinat dibulatkan (~100 m) dan `masked: true` bila user bukan sender/responder.
+- `GET /api/sos/{alertId}` hanya untuk peserta (sender, penerima notifikasi, atau
+  responder terdaftar); user terautentikasi lain mendapat `404` supaya
+  keberadaan alert id tidak bisa ditebak. Koordinat tetap dibulatkan (~100 m)
+  dan `masked: true` untuk peserta yang belum respond; `responders[]` hanya
+  diisi untuk sender/responder. `POST .../acknowledge` dan `POST .../respond`
+  menolak non-peserta dengan `403`.
 - `GET /api/sos/history` memakai aturan masking yang sama untuk setiap item.
   `GET /api/sos/active` memakai sudut pandang sender; `GET /api/sos/inbox`
   memakai sudut pandang pemanggil, jadi penerima yang belum pernah respond

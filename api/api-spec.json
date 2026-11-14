@@ -1327,7 +1327,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Get incident detail. Any authenticated user may fetch it, but coordinates are masked (~100 m) unless the requester is the sender or a recorded responder; `masked` is `true` when masking applies.",
+        "description": "Get incident detail. Only participants (the sender, a notified recipient, or a recorded responder) may fetch it; any other authenticated user gets `404` so the endpoint does not reveal which alert ids exist. Coordinates are masked (~100 m) for a recipient who has not responded yet; the sender and recorded responders see the exact location. `masked` is `true` when masking applies.",
         "security": [
           {
             "RawToken": []
@@ -1439,7 +1439,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Move an incident from `TRIGGERED` to `ACKNOWLEDGED`. Any authenticated user who knows the alert id can acknowledge; acknowledging an already acknowledged incident is idempotent. The returned detail is built from the caller's perspective: coordinates are masked unless the caller is the sender or a recorded responder.",
+        "description": "Move an incident from `TRIGGERED` to `ACKNOWLEDGED`. Only participants (the sender, a notified recipient, or a recorded responder) may acknowledge; any other authenticated user gets `403`. Acknowledging an already acknowledged incident is idempotent. The returned detail is built from the caller's perspective: coordinates are masked unless the caller is the sender or a recorded responder.",
         "security": [
           {
             "RawToken": []
@@ -1538,7 +1538,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Respond to an incident as an authenticated user other than the sender. The backend computes distance and ETA from the responder's coordinates to the victim, records the response, and moves a `TRIGGERED` incident to `ACKNOWLEDGED`.",
+        "description": "Respond to an incident as a participant (a notified recipient or recorded responder) other than the sender. The backend computes distance and ETA from the responder's coordinates to the victim, records the response, and moves a `TRIGGERED` incident to `ACKNOWLEDGED`. Non-participants and the sender get `403`.",
         "security": [
           {
             "RawToken": []
