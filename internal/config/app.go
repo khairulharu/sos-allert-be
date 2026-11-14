@@ -48,6 +48,9 @@ func Bootstrap(config *BootstrapConfig) {
 	dispatchContacts := &repository.DispatchContactRepository{DB: config.DB, Repo: emergencyContactRepository}
 	idempotencyRepository := repository.NewIdempotencyRepository(config.RedisClient)
 	rateLimitRepository := repository.NewRateLimitRepository(config.RedisClient)
+	// Keeps the server-computed audio triage until the next SOS trigger
+	// consumes it (POST /api/sos/classify -> POST /api/sos).
+	classifyStoreRepository := repository.NewClassifyStoreRepository(config.RedisClient, 2*time.Minute)
 
 	// setup producer
 	var userProducer *messaging.UserProducer
@@ -192,6 +195,7 @@ func Bootstrap(config *BootstrapConfig) {
 		Hub:               trackHub,
 		Metrics:           appMetrics,
 		Triage:            triageEngine,
+		Classify:          classifyStoreRepository,
 		EmergencyContacts: emergencyContactRepository,
 		MediaStore:        mediaStore,
 		Transcriber:       transcriber,

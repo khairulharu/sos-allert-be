@@ -12,12 +12,13 @@ type TriggerSOSRequest struct {
 	// Description feeds the optional AI triage ("ai.*" config). It is
 	// advisory only: a missing or failing triage never blocks the SOS.
 	Description string `json:"description" validate:"omitempty,max=1000"`
-	// Severity and Summary are the optional classification a client
-	// already obtained from POST /api/sos/classify (audio). Explicit
-	// values win over the description-based triage so the very first
-	// fan-out already reflects the audio-derived severity.
-	Severity *float64 `json:"severity" validate:"omitempty,gte=0,lte=1"`
-	Summary  string   `json:"summary" validate:"omitempty,max=500"`
+	// ClientSeverity and ClientSummary are the sender's own claim, never
+	// the system's assessment: they are stored as-is for labelling in the
+	// notification ("pelapor menyebut") and never drive triage or the
+	// fan-out radius. The server-side triage comes from the description or
+	// from a pending POST /api/sos/classify result.
+	ClientSeverity *float64 `json:"client_severity" validate:"omitempty,gte=0,lte=1"`
+	ClientSummary  string   `json:"client_summary" validate:"omitempty,max=500"`
 }
 
 // TriggerSOSResult is the internal result of a trigger. The HTTP shape is
@@ -47,6 +48,10 @@ type SOSCreatedResponse struct {
 	RecipientsNotified int         `json:"recipients_notified"`
 	TriggeredAt        int64       `json:"triggered_at"`
 	Triage             *TriageInfo `json:"triage,omitempty"`
+	// ClientSeverity/ClientSummary echo the sender's claim so the client can
+	// see that it was recorded as a claim, not as the system triage.
+	ClientSeverity *float64 `json:"client_severity,omitempty"`
+	ClientSummary  string   `json:"client_summary,omitempty"`
 }
 
 // CancelSOSRequest is the POST /api/sos/:alertId/cancel body.
@@ -305,8 +310,12 @@ type SOSEvent struct {
 	Status        string   `json:"status"`
 	Recipients    []string `json:"recipients"`
 	TriggeredAt   int64    `json:"triggered_at"`
-	// Severity/Summary carry the optional AI triage into the worker so
+	// Severity/Summary carry the server-side triage into the worker so
 	// push content is identical whether dispatch is direct or via Kafka.
 	Severity float64 `json:"severity,omitempty"`
 	Summary  string  `json:"summary,omitempty"`
+	// ClientSeverity/ClientSummary are the sender's claim, labelled as such
+	// in the notification and never used for the fan-out decision.
+	ClientSeverity *float64 `json:"client_severity,omitempty"`
+	ClientSummary  string   `json:"client_summary,omitempty"`
 }

@@ -212,3 +212,44 @@ func TestAlertDispatcherSendsWebPush(t *testing.T) {
 		}
 	}
 }
+
+// The sender's claim must arrive labelled: a responder may not read it as the
+// system's triage.
+func TestNotificationContentLabelsClientClaim(t *testing.T) {
+	d := NewAlertDispatcher(noopLogger(), nil, nil, nil, nil, nil, nil, nil)
+	claimSeverity := 0.9
+	alert := model.Alert{
+		ID:             "a1",
+		SenderId:       "sender",
+		EmergencyType:  entity.EmergencyTypeDanger,
+		Severity:       0.6,
+		Summary:        "Kemungkinan darurat",
+		ClientSeverity: &claimSeverity,
+		ClientSummary:  "TRIAGE-OVERRIDE-WITNESS",
+	}
+	_, body, data := d.notificationContent(alert)
+	if !strings.Contains(body, "Pelapor menyebut: TRIAGE-OVERRIDE-WITNESS") {
+		t.Fatalf("body = %q, want the claim labelled as reported", body)
+	}
+	if !strings.Contains(body, "Kemungkinan darurat") {
+		t.Fatalf("body = %q, want the server triage kept separately", body)
+	}
+	if data["severity"] != "0.60" || data["client_severity"] != "0.90" {
+		t.Fatalf("data severity = %q claim = %q, want them kept apart", data["severity"], data["client_severity"])
+	}
+	if data["summary"] != "Kemungkinan darurat" || data["client_summary"] != "TRIAGE-OVERRIDE-WITNESS" {
+		t.Fatalf("data summary = %q claim = %q, want them kept apart", data["summary"], data["client_summary"])
+	}
+}
+
+// An alert without a claim keeps the previous notification shape.
+func TestNotificationContentWithoutClaim(t *testing.T) {
+	d := NewAlertDispatcher(noopLogger(), nil, nil, nil, nil, nil, nil, nil)
+	_, body, data := d.notificationContent(model.Alert{ID: "a1", EmergencyType: entity.EmergencyTypeMedical})
+	if strings.Contains(body, "Pelapor") {
+		t.Fatalf("body = %q, want no claim label", body)
+	}
+	if _, ok := data["client_summary"]; ok {
+		t.Fatal("client_summary must be absent when there is no claim")
+	}
+}

@@ -104,6 +104,14 @@ type EventPublisher interface {
 	Send(ctx context.Context, event model.SOSEvent) error
 }
 
+// PendingClassifyStore hands the server-computed audio triage from
+// POST /api/sos/classify to the next SOS trigger of the same user.
+// Satisfied by *repository.ClassifyStoreRepository.
+type PendingClassifyStore interface {
+	Save(ctx context.Context, userID string, info model.TriageInfo) error
+	Take(ctx context.Context, userID string) (*model.TriageInfo, error)
+}
+
 // TrackHub publishes live-tracking payloads to WebSocket subscribers
 // and lets handlers subscribe per alert.
 // Satisfied by *tracking.Hub.
@@ -116,17 +124,20 @@ type TrackHub interface {
 // Nil optional fields disable that feature (fail-open, logged) so the
 // use case stays testable without live Redis, MySQL, Kafka or push infra.
 type TriggerSOSDeps struct {
-	Validate          *validator.Validate
-	Location          LocationRepository
-	Alerts            AlertStore
-	Notifier          Notifier
-	Idempotency       IdempotencyStore
-	RateLimiter       RateLimiter
-	Publisher         EventPublisher
-	Users             TokenReader
-	Hub               TrackHub
-	Metrics           SOSMetrics
-	Triage            EmergencyTriage
+	Validate    *validator.Validate
+	Location    LocationRepository
+	Alerts      AlertStore
+	Notifier    Notifier
+	Idempotency IdempotencyStore
+	RateLimiter RateLimiter
+	Publisher   EventPublisher
+	Users       TokenReader
+	Hub         TrackHub
+	Metrics     SOSMetrics
+	Triage      EmergencyTriage
+	// Classify carries the pending audio triage from POST /api/sos/classify.
+	// Nil disables the handoff (the alert then uses the description triage).
+	Classify          PendingClassifyStore
 	EmergencyContacts EmergencyContactStore
 	MediaStore        MediaStorage
 	Transcriber       Transcriber
@@ -252,16 +263,19 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		}
 	}
 
-	// An explicit classification — typically the result of
-	// POST /api/sos/classify on the audio clip — wins over the
-	// description-based triage, so the very first fan-out already
-	// reflects the audio-derived severity.
-	if req.Severity != nil {
-		triageInfo.Severity = *req.Severity
+	// An audio classification the server produced a moment ago (POST
+	// /api/sos/classify) wins over the description triage, so the first
+	// fan-out already reflects the clip. It is read from the store, never
+	// from the request body: a client cannot claim its way to a broader
+	// fan-out.
+	if u.Deps.Classify != nil {
+		if pending, err := u.Deps.Classify.Take(ctx, senderID); err != nil {
+			u.Log.WithError(err).Warn("could not read the pending audio triage")
+		} else if pending != nil {
+			triageInfo = *pending
+		}
 	}
-	if req.Summary != "" {
-		triageInfo.Summary = req.Summary
-	}
+	triageInfo.Severity = clampSeverity(triageInfo.Severity)
 
 	emergencyType := req.EmergencyType
 	if emergencyType == "" {
@@ -315,6 +329,8 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		BatteryPercentage: alert.BatteryPercentage,
 		Severity:          triageInfo.Severity,
 		Summary:           triageInfo.Summary,
+		ClientSeverity:    req.ClientSeverity,
+		ClientSummary:     req.ClientSummary,
 		Location: model.LocationResponse{
 			Longitude: alert.Longitude,
 			Latitude:  alert.Latitude,
@@ -341,17 +357,19 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	dispatch := func(dispatchCtx context.Context) {
 		if u.Deps.Publisher != nil {
 			event := model.SOSEvent{
-				EventType:     "sos.dispatched",
-				AlertID:       alert.ID,
-				SenderID:      senderID,
-				Latitude:      latitude,
-				Longitude:     longitude,
-				EmergencyType: emergencyType,
-				Status:        alert.Status,
-				Recipients:    recipients,
-				TriggeredAt:   alert.TriggeredAt,
-				Severity:      triageInfo.Severity,
-				Summary:       triageInfo.Summary,
+				EventType:      "sos.dispatched",
+				AlertID:        alert.ID,
+				SenderID:       senderID,
+				Latitude:       latitude,
+				Longitude:      longitude,
+				EmergencyType:  emergencyType,
+				Status:         alert.Status,
+				Recipients:     recipients,
+				TriggeredAt:    alert.TriggeredAt,
+				Severity:       triageInfo.Severity,
+				Summary:        triageInfo.Summary,
+				ClientSeverity: req.ClientSeverity,
+				ClientSummary:  req.ClientSummary,
 			}
 			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
 				u.recordDispatch(startedAt)
@@ -462,6 +480,18 @@ func (u *TriggerSOSUseCase) resolveCoordinates(ctx context.Context, senderID str
 		return 0, 0, fmt.Errorf("get sender location: %w", err)
 	}
 	return sender.Latitude, sender.Longitude, nil
+}
+
+// clampSeverity keeps a classifier's score inside 0..1 so the adaptive
+// radius and the stored triage cannot be driven out of range.
+func clampSeverity(severity float64) float64 {
+	if severity < 0 {
+		return 0
+	}
+	if severity > 1 {
+		return 1
+	}
+	return severity
 }
 
 // radiusStartIndex maps an AI severity (0..1) onto the configured

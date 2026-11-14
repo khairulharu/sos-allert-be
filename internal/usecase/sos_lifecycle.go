@@ -736,7 +736,7 @@ func (u *TriggerSOSUseCase) triageTranscript(ctx context.Context, transcript str
 // the audio-derived classification before POST /api/sos, so the first
 // fan-out already uses it; audio that arrives afterwards widens the
 // fan-out through UploadMedia instead.
-func (u *TriggerSOSUseCase) ClassifyAudio(ctx context.Context, filename, contentType string, size int64, r io.Reader) (*model.ClassifyResponse, error) {
+func (u *TriggerSOSUseCase) ClassifyAudio(ctx context.Context, senderID, filename, contentType string, size int64, r io.Reader) (*model.ClassifyResponse, error) {
 	if !strings.HasPrefix(contentType, "audio/") {
 		return nil, fiber.ErrBadRequest
 	}
@@ -766,9 +766,17 @@ func (u *TriggerSOSUseCase) ClassifyAudio(ctx context.Context, filename, content
 	}
 	response.Transcript = transcript
 	if info := u.triageTranscript(ctx, transcript); info != nil {
+		info.Severity = clampSeverity(info.Severity)
 		response.EmergencyType = info.EmergencyType
 		response.Severity = info.Severity
 		response.Summary = info.Summary
+		// Hand the server-computed triage to the next trigger of this
+		// user, so POST /api/sos need not trust a client-supplied score.
+		if u.Deps.Classify != nil {
+			if err := u.Deps.Classify.Save(ctx, senderID, *info); err != nil {
+				u.Log.WithError(err).Warn("could not store the pending audio triage")
+			}
+		}
 	}
 	return response, nil
 }

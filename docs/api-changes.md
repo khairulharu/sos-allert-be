@@ -305,6 +305,51 @@ Frontend: tangani `429` (tampilkan pesan kuota + jangan retry otomatis) dan
 `503` (fallback ke trigger tanpa klasifikasi audio). Tidak ada perubahan pada
 `POST /api/sos`.
 
+## Triage hanya dari server — `severity`/`summary` client jadi "klaim"
+
+> **Untuk agent frontend.** Perubahan kontrak, perlu penyesuaian di
+> `src/lib/api.js` / alur trigger.
+
+Dulu `POST /api/sos` menerima `severity` + `summary` (hasil `classify`) dan
+**menyimpannya sebagai triage sistem**, ikut menentukan radius fan-out pertama
+dan dikirim ke responder seolah-olah hasil analisis. Sekarang nilai itu tidak
+dipercaya lagi:
+
+| Dulu | Sekarang |
+|---|---|
+| `{"severity":0.9,"summary":"..."}` → jadi `alerts.severity/summary` + radius 5 km | diabaikan untuk triage dan radius |
+| — | `{"client_severity":0.9,"client_summary":"..."}` → hanya **klaim pelapor**: ditampilkan berlabel "Pelapor menyebut: …" di notifikasi, muncul sebagai `client_severity`/`client_summary` di response, **tidak** mengubah triage/radius |
+
+Yang menentukan triage dan radius sekarang hanya dua hal, dua-duanya dihitung
+server:
+1. hasil `POST /api/sos/classify` (audio) — **otomatis** dipakai trigger
+   berikutnya dari user yang sama dalam **2 menit**, sekali pakai; klien tidak
+   perlu mengirim apa pun;
+2. triage `description` di body `POST /api/sos` (seperti sebelumnya).
+
+Artinya untuk alur audio, klien cukup:
+
+1. `POST /api/sos/classify` (multipart, field `file`) → `triage`;
+2. `POST /api/sos` **tanpa** `severity`/`summary`;
+3. server memakai hasil langkah 1 untuk radius dan `triage` di response.
+
+Kalau klien ingin tetap menampilkan apa yang dilaporkan pengguna, kirim
+`client_summary` (maks 500 karakter) dan/atau `client_severity` (0..1). Response
+`POST /api/sos` mengembalikannya sebagai `client_severity`/`client_summary`.
+
+Catatan tambahan:
+- `severity`/`summary` (nama lama) sekarang **diabaikan** — tidak error, jadi
+  aplikasi versi lama tetap jalan, hanya radius tidak lagi ikut nilai itu.
+- `triage.severity` di response di-clamp ke `0..1` (dulu bisa >1 dari klien).
+- `client_severity`/`client_summary` **tidak disimpan** ke DB: hanya dipakai saat trigger (response + notifikasi). Setelah itu `GET /api/sos/{alertId}` hanya memuat triage server.
+- Payload push menambah `client_severity`/`client_summary`; `severity`/`summary`
+  tetap berisi triage server.
+- `GET /api/sos/{alertId}/media/{mediaId}` sekarang `Content-Disposition:
+  attachment` dan hanya mengirim `Content-Type` dari allowlist
+  (`audio/*`, `video/mp4|webm`, `image/jpeg|png`); tipe lain jadi
+  `application/octet-stream`. Blob dari `fetch` tetap bisa diputar, tapi kalau
+  kode memeriksa `blob.type`, siapkan fallback.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai
