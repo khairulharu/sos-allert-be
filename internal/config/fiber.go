@@ -5,6 +5,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/helmet"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/spf13/viper"
 )
 
@@ -46,6 +48,14 @@ func NewFiber(config *viper.Viper) *fiber.App {
 	}
 
 	app := fiber.New(fiberConfig)
+
+	// Hardening, first so a panicking handler cannot kill the connection.
+	// HSTS stays at the edge proxy, so HSTSMaxAge keeps its zero default.
+	app.Use(recover.New(recover.Config{EnableStackTrace: true}))
+	app.Use(helmet.New(helmet.Config{
+		XFrameOptions:             "DENY",
+		CrossOriginResourcePolicy: "cross-origin",
+	}))
 
 	// CORS: production origin + Vite dev origin only. The browser app
 	// sends a raw Authorization header + X-Idempotency-Key, so those

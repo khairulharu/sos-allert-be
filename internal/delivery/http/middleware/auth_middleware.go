@@ -44,5 +44,10 @@ func NewAuth(verifier TokenVerifier, log *logrus.Logger) fiber.Handler {
 }
 
 func GetUser(ctx *fiber.Ctx) *model.Auth {
-	return ctx.Locals("auth").(*model.Auth)
+	auth, ok := ctx.Locals("auth").(*model.Auth)
+	if !ok {
+		// Only reachable when a route is mounted without AuthMiddleware.
+		panic(fiber.ErrInternalServerError)
+	}
+	return auth
 }
