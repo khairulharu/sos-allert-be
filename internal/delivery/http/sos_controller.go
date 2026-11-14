@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"math"
+	"mime"
 	"path/filepath"
 	"strconv"
 
@@ -278,6 +279,32 @@ func (s *SOSController) ListMedia(ctx *fiber.Ctx) error {
 	return ctx.JSON(model.WebResponse[[]*model.AlertMediaResponse]{Data: media})
 }
 
+// mediaDownloadTypes is the download allowlist. The uploader controls the
+// multipart Content-Type, so anything outside this set (text/html and SVG
+// included) is served as an opaque binary instead of being rendered.
+var mediaDownloadTypes = map[string]bool{
+	"audio/webm":  true,
+	"audio/mp4":   true,
+	"audio/mpeg":  true,
+	"audio/ogg":   true,
+	"audio/wav":   true,
+	"audio/x-wav": true,
+	"video/webm":  true,
+	"video/mp4":   true,
+	"image/jpeg":  true,
+	"image/png":   true,
+}
+
+// mediaDownloadContentType normalizes a stored upload type to what we are
+// willing to serve, falling back to application/octet-stream.
+func mediaDownloadContentType(stored string) string {
+	mediaType, _, err := mime.ParseMediaType(stored)
+	if err != nil || !mediaDownloadTypes[mediaType] {
+		return "application/octet-stream"
+	}
+	return mediaType
+}
+
 // DownloadMedia streams one upload. The raw session token goes in the
 // Authorization header like every other HTTP endpoint; players that
 // cannot set headers should download the file first.
@@ -288,8 +315,8 @@ func (s *SOSController) DownloadMedia(ctx *fiber.Ctx) error {
 	if err != nil {
 		return mapSOSError(err)
 	}
-	ctx.Set(fiber.HeaderContentType, media.ContentType)
-	ctx.Set(fiber.HeaderContentDisposition, "inline; filename="+strconv.Quote(filepath.Base(media.Filename)))
+	ctx.Set(fiber.HeaderContentType, mediaDownloadContentType(media.ContentType))
+	ctx.Set(fiber.HeaderContentDisposition, "attachment; filename="+strconv.Quote(filepath.Base(media.Filename)))
 	ctx.Set(fiber.HeaderCacheControl, "private, max-age=300")
 	// fasthttp closes the reader after streaming it; do not defer Close here.
 	return ctx.SendStream(reader, int(media.SizeBytes))
