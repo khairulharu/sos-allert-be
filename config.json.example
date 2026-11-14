@@ -84,7 +84,12 @@
     "vapid_public_key": "",
     "vapid_private_key": "",
     "subscriber": "sos@example.com",
-    "ttl_seconds": 300
+    "ttl_seconds": 300,
+    "allowed_hosts": [
+      "fcm.googleapis.com",
+      "updates.push.services.mozilla.com",
+      "web.push.apple.com"
+    ]
   },
   "storage": {
     "backend": "local",

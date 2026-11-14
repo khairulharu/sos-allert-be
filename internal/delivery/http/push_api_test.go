@@ -83,7 +83,7 @@ func TestPushAPIEndToEnd(t *testing.T) {
 	log := logrus.New()
 	log.SetOutput(io.Discard)
 	store := &memPushStore{}
-	uc := usecase.NewPushUseCase(nil, log, validator.New(), store, "BO_TEST_PUBLIC_KEY", true)
+	uc := usecase.NewPushUseCase(nil, log, validator.New(), store, "BO_TEST_PUBLIC_KEY", true, nil)
 
 	app := fiber.New()
 	app.Use(func(c *fiber.Ctx) error {
@@ -119,7 +119,7 @@ func TestPushAPIEndToEnd(t *testing.T) {
 	subscribeBody := `{"endpoint":"` + endpointA + `","p256dh":"BNcR","auth":"secret","user_agent":"test-agent"}`
 
 	// Unconfigured channel: 503 until the VAPID keys are present.
-	disabled := usecase.NewPushUseCase(nil, log, validator.New(), store, "BO_TEST_PUBLIC_KEY", false)
+	disabled := usecase.NewPushUseCase(nil, log, validator.New(), store, "BO_TEST_PUBLIC_KEY", false, nil)
 	disabledCtl := deliveryhttp.NewPushController(disabled, log)
 	disabledApp := fiber.New()
 	disabledApp.Get("/api/push/vapid-public-key", disabledCtl.VAPIDPublicKey)
@@ -202,6 +202,16 @@ func TestPushAPIEndToEnd(t *testing.T) {
 	status, body = do("POST", "/api/push/subscriptions", "user-b", `{"p256dh":"BNcR","auth":"secret"}`)
 	if status != http.StatusBadRequest {
 		t.Fatalf("subscribe without endpoint status = %d body = %s, want 400", status, body)
+	}
+
+	// An endpoint outside the push-service allowlist is refused: storing it
+	// would make every dispatch POST to an attacker-chosen host (SSRF).
+	for _, evil := range []string{"http://127.0.0.1:3000/x", "http://169.254.169.254/latest/meta-data/"} {
+		status, body = do("POST", "/api/push/subscriptions", "user-b",
+			`{"endpoint":"`+evil+`","p256dh":"BNcR","auth":"secret"}`)
+		if status != http.StatusBadRequest {
+			t.Fatalf("subscribe %s status = %d body = %s, want 400", evil, status, body)
+		}
 	}
 
 	// Unsubscribe removes the row.

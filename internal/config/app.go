@@ -103,6 +103,7 @@ func Bootstrap(config *BootstrapConfig) {
 		TTLSeconds:      webPushConfig.TTLSeconds,
 		Subs:            pushSubscriptionRepository,
 		Log:             config.Log,
+		AllowedHosts:    webPushConfig.AllowedHosts,
 	}
 	dispatcher := usecase.NewAlertDispatcher(config.Log, fcmNotifier, apnsNotifier, twilioNotifier,
 		webPushNotifier, userReaderRepository, dispatchContacts, appMetrics)
@@ -217,7 +218,7 @@ func Bootstrap(config *BootstrapConfig) {
 	sosController := http.NewSOSController(triggerSOSUseCase, config.Log)
 	emergencyContactController := http.NewEmergencyContactController(triggerSOSUseCase, config.Log)
 	pushUseCase := usecase.NewPushUseCase(config.DB, config.Log, config.Validate, pushSubscriptionRepository,
-		webPushConfig.VAPIDPublicKey, webPushConfig.Enabled)
+		webPushConfig.VAPIDPublicKey, webPushConfig.Enabled, webPushConfig.AllowedHosts)
 	pushController := http.NewPushController(pushUseCase, config.Log)
 	sosTrackController := http.NewSOSTrackController(triggerSOSUseCase, userUseCase, trackHub, config.Log)
 

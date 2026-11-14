@@ -35,6 +35,10 @@ type WebPushNotifier struct {
 	Subs            PushSubscriptionStore
 	Log             *logrus.Logger
 	HTTPClient      *http.Client
+	// AllowedHosts re-checks stored endpoints at send time, so rows written
+	// before the subscribe-time check cannot be used as an outbound target.
+	// Empty falls back to DefaultWebPushHosts.
+	AllowedHosts []string
 }
 
 // webPushPayload is what service worker `push` handlers receive.
@@ -92,6 +96,15 @@ func (n *WebPushNotifier) SendToUser(ctx context.Context, userID, title, body st
 	}
 	var firstErr error
 	for _, sub := range subs {
+		if !IsAllowedWebPushEndpoint(sub.Endpoint, WebPushHostsOr(n.AllowedHosts)) {
+			if n.Log != nil {
+				n.Log.Warnf("dropping push subscription with a non-allowlisted endpoint for user %s", userID)
+			}
+			if err := n.Subs.DeleteByEndpoint(ctx, sub.Endpoint); err != nil && n.Log != nil {
+				n.Log.WithError(err).Warn("could not delete non-allowlisted push subscription")
+			}
+			continue
+		}
 		resp, err := webpush.SendNotificationWithContext(ctx, payload, &webpush.Subscription{
 			Endpoint: sub.Endpoint,
 			Keys:     webpush.Keys{Auth: sub.Auth, P256dh: sub.P256DH},
