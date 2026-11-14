@@ -75,7 +75,7 @@ Error ditangani global handler:
 | **SOS Incident** | `/api/sos`, `/api/sos/{alertId}` | Trigger insiden, query insiden aktif/detail/inbox, **riwayat paged** (`/api/sos/history`) dan **ringkasan kartu** (`/api/sos/summary`), cancel, acknowledge, resolve, respond (ETA), breadcrumb, dan media bukti. |
 | **Emergency Contact** | `/api/emergency-contacts` | Kontak Tier-1 untuk fallback SMS/voice, terpisah dari tabel kontak biasa. |
 | **Push (Web Push browser)** | `/api/push` | Langganan Web Push browser (VAPID) — kanal push tanpa kredensial Firebase. |
-| **Live Tracking** | `WS /ws/sos/{alertId}/track` | Stream posisi korban dan perubahan status insiden secara real-time. |
+| **Live Tracking** | `WS /ws/sos/{alertId}/track` | Stream posisi korban dan perubahan status insiden secara real-time. Auth lewat frame pertama `{"type":"auth"}` → `{"type":"auth_ok"}` (tanpa token di URL). |
 | **Observability** | `/metrics` | Metrik Prometheus untuk operasional (bukan untuk frontend user). |
 
 ## Daftar endpoint
@@ -383,6 +383,23 @@ WS /ws/sos/{alertId}/track
 - Klien native boleh mengirim header `Authorization: <token>` saat handshake
   dan langsung mengirim breadcrumb; server tetap membalas `auth_ok`.
   Query `?token=` diabaikan.
+
+**Wajib di klien web (`../frontend/src/lib/tracking.js`)**
+
+1. URL tidak memuat token: cukup `VITE_WS_URL`/turunan `API_BASE_URL` +
+   `/ws/sos/{alertId}/track`.
+2. Di `onopen`, kirim `{"type":"auth","token":"<token>"}`. Jangan menandai
+   koneksi `open` dan jangan mem-flush antrean breadcrumb di langkah ini.
+3. Tunggu `{"type":"auth_ok"}` — baru set status `open` dan kirim/flush
+   breadcrumb yang sempat diantrekan selama `CONNECTING`/menunggu auth.
+4. Jika `error` diterima (`{"error":"unauthorized"}` atau error otorisasi),
+   tampilkan pesan dan hentikan reconnect; token yang sama tidak akan diterima.
+5. Reconnect otomatis harus mengirim ulang auth frame dengan token terbaru
+   (`getToken()`); reset state "authenticated" di setiap koneksi baru.
+6. Tanpa token, jangan membuka socket sama sekali.
+7. Deadline frame pertama **10 detik**; socket lama yang masih memakai
+   `?token=` akan ditutup server. Deploy frontend bersamaan dengan backend.
+
 - Pengirim (sender) mengirim frame JSON breadcrumb:
 
 ```json
@@ -448,7 +465,15 @@ WS /ws/sos/{alertId}/track
 ```
 
 Hanya sender atau responder terdaftar yang boleh berlangganan. Error
-autentikasi/otorisasi dikirim sebagai `{"error": "..."}` lalu koneksi ditutup.
+autentikasi/otorisasi dikirim sebagai frame berikut lalu koneksi ditutup:
+
+```json
+{ "error": "unauthorized" }
+```
+
+Frame `error` bersifat terminal: klien harus menampilkan pesan, menghentikan
+reconnect, dan (untuk `unauthorized`) mengarahkan user login ulang. Hanya
+`auth_ok` yang menandakan socket siap mengirim breadcrumb.
 
 ## Status code
 
