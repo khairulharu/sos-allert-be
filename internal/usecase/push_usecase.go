@@ -24,10 +24,13 @@ type PushUseCase struct {
 	Subs      PushSubscriptionStore
 	PublicKey string
 	Enabled   bool
+	// AllowedHosts bounds which push services may be registered; empty
+	// falls back to DefaultWebPushHosts.
+	AllowedHosts []string
 }
 
-func NewPushUseCase(db *gorm.DB, log *logrus.Logger, validate *validator.Validate, subs PushSubscriptionStore, publicKey string, enabled bool) *PushUseCase {
-	return &PushUseCase{DB: db, Log: log, Validate: validate, Subs: subs, PublicKey: publicKey, Enabled: enabled}
+func NewPushUseCase(db *gorm.DB, log *logrus.Logger, validate *validator.Validate, subs PushSubscriptionStore, publicKey string, enabled bool, allowedHosts []string) *PushUseCase {
+	return &PushUseCase{DB: db, Log: log, Validate: validate, Subs: subs, PublicKey: publicKey, Enabled: enabled, AllowedHosts: allowedHosts}
 }
 
 // VAPIDPublicKey returns the application server key browsers must use.
@@ -41,6 +44,11 @@ func (u *PushUseCase) VAPIDPublicKey() (string, error) {
 // Subscribe stores (or re-points) a browser subscription for the user.
 func (u *PushUseCase) Subscribe(ctx context.Context, req *model.PushSubscribeRequest) (*model.PushSubscriptionResponse, error) {
 	if err := u.Validate.Struct(req); err != nil {
+		return nil, fiber.ErrBadRequest
+	}
+	// The endpoint becomes an outbound POST target on every dispatch, so
+	// only known push services may be stored.
+	if !IsAllowedWebPushEndpoint(req.Endpoint, WebPushHostsOr(u.AllowedHosts)) {
 		return nil, fiber.ErrBadRequest
 	}
 	if u.Subs == nil {

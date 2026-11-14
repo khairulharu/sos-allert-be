@@ -166,6 +166,9 @@ func testNotifier(t *testing.T, store PushSubscriptionStore) *WebPushNotifier {
 		TTLSeconds:      300,
 		Subs:            store,
 		Log:             silentLogger(),
+		// The fake push service listens on 127.0.0.1, which the production
+		// allowlist rejects; allow it explicitly for these tests.
+		AllowedHosts: []string{"127.0.0.1"},
 	}
 }
 

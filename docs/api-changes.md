@@ -274,6 +274,21 @@ Deadline frame pertama 10 detik.
 Deploy backend dan frontend harus bersamaan: frontend lama yang masih memakai
 `?token=` akan gagal terhubung setelah backend ini naik.
 
+## Allowlist endpoint `POST /api/push/subscriptions`
+
+`endpoint` sekarang harus menunjuk ke push service yang diizinkan
+(`fcm.googleapis.com`, `updates.push.services.mozilla.com`,
+`web.push.apple.com`; daftar diatur `webpush.allowed_hosts`). Endpoint lain
+ditolak `400` — termasuk `http://127.0.0.1/...`, IP privat, dan metadata cloud
+(stored SSRF). Endpoint yang tidak dikenal `400`, sama seperti body tanpa
+`endpoint`.
+
+Frontend: tidak ada perubahan kode — `PushSubscription.toJSON().endpoint` dari
+browser sudah benar selama user memakai Chrome/Firefox/Safari. Kalau
+pendaftaran push gagal `400`, tampilkan state "push tidak tersedia" dan
+jangan retry berulang. Baris langganan lama yang endpoint-nya di luar
+allowlist akan dihapus otomatis saat dispatch berikutnya.
+
 ## Rate limit `POST /api/sos/classify`
 
 Route ini sekarang punya kuota per user: **10 panggilan per jam** (sliding

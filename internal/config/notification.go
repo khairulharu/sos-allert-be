@@ -64,6 +64,9 @@ type WebPushConfig struct {
 	VAPIDPrivateKey string
 	Subscriber      string
 	TTLSeconds      int
+	// AllowedHosts is the push-service allowlist for stored endpoints.
+	// Empty keeps usecase.DefaultWebPushHosts.
+	AllowedHosts []string
 }
 
 // NewWebPushConfig reads the `webpush` section. Defaults: TTL 300 s.
@@ -78,6 +81,7 @@ func NewWebPushConfig(v *viper.Viper) *WebPushConfig {
 		VAPIDPrivateKey: v.GetString("webpush.vapid_private_key"),
 		Subscriber:      v.GetString("webpush.subscriber"),
 		TTLSeconds:      ttl,
+		AllowedHosts:    v.GetStringSlice("webpush.allowed_hosts"),
 	}
 }
 
