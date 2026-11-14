@@ -98,3 +98,13 @@ note in docs/api-changes.md instead). `subscriber` is a bare email (the library 
 - Publish Kafka events only after commit and only when the producer is non-nil.
 - Validate requests with `validate.Struct` and struct tags; return `fiber.Err*` errors so the global `ErrorHandler` renders `{"errors": ...}`.
 - Generic CRUD lives in `repository.Repository[T]`; add entity-specific queries to the concrete repository.
+
+## T3 Code orchestrator (delegation protocol)
+
+- The parent thread is the orchestrator: it plans and delegates; it implements only trivial fixes (a few lines, one file).
+- `delegate_task` children always run inside THIS repo's project — backend work only.
+- Frontend work crosses repos: use `t3_thread_launch` with the frontend project's `projectId` (sibling checkout `../frontend`), then follow it with `t3_thread_wait` / `t3_thread_read`. Contract handoff still goes through `docs/api-changes.md` as above; never edit frontend files from here.
+- Children get ONLY the task prompt — spell out file paths, contract details, and what "done" means. They still read this file.
+- Same-file parallel work gets `isolation: "worktree"` per child; clearly disjoint or read-only work can share the checkout.
+- Every new review round is a fresh `delegate_task` / `t3_thread_launch` with the original brief + prior findings + unresolved objections. Small review findings: fix them yourself, don't spawn a child.
+- Before reporting done: `go build ./... && go vet ./...` and `go test ./internal/... -count=1` pass, and the contract mirror in `../frontend/api/` is synced (the backend copy is the source of truth).
