@@ -11,4 +11,9 @@ const (
 	authRateLimitKeyPrefix = "ratelimit:auth:"
 	// authLockoutKeyPrefix + client IP -> lockout marker with TTL.
 	authLockoutKeyPrefix = "lockout:auth:"
+	// authTokenKeyPrefix + raw session token -> user id, with the session TTL.
+	authTokenKeyPrefix = "auth:token:"
+	// authUserKeyPrefix + user id -> current session token, kept so a new
+	// login can invalidate the previous one (single-session).
+	authUserKeyPrefix = "auth:user:"
 )

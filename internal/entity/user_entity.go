@@ -5,7 +5,6 @@ type User struct {
 	ID          string    `gorm:"column:id;primaryKey"`
 	Password    string    `gorm:"column:password"`
 	Name        string    `gorm:"column:name"`
-	Token       string    `gorm:"column:token"`
 	SafePINHash *string   `gorm:"column:safe_pin_hash"`
 	FCMToken    *string   `gorm:"column:fcm_token"`
 	APNsToken   *string   `gorm:"column:apns_token"`

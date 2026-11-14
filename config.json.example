@@ -53,7 +53,8 @@
   },
   "auth": {
     "rate_limit_per_minute": 5,
-    "lockout_minutes": 15
+    "lockout_minutes": 15,
+    "token_ttl_hours": 168
   },
   "metrics": {
     "token": ""
