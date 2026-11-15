@@ -25,7 +25,9 @@ const staleThreshold = 2 * 60 * 1000 // 2 minutes in milliseconds
 type LocationRepository interface {
 	Get(ctx context.Context, userId string) (*entity.LocationCache, error)
 	Save(ctx context.Context, loc *entity.LocationCache) error
-	GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error)
+	// GeoSearch returns user ids inside radiusMeters, nearest first,
+	// limited to count results when count > 0.
+	GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]string, error)
 	GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error)
 	GetLastSeen(ctx context.Context, userId string) (int64, error)
 	GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error)
@@ -555,11 +557,21 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 		startIndex = len(u.Deps.Radii) - 1
 	}
 	now := time.Now().UnixMilli()
+	// Bound the candidate set pulled from Redis: GeoSearch is unbounded
+	// otherwise and GetLastSeenBatch would run an HMGET over every user
+	// in the radius. A few times the fan-out cap leaves room for stale
+	// and already-seen candidates while still returning the closest
+	// fresh recipients.
+	maxCandidates := u.Deps.MaxRecipients * 4
+	if maxCandidates < u.Deps.MaxRecipients {
+		maxCandidates = u.Deps.MaxRecipients
+	}
 	var recipients []string
 	usedRadius := u.Deps.Radii[len(u.Deps.Radii)-1]
 	for _, radius := range u.Deps.Radii[startIndex:] {
 		usedRadius = radius
-		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius)
+		// +1 so the sender (excluded below) cannot eat a candidate slot.
+		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius, maxCandidates+1)
 		if err != nil {
 			return nil, 0, fmt.Errorf("search nearby users: %w", err)
 		}
@@ -574,6 +586,9 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 			}
 			seen[userID] = struct{}{}
 			candidates = append(candidates, userID)
+			if len(candidates) >= maxCandidates {
+				break
+			}
 		}
 		// One HMGET per radius instead of one HGET per candidate: the
 		// old loop paid a Redis round trip per nearby user.

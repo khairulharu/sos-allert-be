@@ -361,7 +361,7 @@ func (l *memLocation) Get(ctx context.Context, userID string) (*entity.LocationC
 
 func (l *memLocation) Save(ctx context.Context, loc *entity.LocationCache) error { return nil }
 
-func (l *memLocation) GeoSearch(ctx context.Context, lng, lat, radius float64) ([]string, error) {
+func (l *memLocation) GeoSearch(ctx context.Context, lng, lat, radius float64, count int) ([]string, error) {
 	return []string{"user-b"}, nil
 }
 

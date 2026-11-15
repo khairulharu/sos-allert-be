@@ -95,14 +95,21 @@ func (l *LocationCacheRepository) Get(ctx context.Context, userId string) (*enti
 	}, nil
 }
 
-func (l *LocationCacheRepository) GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error) {
-	userIDs, err := l.Client.GeoSearch(ctx, userLocationKey, &redis.GeoSearchQuery{
+// GeoSearch returns user ids inside radiusMeters, nearest first. A
+// count > 0 limits the result at the Redis level (GEOSEARCH COUNT), so
+// callers do not pull every user in a dense radius.
+func (l *LocationCacheRepository) GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]string, error) {
+	query := &redis.GeoSearchQuery{
 		Longitude:  longitude,
 		Latitude:   latitude,
 		Radius:     radiusMeters,
 		RadiusUnit: "m",
 		Sort:       "ASC",
-	}).Result()
+	}
+	if count > 0 {
+		query.Count = count
+	}
+	userIDs, err := l.Client.GeoSearch(ctx, userLocationKey, query).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis geosearch: %w", err)
 	}
