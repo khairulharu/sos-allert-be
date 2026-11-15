@@ -41,6 +41,29 @@ func TestMapSOSErrorSessionFailureStaysUnauthorized(t *testing.T) {
 	}
 }
 
+// Emergency-contact validation errors are client errors with a usable
+// message, never an opaque 500.
+func TestMapSOSErrorContactValidationIsUnprocessable(t *testing.T) {
+	for _, err := range []error{
+		model.ErrInvalidPhoneNumber,
+		model.ErrTooManyEmergencyContacts,
+		model.ErrDuplicateEmergencyContact,
+	} {
+		mapped := mapSOSError(err)
+
+		var fiberErr *fiber.Error
+		if !errors.As(mapped, &fiberErr) {
+			t.Fatalf("mapSOSError(%v) = %v, want a *fiber.Error", err, mapped)
+		}
+		if fiberErr.Code != fiber.StatusUnprocessableEntity {
+			t.Fatalf("mapSOSError(%v) status = %d, want 422", err, fiberErr.Code)
+		}
+		if fiberErr.Message == "" {
+			t.Fatalf("mapSOSError(%v) message is empty", err)
+		}
+	}
+}
+
 // Read paths hide a foreign alert behind the same 404 as an unknown id.
 func TestMapSOSErrorAlertNotFoundIsNotFound(t *testing.T) {
 	mapped := mapSOSError(fmt.Errorf("wrapped: %w", model.ErrAlertNotFound))

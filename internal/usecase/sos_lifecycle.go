@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -529,7 +530,37 @@ func (u *TriggerSOSUseCase) ListBreadcrumbs(ctx context.Context, requesterID, al
 	return out, nil
 }
 
-// CreateEmergencyContact adds a Tier-1 contact for the user.
+// maxEmergencyContactsPerUser caps the Tier-1 list. Every contact is an
+// SMS/voice target on each alert, so an unbounded list is a toll-fraud
+// amplifier.
+const maxEmergencyContactsPerUser = 10
+
+// e164Phone matches E.164: a "+" followed by 8-15 digits whose first digit
+// is not zero. Short premium codes ("1234", "abc", "+123") are rejected
+// because they either are not dialable international numbers or route to a
+// billable premium service.
+var e164Phone = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
+
+// normalizePhoneNumber strips the separators people type in a phone field
+// so "+62 812-3456-7890" is accepted and stored in canonical E.164 form.
+func normalizePhoneNumber(raw string) string {
+	raw = strings.TrimSpace(raw)
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		switch r {
+		case ' ', '-', '(', ')', '.':
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// CreateEmergencyContact adds a Tier-1 contact for the user. The number
+// must be E.164, the list is capped, and the same number may only be
+// stored once per user.
 func (u *TriggerSOSUseCase) CreateEmergencyContact(ctx context.Context, req *model.CreateEmergencyContactRequest) (*model.EmergencyContactResponse, error) {
 	if err := u.validate(req); err != nil {
 		return nil, err
@@ -537,11 +568,29 @@ func (u *TriggerSOSUseCase) CreateEmergencyContact(ctx context.Context, req *mod
 	if u.Deps.EmergencyContacts == nil {
 		return nil, fmt.Errorf("emergency contact store not configured")
 	}
+	phone := normalizePhoneNumber(req.PhoneNumber)
+	if !e164Phone.MatchString(phone) {
+		return nil, model.ErrInvalidPhoneNumber
+	}
+	existing, err := u.Deps.EmergencyContacts.ListByUserID(ctx, u.DB, req.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) >= maxEmergencyContactsPerUser {
+		return nil, model.ErrTooManyEmergencyContacts
+	}
+	for _, c := range existing {
+		// Legacy rows are compared in normalized form too, so a stored
+		// "+62 812..." still blocks a duplicate of the same number.
+		if normalizePhoneNumber(c.PhoneNumber) == phone {
+			return nil, model.ErrDuplicateEmergencyContact
+		}
+	}
 	contact := &entity.EmergencyContact{
 		ID:           uuid.NewString(),
 		UserID:       req.UserID,
 		ContactName:  req.ContactName,
-		PhoneNumber:  req.PhoneNumber,
+		PhoneNumber:  phone,
 		Relationship: req.Relationship,
 		IsVerified:   false,
 		CreatedAt:    time.Now().UnixMilli(),
@@ -555,7 +604,9 @@ func (u *TriggerSOSUseCase) CreateEmergencyContact(ctx context.Context, req *mod
 	}, nil
 }
 
-// ListEmergencyContacts returns the user's Tier-1 contacts.
+// ListEmergencyContacts returns the user's Tier-1 contacts. Rows stored
+// before the E.164 rule stay readable: the list never filters or rewrites
+// them.
 func (u *TriggerSOSUseCase) ListEmergencyContacts(ctx context.Context, userID string) ([]model.EmergencyContactResponse, error) {
 	if u.Deps.EmergencyContacts == nil {
 		return nil, fmt.Errorf("emergency contact store not configured")
