@@ -106,6 +106,13 @@ type SOSConfig struct {
 	// breadcrumb trails purged (sos.housekeeping_interval_seconds,
 	// default 60 s, clamped to >= 1 s).
 	HousekeepingInterval time.Duration
+	// WSMaxConnections / WSMaxPerIP / WSMaxPerUser bound the concurrent
+	// WebSocket tracking sockets (sos.ws_max_connections, sos.ws_max_per_ip,
+	// sos.ws_max_per_user); non-positive values keep the documented
+	// defaults in delivery/http.
+	WSMaxConnections int
+	WSMaxPerIP       int
+	WSMaxPerUser     int
 }
 
 // NewSOSConfig reads the `sos` section, falling back to README defaults.
@@ -153,6 +160,9 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 		housekeepingInterval = minSOSHousekeepingInterval
 	}
 	return &SOSConfig{
+		WSMaxConnections:         v.GetInt("sos.ws_max_connections"),
+		WSMaxPerIP:               v.GetInt("sos.ws_max_per_ip"),
+		WSMaxPerUser:             v.GetInt("sos.ws_max_per_user"),
 		GracePeriod:              time.Duration(grace) * time.Second,
 		RateLimitPerHour:         limit,
 		RateLimitWindow:          time.Hour,

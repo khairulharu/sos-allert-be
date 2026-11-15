@@ -511,6 +511,29 @@ berubah, jadi pesan validasi tetap bisa ditampilkan.
 - `403` (bukan peserta, atau sender mencoba respond) dan `409` untuk alert
   yang sudah `RESOLVED`/`CANCELLED` tidak berubah.
 
+## WebSocket tracking: batas koneksi + keepalive (#42)
+
+> **Untuk agent frontend.** Status code baru saat handshake dan close code baru.
+
+- `WS /ws/sos/{alertId}/track` sekarang punya batas koneksi bersamaan:
+  global (`sos.ws_max_connections`, default 500), per IP
+  (`sos.ws_max_per_ip`, default 10) dan per user (`sos.ws_max_per_user`,
+  default 3, dihitung setelah frame `auth` diverifikasi).
+- Kalau batas global/IP sudah penuh, **handshake ditolak** dengan `429` +
+  header `Retry-After: 5` (bukan upgrade lalu diputus). Frontend: jangan
+  retry loop; tampilkan "live tracking tidak tersedia" dan coba lagi setelah
+  `Retry-After`, atau fallback ke polling `GET /api/sos/{alertId}`.
+- Kalau batas per user penuh, socket **sempat terbuka** lalu langsung dikirim
+  frame `{"error":"too many live-tracking connections, retry shortly"}` dan
+  ditutup dengan close code `1013` (try again later) — `auth_ok` tidak pernah
+  dikirim. Frontend: tutup tab/socket lain dulu, jangan reconnect otomatis.
+- Keepalive: server mengirim ping tiap ~25 s dan memutus klien yang tidak
+  menjawab dalam ~60 s (browser menjawab otomatis; klien native harus membaca
+  frame ping). Setiap frame server punya write deadline 5 s, jadi klien yang
+  berhenti membaca akan diputus, bukan menggantung slot.
+- Tidak ada perubahan pada frame `auth`/`auth_ok`, `LOCATION_UPDATE`,
+  `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

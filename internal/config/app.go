@@ -244,7 +244,11 @@ func Bootstrap(config *BootstrapConfig) {
 	pushUseCase := usecase.NewPushUseCase(config.DB, config.Log, config.Validate, pushSubscriptionRepository,
 		webPushConfig.VAPIDPublicKey, webPushConfig.Enabled, webPushConfig.AllowedHosts)
 	pushController := http.NewPushController(pushUseCase, config.Log)
+	// The tracking socket sits outside the auth middleware and the HTTP
+	// rate limiter, so it carries its own concurrency budget (#42).
 	sosTrackController := http.NewSOSTrackController(triggerSOSUseCase, userUseCase, trackHub, config.Log)
+	sosTrackController.Limiter = http.NewWSConnectionLimiter(
+		sosConfig.WSMaxConnections, sosConfig.WSMaxPerIP, sosConfig.WSMaxPerUser)
 
 	// setup middleware
 	authMiddleware := middleware.NewAuth(userUseCase, config.Log)

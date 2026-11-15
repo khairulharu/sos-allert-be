@@ -63,7 +63,10 @@
     "rate_limit_per_hour": 3,
     "classify_rate_limit_per_hour": 10,
     "rate_limit_disabled": false,
-    "max_recipients": 50
+    "max_recipients": 50,
+    "ws_max_connections": 500,
+    "ws_max_per_ip": 10,
+    "ws_max_per_user": 3
   },
   "auth": {
     "rate_limit_per_minute": 5,

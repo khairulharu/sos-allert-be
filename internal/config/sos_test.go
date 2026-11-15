@@ -85,3 +85,23 @@ func TestNewSOSConfigHousekeepingInterval(t *testing.T) {
 		t.Fatalf("HousekeepingInterval = %v, want the 1s floor", got)
 	}
 }
+
+// The WebSocket concurrency budgets (#42) are passed through as configured;
+// zero keeps the delivery/http defaults, which the limiter resolves.
+func TestNewSOSConfigWebSocketLimits(t *testing.T) {
+	cfg := NewSOSConfig(viper.New())
+	if cfg.WSMaxConnections != 0 || cfg.WSMaxPerIP != 0 || cfg.WSMaxPerUser != 0 {
+		t.Fatalf("defaults = %d/%d/%d, want 0 (limiter defaults)",
+			cfg.WSMaxConnections, cfg.WSMaxPerIP, cfg.WSMaxPerUser)
+	}
+
+	v := viper.New()
+	v.Set("sos.ws_max_connections", 50)
+	v.Set("sos.ws_max_per_ip", 5)
+	v.Set("sos.ws_max_per_user", 2)
+	cfg = NewSOSConfig(v)
+	if cfg.WSMaxConnections != 50 || cfg.WSMaxPerIP != 5 || cfg.WSMaxPerUser != 2 {
+		t.Fatalf("configured = %d/%d/%d, want 50/5/2",
+			cfg.WSMaxConnections, cfg.WSMaxPerIP, cfg.WSMaxPerUser)
+	}
+}
