@@ -3,10 +3,13 @@ package usecase
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"golang-clean-architecture/internal/entity"
+
+	"gorm.io/gorm"
 )
 
 // Housekeeping (#42) exists only because ExpireOldAlerts/PurgeOldBreadcrumbs
@@ -64,12 +67,29 @@ func TestHousekeepingOnceToleratesErrors(t *testing.T) {
 	}
 }
 
+// housekeepingStore counts the two housekeeping calls with atomics, so the
+// loop can run on its own goroutine while the test observes it.
+type housekeepingStore struct {
+	AlertStore
+	expireCalls atomic.Int32
+	purgeCalls  atomic.Int32
+}
+
+func (s *housekeepingStore) ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error) {
+	s.expireCalls.Add(1)
+	return 0, nil
+}
+
+func (s *housekeepingStore) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
+	s.purgeCalls.Add(1)
+	return 0, nil
+}
+
 // RunHousekeeping runs one pass immediately and returns promptly when the
 // process context is cancelled, so a deploy drain is not delayed.
 func TestRunHousekeepingRunsOnceAndStopsOnCancel(t *testing.T) {
-	uc, _, alertRepo, _ := triggerSetup(t)
-	alertRepo.expired = 1
-	alertRepo.purged = 1
+	store := &housekeepingStore{}
+	uc := newUseCaseWithDeps(TriggerSOSDeps{Alerts: store})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -80,13 +100,14 @@ func TestRunHousekeepingRunsOnceAndStopsOnCancel(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if alertRepo.expireCalls > 0 && alertRepo.purgeCalls > 0 {
+		if store.expireCalls.Load() > 0 && store.purgeCalls.Load() > 0 {
 			break
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if alertRepo.expireCalls == 0 || alertRepo.purgeCalls == 0 {
-		t.Fatalf("calls = %d/%d, want both before the first wait", alertRepo.expireCalls, alertRepo.purgeCalls)
+	if store.expireCalls.Load() == 0 || store.purgeCalls.Load() == 0 {
+		t.Fatalf("calls = %d/%d, want both before the first wait",
+			store.expireCalls.Load(), store.purgeCalls.Load())
 	}
 
 	cancel()
