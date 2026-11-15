@@ -140,6 +140,14 @@ type fakeAlertRepository struct {
 	// batch call counters guard against per-row queries in history.
 	countRespondersBatchCalls   int
 	latestBreadcrumbsBatchCalls int
+
+	// Durable outbox (#40) knobs: dueListErr fails the due scan,
+	// recipientsErr fails the fan-out recipient lookup, afterListDue runs
+	// once a scan list was built (simulates a cancel racing the scan).
+	dueListErr     error
+	recipientsErr  error
+	markDispatchFn func(alertID string, atMs int64) (bool, error)
+	afterListDue   func()
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -333,7 +341,52 @@ func (f *fakeAlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB,
 
 func (f *fakeAlertRepository) ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error) {
 	f.ensure()
+	if f.recipientsErr != nil {
+		return nil, f.recipientsErr
+	}
 	return append([]string(nil), f.recipients[alertID]...), nil
+}
+
+// ListDueDispatch mirrors the SQL due scan: TRIGGERED, due, not dispatched.
+func (f *fakeAlertRepository) ListDueDispatch(ctx context.Context, db *gorm.DB, dueBeforeMs int64, limit int) ([]*entity.Alert, error) {
+	f.ensure()
+	if f.dueListErr != nil {
+		return nil, f.dueListErr
+	}
+	var out []*entity.Alert
+	for _, a := range f.alerts {
+		if a.Status != entity.AlertStatusTriggered || a.DispatchDueAt == nil || a.DispatchedAt != nil {
+			continue
+		}
+		if *a.DispatchDueAt > dueBeforeMs {
+			continue
+		}
+		cp := *a
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return *out[i].DispatchDueAt < *out[j].DispatchDueAt })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	if f.afterListDue != nil {
+		f.afterListDue()
+	}
+	return out, nil
+}
+
+// MarkDispatched mirrors the conditional update: only the first call wins.
+func (f *fakeAlertRepository) MarkDispatched(ctx context.Context, db *gorm.DB, alertID string, atMs int64) (bool, error) {
+	f.ensure()
+	if f.markDispatchFn != nil {
+		return f.markDispatchFn(alertID, atMs)
+	}
+	a, ok := f.alerts[alertID]
+	if !ok || a.DispatchedAt != nil {
+		return false, nil
+	}
+	ts := atMs
+	a.DispatchedAt = &ts
+	return true, nil
 }
 
 func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {

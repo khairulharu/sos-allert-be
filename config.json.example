@@ -47,6 +47,7 @@
   },
   "sos": {
     "grace_period_seconds": 10,
+    "dispatch_poll_seconds": 1,
     "rate_limit_per_hour": 3,
     "classify_rate_limit_per_hour": 10,
     "rate_limit_disabled": false,

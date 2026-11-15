@@ -99,6 +99,9 @@ type SOSConfig struct {
 	AdaptiveRadiiM    []float64
 	MinRecipients     int
 	ExpireAfter       time.Duration
+	// DispatchPoll is how often the durable grace-period outbox is
+	// scanned (sos.dispatch_poll_seconds, clamped to >= 100 ms).
+	DispatchPoll time.Duration
 }
 
 // NewSOSConfig reads the `sos` section, falling back to README defaults.
@@ -121,6 +124,18 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 	if maxRecipients <= 0 {
 		maxRecipients = 50
 	}
+	// The durable grace-period outbox is scanned in the web process; 1 s
+	// keeps the extra dispatch latency well inside the notification budget
+	// without polling MySQL in a tight loop. Anything below 100 ms is
+	// clamped so a misconfiguration cannot hammer the database.
+	poll := v.GetFloat64("sos.dispatch_poll_seconds")
+	if poll <= 0 {
+		poll = 1
+	}
+	dispatchPoll := time.Duration(poll * float64(time.Second))
+	if dispatchPoll < minSOSDispatchPollInterval {
+		dispatchPoll = minSOSDispatchPollInterval
+	}
 	return &SOSConfig{
 		GracePeriod:              time.Duration(grace) * time.Second,
 		RateLimitPerHour:         limit,
@@ -131,8 +146,12 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 		AdaptiveRadiiM:           []float64{1000, 2000, 5000},
 		MinRecipients:            3,
 		ExpireAfter:              24 * time.Hour,
+		DispatchPoll:             dispatchPoll,
 	}
 }
+
+// minSOSDispatchPollInterval floors sos.dispatch_poll_seconds.
+const minSOSDispatchPollInterval = 100 * time.Millisecond
 
 // StorageConfig selects the incident-media storage backend.
 type StorageConfig struct {
