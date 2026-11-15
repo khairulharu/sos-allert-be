@@ -228,6 +228,12 @@ func Bootstrap(config *BootstrapConfig) {
 	// dispatcher or database wiring.
 	go triggerSOSUseCase.RunDispatchLoop(rootCtx, sosConfig.DispatchPoll)
 
+	// Housekeeping (#42): expire TRIGGERED alerts past sos.expire_after (24 h)
+	// and purge breadcrumb trails older than 30 days. Without this loop the
+	// stale alerts stayed in the active set forever and alert_breadcrumbs
+	// grew without bound.
+	go triggerSOSUseCase.RunHousekeeping(rootCtx, sosConfig.HousekeepingInterval)
+
 	// setup controller
 	userController := http.NewUserController(userUseCase, config.Log)
 	contactController := http.NewContactController(contactUseCase, config.Log)
@@ -238,7 +244,11 @@ func Bootstrap(config *BootstrapConfig) {
 	pushUseCase := usecase.NewPushUseCase(config.DB, config.Log, config.Validate, pushSubscriptionRepository,
 		webPushConfig.VAPIDPublicKey, webPushConfig.Enabled, webPushConfig.AllowedHosts)
 	pushController := http.NewPushController(pushUseCase, config.Log)
+	// The tracking socket sits outside the auth middleware and the HTTP
+	// rate limiter, so it carries its own concurrency budget (#42).
 	sosTrackController := http.NewSOSTrackController(triggerSOSUseCase, userUseCase, trackHub, config.Log)
+	sosTrackController.Limiter = http.NewWSConnectionLimiter(
+		sosConfig.WSMaxConnections, sosConfig.WSMaxPerIP, sosConfig.WSMaxPerUser)
 
 	// setup middleware
 	authMiddleware := middleware.NewAuth(userUseCase, config.Log)

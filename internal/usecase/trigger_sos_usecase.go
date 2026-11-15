@@ -222,6 +222,25 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		return nil, model.ErrInvalidSender
 	}
 
+	// Idempotency: replay a finished key instead of creating a duplicate.
+	// The key is namespaced per sender (#35) so the client-chosen value
+	// cannot collide with — or swallow — another user's trigger.
+	scopedKey := ""
+	if idempotencyKey != "" {
+		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
+	}
+	// The replay is checked BEFORE the limiter (#42): a client retrying a
+	// trigger it already got an answer for is not a new SOS, so burning
+	// its 3/hour quota meant the 4th retry was answered 429 instead of
+	// replaying the original 201. Only a genuinely new trigger counts.
+	if scopedKey != "" && u.Deps.Idempotency != nil {
+		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
+			return nil, err
+		} else if done {
+			return replay, nil
+		}
+	}
+
 	// Anti-abuse: fail open on limiter errors (a life-safety request
 	// must not be blocked by a Redis outage), fail closed on limit hit.
 	// `RateLimitDisabled` (sos.rate_limit_disabled) skips the check.
@@ -234,13 +253,6 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		}
 	}
 
-	// Idempotency: replay a finished key instead of creating a duplicate.
-	// The key is namespaced per sender (#35) so the client-chosen value
-	// cannot collide with — or swallow — another user's trigger.
-	scopedKey := ""
-	if idempotencyKey != "" {
-		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
-	}
 	// claimHeld tracks the pending claim this call owns: the alert does
 	// not exist yet, so every failure below must hand the claim back.
 	// Otherwise the retry of a failed trigger is answered 409 for the
@@ -249,11 +261,9 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	// cleared, so a success never releases.
 	claimHeld := false
 	if scopedKey != "" && u.Deps.Idempotency != nil {
-		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
-			return nil, err
-		} else if done {
-			return replay, nil
-		}
+		// The replay above was a miss; the key may still have been
+		// finished by a concurrent retry, which Claim reports as !claimed
+		// and the second lookup resolves to a replay instead of a 409.
 		if claimed, err := u.Deps.Idempotency.Claim(ctx, scopedKey); err != nil {
 			u.Log.WithError(err).Warn("idempotency claim unavailable, proceeding")
 		} else if !claimed {
@@ -480,8 +490,15 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 // dispatcher then skips push and still runs the emergency-contact SMS
 // fallback. A published event normally replaces the direct notify, but
 // after a degraded fan-out the local dispatcher still runs so the contacts
-// are reached even if the worker has no responder to notify.
+// are reached even if the worker has no responder to notify. Because the
+// worker DOES resolve contacts (#38), that event is marked push-only before
+// it is published: otherwise the same incident texts the sender's emergency
+// contacts twice (once locally, once from the worker). The event carries no
+// recipient anyway, so no responder push is lost.
 func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent, recipients []string, alert model.Alert, degraded bool) {
+	if degraded {
+		event.PushOnly = true
+	}
 	sentAt := time.Now()
 	published := false
 	if u.Deps.Publisher != nil {
@@ -591,9 +608,19 @@ func (u *TriggerSOSUseCase) resolveCoordinates(ctx context.Context, senderID str
 		}
 		return *req.Latitude, *req.Longitude, nil
 	}
+	if u.Deps.Location == nil {
+		// No location store wired: treat it like a missing heartbeat so the
+		// caller gets the documented 422 instead of a panic.
+		return 0, 0, fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound)
+	}
 	sender, err := u.Deps.Location.Get(ctx, senderID)
 	if err != nil {
+		// The sentinel is wrapped with %w, so mapSOSError can still answer
+		// 422 instead of a 500 (#42).
 		return 0, 0, fmt.Errorf("get sender location: %w", err)
+	}
+	if sender == nil {
+		return 0, 0, fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound)
 	}
 	return sender.Latitude, sender.Longitude, nil
 }

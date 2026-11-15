@@ -167,6 +167,16 @@ type fakeAlertRepository struct {
 	recipientsErr  error
 	markDispatchFn func(alertID string, atMs int64) (bool, error)
 	afterListDue   func()
+
+	// Housekeeping knobs (#42): expiry/purge call counters and results.
+	expireCalls    int
+	expireBeforeMs int64
+	expired        int64
+	expireErr      error
+	purgeCalls     int
+	purgeBeforeMs  int64
+	purged         int64
+	purgeErr       error
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -254,7 +264,13 @@ func (f *fakeAlertRepository) Transition(ctx context.Context, db *gorm.DB, id st
 }
 
 func (f *fakeAlertRepository) ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error) {
-	return 0, nil
+	f.ensure()
+	f.expireCalls++
+	f.expireBeforeMs = beforeMs
+	if f.expireErr != nil {
+		return 0, f.expireErr
+	}
+	return f.expired, nil
 }
 
 func (f *fakeAlertRepository) CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error {
@@ -279,6 +295,13 @@ func (f *fakeAlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB,
 
 func (f *fakeAlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
 	f.ensure()
+	// Mirror the unique (alert_id, responder_id) index: a repeat answer is
+	// a no-op reported as ErrDuplicateResponse.
+	for _, existing := range f.responses[r.AlertID] {
+		if existing.ResponderID == r.ResponderID {
+			return model.ErrDuplicateResponse
+		}
+	}
 	f.responses[r.AlertID] = append(f.responses[r.AlertID], r)
 	return nil
 }
@@ -429,7 +452,12 @@ func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID
 }
 
 func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
-	return 0, nil
+	f.purgeCalls++
+	f.purgeBeforeMs = beforeMs
+	if f.purgeErr != nil {
+		return 0, f.purgeErr
+	}
+	return f.purged, nil
 }
 
 func (f *fakeAlertRepository) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {
@@ -614,6 +642,7 @@ type fakeNotifier struct {
 	notifyOnce sync.Once
 
 	recipientNotifyCalled bool
+	recipientNotifyCalls  int
 	recipientSets         [][]string
 	escalatedAlert        model.Alert
 }
@@ -632,6 +661,7 @@ func (f *fakeNotifier) Notify(ctx context.Context, recipientIDs []string, alert 
 // NotifyRecipients records the push-only escalation fan-out.
 func (f *fakeNotifier) NotifyRecipients(ctx context.Context, recipientIDs []string, alert model.Alert) error {
 	f.recipientNotifyCalled = true
+	f.recipientNotifyCalls++
 	f.recipientSets = append(f.recipientSets, append([]string(nil), recipientIDs...))
 	f.escalatedAlert = alert
 	return f.notifyErr

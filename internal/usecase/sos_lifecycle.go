@@ -449,6 +449,17 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 	if !alert.IsActive() {
 		return nil, model.ErrInvalidTransition
 	}
+	// One answer per responder (#42). The unique index is the real guard,
+	// but checking first keeps the common double tap out of the insert path
+	// and yields a deterministic 409 even if the driver reports affected
+	// rows differently.
+	alreadyAnswered, err := u.Deps.Alerts.IsResponder(ctx, u.DB, alertID, responderID)
+	if err != nil {
+		return nil, err
+	}
+	if alreadyAnswered {
+		return nil, model.ErrDuplicateResponse
+	}
 	victimLat, victimLng := alert.Latitude, alert.Longitude
 	if crumb, err := u.Deps.Alerts.LatestBreadcrumb(ctx, u.DB, alertID); err != nil {
 		return nil, err
@@ -467,6 +478,9 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 		RespondedAt:        time.Now().UnixMilli(),
 	}
 	if err := u.Deps.Alerts.CreateResponse(ctx, u.DB, response); err != nil {
+		// A responder answering twice is a client conflict, not a server
+		// error: the repository collapses the duplicate insert and reports
+		// model.ErrDuplicateResponse (#42).
 		return nil, err
 	}
 	if alert.Status == entity.AlertStatusTriggered {
@@ -1034,12 +1048,7 @@ func (u *TriggerSOSUseCase) RunActiveSOSGauge(ctx context.Context, interval time
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		n, err := u.Deps.Alerts.CountActive(ctx, u.DB)
-		if err != nil {
-			u.Log.WithError(err).Warn("active_sos_count refresh failed")
-		} else if u.Deps.Metrics != nil {
-			u.Deps.Metrics.SetActiveSOS(n)
-		}
+		u.refreshActiveSOS(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -1049,12 +1058,14 @@ func (u *TriggerSOSUseCase) RunActiveSOSGauge(ctx context.Context, interval time
 }
 
 // ExpireOldAlerts moves TRIGGERED alerts older than ExpireAfter to EXPIRED.
+// Called by RunHousekeeping, which is the only caller.
 func (u *TriggerSOSUseCase) ExpireOldAlerts(ctx context.Context) (int64, error) {
 	before := time.Now().Add(-u.Deps.ExpireAfter).UnixMilli()
 	return u.Deps.Alerts.ExpireOlderThan(ctx, u.DB, before, time.Now().UnixMilli())
 }
 
 // PurgeOldBreadcrumbs deletes trails older than 30 days for terminal alerts.
+// Called by RunHousekeeping.
 func (u *TriggerSOSUseCase) PurgeOldBreadcrumbs(ctx context.Context) (int64, error) {
 	before := time.Now().AddDate(0, 0, -30).UnixMilli()
 	return u.Deps.Alerts.PurgeBreadcrumbs(ctx, u.DB, before)

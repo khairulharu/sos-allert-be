@@ -491,6 +491,63 @@ Semua response `>= 500` sekarang `{"errors":"internal server error"}`; detail
 frontend harus memakai status code, bukan isi `errors`. Pesan `4xx` tidak
 berubah, jadi pesan validasi tetap bisa ditampilkan.
 
+## `POST /api/sos/{alertId}/respond` dua kali → `409` (#42)
+
+> **Untuk agent frontend.** Ini perubahan kontrak: satu status code baru.
+
+- Sebelumnya setiap `respond` selalu menyisipkan baris baru, jadi double tap
+  atau retry setelah timeout bisa menyimpan responder yang sama dua kali dan
+  menggelembungkan `responders_en_route` / daftar `responders`.
+- Sekarang `alert_responses` punya unique index `(alert_id, responder_id)`.
+  Jawaban kedua dari responder yang sama tidak menulis baris baru dan
+  dijawab **`409`** dengan body
+  `{"errors":"responder has already responded to this alert"}`.
+- Respons `200` pertama tetap sama (`response_id`, `eta_seconds`,
+  `victim_distance_meters`). Klien tidak perlu mengubah apa pun untuk kasus
+  sukses; kalau menerima `409`, anggap "sudah tercatat" — jangan retry, dan
+  tampilkan status responder dari `GET /api/sos/{alertId}`.
+- Responder **berbeda** tidak terpengaruh: masing-masing tetap mendapat `200`
+  dan satu entri di `responders[]`.
+- `403` (bukan peserta, atau sender mencoba respond) dan `409` untuk alert
+  yang sudah `RESOLVED`/`CANCELLED` tidak berubah.
+
+## WebSocket tracking: batas koneksi + keepalive (#42)
+
+> **Untuk agent frontend.** Status code baru saat handshake dan close code baru.
+
+- `WS /ws/sos/{alertId}/track` sekarang punya batas koneksi bersamaan:
+  global (`sos.ws_max_connections`, default 500), per IP
+  (`sos.ws_max_per_ip`, default 10) dan per user (`sos.ws_max_per_user`,
+  default 3, dihitung setelah frame `auth` diverifikasi).
+- Kalau batas global/IP sudah penuh, **handshake ditolak** dengan `429` +
+  header `Retry-After: 5` (bukan upgrade lalu diputus). Frontend: jangan
+  retry loop; tampilkan "live tracking tidak tersedia" dan coba lagi setelah
+  `Retry-After`, atau fallback ke polling `GET /api/sos/{alertId}`.
+- Kalau batas per user penuh, socket **sempat terbuka** lalu langsung dikirim
+  frame `{"error":"too many live-tracking connections, retry shortly"}` dan
+  ditutup dengan close code `1013` (try again later) — `auth_ok` tidak pernah
+  dikirim. Frontend: tutup tab/socket lain dulu, jangan reconnect otomatis.
+- Keepalive: server mengirim ping tiap ~25 s dan memutus klien yang tidak
+  menjawab dalam ~60 s (browser menjawab otomatis; klien native harus membaca
+  frame ping). Setiap frame server punya write deadline 5 s, jadi klien yang
+  berhenti membaca akan diputus, bukan menggantung slot.
+- Tidak ada perubahan pada frame `auth`/`auth_ok`, `LOCATION_UPDATE`,
+  `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`.
+
+## `POST /api/sos` tanpa lokasi → `422` (#42)
+
+> **Untuk agent frontend.** Status code berubah dari `500` menjadi `422`.
+
+- Kalau body `POST /api/sos` tidak memuat `latitude`/`longitude` **dan** user
+  belum pernah mengirim heartbeat (`PUT /api/location`), server sekarang
+  menjawab **`422`** dengan
+  `{"errors":"location is required: send latitude and longitude in the SOS body or PUT /api/location first"}`.
+- Sebelumnya kondisi ini keluar sebagai `500` dengan body generik, jadi user
+  pertama kali tidak tahu apa yang harus diperbaiki.
+- Frontend: kirim koordinat di body SOS bila tersedia (paling aman), atau
+  pastikan `PUT /api/location` sudah sukses sebelum trigger; kalau menerima
+  `422`, tampilkan pesan lokasi dan coba lagi setelah lokasi tersedia.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

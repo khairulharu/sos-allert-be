@@ -57,6 +57,12 @@ type openAIChatResponse struct {
 }
 
 func (c *OpenAIClient) Triage(ctx context.Context, in TriageInput) (TriageResult, error) {
+	// No description means no signal: answering it locally keeps a paid
+	// provider call (and its tokens) out of the SOS path, matching the Jev
+	// and offline classifiers (#42).
+	if strings.TrimSpace(in.Description) == "" {
+		return TriageResult{}, nil
+	}
 	reqBody := openAIChatRequest{
 		Model: c.Model,
 		Messages: []openAIMessage{

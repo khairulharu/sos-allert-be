@@ -58,6 +58,12 @@ type ollamaChatResponse struct {
 }
 
 func (c *OllamaClient) Triage(ctx context.Context, in TriageInput) (TriageResult, error) {
+	// No description means no signal, so skip the model call entirely: it
+	// would spend latency (and local GPU time) on an empty prompt (#42).
+	// Jev and the offline classifier already behave this way.
+	if strings.TrimSpace(in.Description) == "" {
+		return TriageResult{}, nil
+	}
 	reqBody := ollamaChatRequest{
 		Model: c.Model,
 		Messages: []ollamaMessage{

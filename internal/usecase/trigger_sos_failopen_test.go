@@ -140,9 +140,10 @@ func TestTriggerSOSSuccessfulLookupStillNotifiesRecipients(t *testing.T) {
 }
 
 // With Kafka enabled, a published event normally replaces the direct notify.
-// After a failed lookup there is no responder in the event and the worker has
-// no contact resolver, so the local dispatcher must still run to keep the
-// emergency-contact SMS fallback (#37).
+// After a failed lookup there is no responder in the event and the local
+// dispatcher must still run to keep the emergency-contact SMS fallback (#37).
+// The event is published push-only so the worker (which now resolves contacts
+// itself, #38) does not text those contacts a second time (#42).
 func TestTriggerSOSGeoSearchErrorStillReachesContactsWithKafka(t *testing.T) {
 	uc, locRepo, _, notifier := triggerSetup(t)
 	pub := &fakePublisher{}
@@ -158,11 +159,69 @@ func TestTriggerSOSGeoSearchErrorStillReachesContactsWithKafka(t *testing.T) {
 	if len(pub.events[0].Recipients) != 0 {
 		t.Fatalf("published recipients = %v, want none", pub.events[0].Recipients)
 	}
+	if !pub.events[0].PushOnly {
+		t.Fatal("degraded fan-out must publish a push-only event so the worker does not repeat the contact SMS")
+	}
 	if notifier.notifyCalls != 1 {
 		t.Fatalf("Notify calls = %d, want 1 so the contact fallback still runs", notifier.notifyCalls)
 	}
 	if len(notifier.lastRecipients) != 0 {
 		t.Fatalf("notified recipients = %v, want none", notifier.lastRecipients)
+	}
+}
+
+// contactSMSPaths counts how many times the sender's emergency contacts would
+// be texted for one trigger: the local dispatcher Notify plus, for each
+// published event the worker handles as a full fan-out, the worker's Notify
+// (a push_only event uses the push-only surface, which skips contacts).
+func contactSMSPaths(events []model.SOSEvent, localNotifyCalls int) int {
+	paths := localNotifyCalls
+	for _, event := range events {
+		if !event.PushOnly {
+			paths++
+		}
+	}
+	return paths
+}
+
+// Regression for the #37 + #38 interaction (#42): a degraded fan-out with
+// Kafka enabled runs the local dispatcher for the contact SMS, so the
+// published event must be push-only — otherwise the worker, which now has a
+// contact resolver, texts the same contacts again. Exactly one contact-SMS
+// path may run; the happy path is unchanged (the worker alone notifies).
+func TestDegradedFanoutTextsContactsExactlyOnce(t *testing.T) {
+	degraded, locRepo, _, notifier := triggerSetup(t)
+	pub := &fakePublisher{}
+	degraded.Deps.Publisher = pub
+	locRepo.nearbyErr = errors.New("redis GEOSEARCH unavailable")
+
+	if _, err := degraded.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, ""); err != nil {
+		t.Fatalf("degraded trigger error = %v", err)
+	}
+	if got := contactSMSPaths(pub.events, notifier.notifyCalls); got != 1 {
+		t.Fatalf("contact SMS paths = %d, want exactly 1 (events %+v, local notify calls %d)",
+			got, pub.events, notifier.notifyCalls)
+	}
+	if notifier.recipientNotifyCalls != 0 {
+		t.Fatalf("local push-only calls = %d, want 0", notifier.recipientNotifyCalls)
+	}
+
+	// Control: a successful lookup publishes a full event, so only the worker
+	// notifies and the local dispatcher stays out of the way.
+	healthy, _, _, localNotifier := triggerSetup(t)
+	healthyPub := &fakePublisher{}
+	healthy.Deps.Publisher = healthyPub
+	if _, err := healthy.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, ""); err != nil {
+		t.Fatalf("healthy trigger error = %v", err)
+	}
+	if len(healthyPub.events) != 1 || healthyPub.events[0].PushOnly {
+		t.Fatalf("healthy events = %+v, want one non-push-only event", healthyPub.events)
+	}
+	if localNotifier.notifyCalls != 0 {
+		t.Fatalf("healthy local notify calls = %d, want 0 (the worker notifies)", localNotifier.notifyCalls)
+	}
+	if got := contactSMSPaths(healthyPub.events, localNotifier.notifyCalls); got != 1 {
+		t.Fatalf("healthy contact SMS paths = %d, want 1", got)
 	}
 }
 

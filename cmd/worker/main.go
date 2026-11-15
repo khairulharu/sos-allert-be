@@ -28,10 +28,13 @@ func main() {
 	db := config.NewDatabase(viperConfig, logger)
 
 	kafkaConsumerConfig := config.NewKafkaConsumerConfig(viperConfig)
+	kafkaConnectPolicy := config.NewKafkaConnectPolicy(viperConfig)
 	logger.WithFields(logrus.Fields{
 		"max_retries":       kafkaConsumerConfig.MaxRetries,
 		"retry_backoff":     kafkaConsumerConfig.RetryBackoff,
 		"dead_letter_topic": kafkaConsumerConfig.DLQTopic,
+		"connect_attempts":  kafkaConnectPolicy.Attempts,
+		"connect_backoff":   kafkaConnectPolicy.Backoff,
 	}).Info("consumer retry and dead-letter policy")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -87,21 +90,33 @@ func newDeadLetter(logger *logrus.Logger, viperConfig *viper.Viper, topic string
 
 func RunAddressConsumer(logger *logrus.Logger, viperConfig *viper.Viper, options messaging.ConsumerOptions, ctx context.Context) {
 	logger.Info("setup address consumer")
-	addressConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
+	addressConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger, "addresses")
+	if addressConsumerGroup == nil {
+		logger.Warn("addresses consumer skipped: Kafka is unavailable")
+		return
+	}
 	addressHandler := messaging.NewAddressConsumer(logger)
 	messaging.ConsumeTopic(ctx, addressConsumerGroup, "addresses", logger, addressHandler.Consume, options)
 }
 
 func RunContactConsumer(logger *logrus.Logger, viperConfig *viper.Viper, options messaging.ConsumerOptions, ctx context.Context) {
 	logger.Info("setup contact consumer")
-	contactConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
+	contactConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger, "contacts")
+	if contactConsumerGroup == nil {
+		logger.Warn("contacts consumer skipped: Kafka is unavailable")
+		return
+	}
 	contactHandler := messaging.NewContactConsumer(logger)
 	messaging.ConsumeTopic(ctx, contactConsumerGroup, "contacts", logger, contactHandler.Consume, options)
 }
 
 func RunUserConsumer(logger *logrus.Logger, viperConfig *viper.Viper, options messaging.ConsumerOptions, ctx context.Context) {
 	logger.Info("setup user consumer")
-	userConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
+	userConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger, "users")
+	if userConsumerGroup == nil {
+		logger.Warn("users consumer skipped: Kafka is unavailable")
+		return
+	}
 	userHandler := messaging.NewUserConsumer(logger)
 	messaging.ConsumeTopic(ctx, userConsumerGroup, "users", logger, userHandler.Consume, options)
 }
@@ -137,7 +152,14 @@ func RunSOSConsumer(logger *logrus.Logger, viperConfig *viper.Viper, db *gorm.DB
 		repository.NewUserReaderRepository(db, logger),
 		&repository.DispatchContactRepository{DB: db, Repo: repository.NewEmergencyContactRepository(logger)},
 		nil)
-	sosConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
+	sosConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger, "sos.dispatched")
+	if sosConsumerGroup == nil {
+		// The web process still notifies directly (Kafka publish falls back
+		// to the local dispatcher), so the worker can start without it and
+		// keeps retrying on the next deploy instead of dying (#42).
+		logger.Warn("sos.dispatched consumer skipped: Kafka is unavailable; the web process delivers notifications directly")
+		return
+	}
 	sosHandler := messaging.NewSOSConsumer(logger, dispatcher)
 	messaging.ConsumeTopic(ctx, sosConsumerGroup, "sos.dispatched", logger, sosHandler.Consume, options)
 }

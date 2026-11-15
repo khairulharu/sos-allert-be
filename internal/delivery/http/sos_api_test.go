@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -110,6 +111,13 @@ func (s *memAlerts) LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID s
 
 func (s *memAlerts) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
 	s.init()
+	// Mirror the unique (alert_id, responder_id) index: a repeat answer is
+	// a no-op reported as ErrDuplicateResponse.
+	for _, existing := range s.responses[r.AlertID] {
+		if existing.ResponderID == r.ResponderID {
+			return model.ErrDuplicateResponse
+		}
+	}
 	s.responses[r.AlertID] = append(s.responses[r.AlertID], r)
 	return nil
 }
@@ -385,9 +393,16 @@ func (s *memAlerts) ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, user
 	return out, nil
 }
 
-type memLocation struct{ lat, lng float64 }
+type memLocation struct {
+	lat, lng float64
+	// getErr simulates a user with no stored heartbeat.
+	getErr error
+}
 
 func (l *memLocation) Get(ctx context.Context, userID string) (*entity.LocationCache, error) {
+	if l.getErr != nil {
+		return nil, l.getErr
+	}
 	return &entity.LocationCache{UserId: userID, Latitude: l.lat, Longitude: l.lng}, nil
 }
 
@@ -625,6 +640,34 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 		t.Fatalf("responder entry = %+v", r)
 	}
 
+	// A repeated answer (double tap / retried POST) is a 409, not a second
+	// responder row (#42).
+	dupReq := httptest.NewRequest("POST", "/api/sos/"+alertID+"/respond",
+		strings.NewReader(`{"responder_latitude":-6.2100,"responder_longitude":106.8470}`))
+	dupReq.Header.Set("Content-Type", "application/json")
+	dupReq.Header.Set("X-Test-User", "user-b")
+	dupResp, err := app.Test(dupReq, -1)
+	if err != nil {
+		t.Fatalf("duplicate respond: %v", err)
+	}
+	dupBody, _ := io.ReadAll(dupResp.Body)
+	dupResp.Body.Close()
+	if dupResp.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate respond status = %d body = %s, want 409", dupResp.StatusCode, dupBody)
+	}
+	if !strings.Contains(string(dupBody), "already responded") {
+		t.Fatalf("duplicate respond body = %s, want the duplicate-responder message", dupBody)
+	}
+	resp, body = do("GET", "/api/sos/"+alertID, "sender", "")
+	var afterDup model.WebResponse[*model.AlertDetailResponse]
+	if err := json.Unmarshal(body, &afterDup); err != nil {
+		t.Fatalf("detail decode: %v (%s)", err, body)
+	}
+	if afterDup.Data.RespondersEnRoute != 1 || len(afterDup.Data.Responders) != 1 {
+		t.Fatalf("responders after duplicate = %d/%+v, want exactly 1",
+			afterDup.Data.RespondersEnRoute, afterDup.Data.Responders)
+	}
+
 	// After a real responder answered, the stranger still gets 404.
 	if resp, body = do("GET", "/api/sos/"+alertID, "user-x", ""); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("stranger detail status = %d body = %s, want 404", resp.StatusCode, body)
@@ -823,5 +866,60 @@ func TestSOSHistoryAndSummaryAPI(t *testing.T) {
 	}
 	if summary.Data.Responded != (model.AlertRespondedCounts{Total: 1}) {
 		t.Fatalf("responded summary = %+v", summary.Data.Responded)
+	}
+}
+
+// A first-time user who has never sent a heartbeat (and sends no body
+// coordinates) gets a 422 with the fix, not a 500 with an internal message
+// (#42).
+func TestSOSTriggerWithoutLocationIsUnprocessable(t *testing.T) {
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	alerts := &memAlerts{}
+	uc := usecase.NewTriggerSOSUseCase(nil, log, usecase.TriggerSOSDeps{
+		Location: &memLocation{getErr: model.ErrUserLocationNotFound},
+		Alerts:   alerts,
+		Notifier: memNotifier{},
+	})
+
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("auth", &model.Auth{ID: "new-user"})
+		return c.Next()
+	})
+	ctl := deliveryhttp.NewSOSController(uc, log)
+	app.Post("/api/sos", ctl.Trigger)
+
+	req := httptest.NewRequest("POST", "/api/sos", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("trigger: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d body = %s, want 422", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "latitude") {
+		t.Fatalf("body = %s, want the send-coordinates hint", body)
+	}
+	if len(alerts.alerts) != 0 {
+		t.Fatalf("alerts created = %d, want 0", len(alerts.alerts))
+	}
+
+	// The same user succeeds once the body carries coordinates.
+	lat, lng := -6.2088, 106.8456
+	okBody := fmt.Sprintf(`{"latitude":%f,"longitude":%f}`, lat, lng)
+	req = httptest.NewRequest("POST", "/api/sos", strings.NewReader(okBody))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("trigger with coordinates: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status with coordinates = %d body = %s, want 201", resp.StatusCode, body)
 	}
 }
