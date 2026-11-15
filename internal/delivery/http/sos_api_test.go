@@ -182,6 +182,38 @@ func (s *memAlerts) ListRecipients(ctx context.Context, db *gorm.DB, alertID str
 	return append([]string(nil), s.recipients[alertID]...), nil
 }
 
+// ListDueDispatch mirrors the durable grace-period outbox scan (#40).
+func (s *memAlerts) ListDueDispatch(ctx context.Context, db *gorm.DB, dueBeforeMs int64, limit int) ([]*entity.Alert, error) {
+	s.init()
+	var out []*entity.Alert
+	for _, a := range s.alerts {
+		if a.Status != entity.AlertStatusTriggered || a.DispatchDueAt == nil || a.DispatchedAt != nil {
+			continue
+		}
+		if *a.DispatchDueAt > dueBeforeMs {
+			continue
+		}
+		cp := *a
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return *out[i].DispatchDueAt < *out[j].DispatchDueAt })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *memAlerts) MarkDispatched(ctx context.Context, db *gorm.DB, alertID string, atMs int64) (bool, error) {
+	s.init()
+	a, ok := s.alerts[alertID]
+	if !ok || a.DispatchedAt != nil {
+		return false, nil
+	}
+	ts := atMs
+	a.DispatchedAt = &ts
+	return true, nil
+}
+
 func (s *memAlerts) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {
 	s.init()
 	var out []*entity.Alert
