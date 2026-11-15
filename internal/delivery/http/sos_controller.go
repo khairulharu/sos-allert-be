@@ -37,7 +37,10 @@ func mapSOSError(err error) error {
 	case errors.Is(err, model.ErrInvalidTransition):
 		return fiber.ErrConflict
 	case errors.Is(err, model.ErrInvalidPIN):
-		return fiber.ErrUnauthorized
+		// A wrong safe PIN is an authorization failure, not a session
+		// failure: 401 stays reserved for an expired/unknown token so
+		// clients do not log the user out on a mistyped PIN.
+		return fiber.NewError(fiber.StatusForbidden, model.ErrInvalidPIN.Error())
 	case errors.Is(err, model.ErrPINNotConfigured),
 		errors.Is(err, model.ErrStorageNotConfigured):
 		return fiber.NewError(fiber.StatusPreconditionFailed, err.Error())
