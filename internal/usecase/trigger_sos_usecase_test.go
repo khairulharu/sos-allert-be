@@ -7,6 +7,7 @@ import (
 	"golang-clean-architecture/internal/model"
 	"io"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -834,5 +835,60 @@ func TestTriggerSOSClampsServerSeverity(t *testing.T) {
 	}
 	if result.Triage == nil || result.Triage.Severity != 1 {
 		t.Fatalf("triage = %+v, want severity clamped to 1", result.Triage)
+	}
+}
+
+// dispatchLatencyMetrics records ObserveDispatchDuration samples.
+type dispatchLatencyMetrics struct {
+	mu      sync.Mutex
+	samples []float64
+}
+
+func (m *dispatchLatencyMetrics) ObserveDispatchDuration(ms float64) {
+	m.mu.Lock()
+	m.samples = append(m.samples, ms)
+	m.mu.Unlock()
+}
+
+func (m *dispatchLatencyMetrics) IncPushFailures()   {}
+func (m *dispatchLatencyMetrics) SetActiveSOS(int64) {}
+
+func (m *dispatchLatencyMetrics) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.samples)
+}
+
+func (m *dispatchLatencyMetrics) first() (float64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.samples) == 0 {
+		return 0, false
+	}
+	return m.samples[0], true
+}
+
+// With a grace period the dispatch runs seconds after the request; the
+// latency metric must describe the notification send, not the countdown.
+func TestDispatchLatencyExcludesGracePeriod(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	met := &dispatchLatencyMetrics{}
+	uc.Deps.Metrics = met
+	uc.Deps.GracePeriod = 300 * time.Millisecond
+
+	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, ""); err != nil {
+		t.Fatalf("ExecuteWithRequest error = %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for met.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	sample, ok := met.first()
+	if !ok {
+		t.Fatal("dispatch latency was never recorded")
+	}
+	if sample >= float64(uc.Deps.GracePeriod.Milliseconds()) {
+		t.Fatalf("dispatch latency = %v ms, want the send time only (grace period = %v ms)",
+			sample, uc.Deps.GracePeriod.Milliseconds())
 	}
 }

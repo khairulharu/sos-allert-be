@@ -191,7 +191,6 @@ func (u *TriggerSOSUseCase) Execute(ctx context.Context, senderID string) (*mode
 // ExecuteWithRequest records the alert, finds active recipients with the
 // adaptive radius, and dispatches (after the grace period when set).
 func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID string, req *model.TriggerSOSRequest, idempotencyKey string) (*model.TriggerSOSResult, error) {
-	startedAt := time.Now()
 	if req == nil {
 		req = &model.TriggerSOSRequest{}
 	}
@@ -355,6 +354,11 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 
 	dispatch := func(dispatchCtx context.Context) {
+		// The latency metric must describe the notification send, not the
+		// request: when the grace period is configured the dispatch runs
+		// seconds later, and measuring from request start always reported
+		// the grace period itself.
+		sendStartedAt := time.Now()
 		if u.Deps.Publisher != nil {
 			event := model.SOSEvent{
 				EventType:      "sos.dispatched",
@@ -372,17 +376,18 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				ClientSummary:  req.ClientSummary,
 			}
 			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
-				u.recordDispatch(startedAt)
+				u.recordDispatch(sendStartedAt)
 				return
 			}
 			u.Log.Warn("Kafka publish failed, falling back to direct notify")
+			sendStartedAt = time.Now()
 		}
 		if u.Deps.Notifier != nil {
 			if err := u.Deps.Notifier.Notify(dispatchCtx, recipients, alertModel); err != nil {
 				u.Log.WithError(err).Error("failed to notify recipients")
 			}
 		}
-		u.recordDispatch(startedAt)
+		u.recordDispatch(sendStartedAt)
 	}
 
 	if u.Deps.GracePeriod > 0 {
@@ -409,9 +414,11 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	return result, nil
 }
 
-func (u *TriggerSOSUseCase) recordDispatch(startedAt time.Time) {
+// recordDispatch reports the notification-send latency; sentAt is taken
+// immediately before the publish/notify call.
+func (u *TriggerSOSUseCase) recordDispatch(sentAt time.Time) {
 	if u.Deps.Metrics != nil {
-		u.Deps.Metrics.ObserveDispatchDuration(float64(time.Since(startedAt).Milliseconds()))
+		u.Deps.Metrics.ObserveDispatchDuration(float64(time.Since(sentAt).Milliseconds()))
 	}
 }
 
