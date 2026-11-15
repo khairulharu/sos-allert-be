@@ -20,8 +20,11 @@ import (
 )
 
 type fakeIdempotency struct {
-	mu     sync.Mutex
-	values map[string]string
+	mu          sync.Mutex
+	values      map[string]string
+	releases    int
+	releaseKeys []string
+	releaseErr  error
 }
 
 func (f *fakeIdempotency) Claim(ctx context.Context, key string) (bool, error) {
@@ -54,6 +57,21 @@ func (f *fakeIdempotency) Set(ctx context.Context, key, value string) error {
 		f.values = map[string]string{}
 	}
 	f.values[key] = value
+	return nil
+}
+
+// Release mirrors the Redis compare-and-delete: only a pending marker goes.
+func (f *fakeIdempotency) Release(ctx context.Context, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releases++
+	f.releaseKeys = append(f.releaseKeys, key)
+	if f.releaseErr != nil {
+		return f.releaseErr
+	}
+	if f.values[key] == "pending" {
+		delete(f.values, key)
+	}
 	return nil
 }
 
@@ -901,6 +919,7 @@ type gaugeMetrics struct {
 
 func (g *gaugeMetrics) ObserveDispatchDuration(float64) {}
 func (g *gaugeMetrics) IncPushFailures()                {}
+func (g *gaugeMetrics) IncFanoutFailures()              {}
 
 func (g *gaugeMetrics) SetActiveSOS(n int64) {
 	g.mu.Lock()

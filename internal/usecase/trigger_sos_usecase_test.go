@@ -7,6 +7,7 @@ import (
 	"golang-clean-architecture/internal/model"
 	"io"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +36,9 @@ type fakeLocationRepository struct {
 
 	// lastSeenMs keyed by userId; zero value means "not found" → returns error
 	lastSeenMs map[string]int64
+
+	// lastSeenBatchErr makes GetLastSeenBatch fail (freshness unknown).
+	lastSeenBatchErr error
 
 	gotSenderID    string
 	gotLongitude   float64
@@ -104,6 +108,9 @@ func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string)
 
 func (f *fakeLocationRepository) GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error) {
 	f.lastSeenBatchCalls++
+	if f.lastSeenBatchErr != nil {
+		return nil, f.lastSeenBatchErr
+	}
 	out := make(map[string]int64, len(userIds))
 	for _, id := range userIds {
 		if ts, ok := f.lastSeenMs[id]; ok {
@@ -523,6 +530,13 @@ type fakeNotifier struct {
 	lastAlert      model.Alert
 	notifyErr      error
 	notifyCalled   bool
+	notifyCalls    int
+
+	// notifiedCh, when set, is closed after the first Notify call so the
+	// grace-period tests can wait for the deferred dispatch without
+	// polling (or racing on) the fields above.
+	notifiedCh chan struct{}
+	notifyOnce sync.Once
 
 	recipientNotifyCalled bool
 	recipientSets         [][]string
@@ -531,8 +545,12 @@ type fakeNotifier struct {
 
 func (f *fakeNotifier) Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error {
 	f.notifyCalled = true
+	f.notifyCalls++
 	f.lastRecipients = recipientIDs
 	f.lastAlert = alert
+	if f.notifiedCh != nil {
+		f.notifyOnce.Do(func() { close(f.notifiedCh) })
+	}
 	return f.notifyErr
 }
 
@@ -712,26 +730,8 @@ func TestTriggerSOSUseCaseExecuteGetError(t *testing.T) {
 	}
 }
 
-func TestTriggerSOSUseCaseExecuteGeoSearchError(t *testing.T) {
-	repoErr := errors.New("redis unavailable")
-	locRepo := &fakeLocationRepository{
-		sender:    &entity.LocationCache{UserId: "sender", Longitude: 108.8272, Latitude: -6.1754},
-		nearbyErr: repoErr,
-	}
-	alertRepo := &fakeAlertRepository{}
-	notifier := &fakeNotifier{}
-	useCase := newUseCase(locRepo, alertRepo, notifier)
-
-	result, err := useCase.Execute(context.Background(), "sender")
-
-	if !errors.Is(err, repoErr) {
-		t.Fatalf("Execute() error = %v, want %v", err, repoErr)
-	}
-	if result != nil {
-		t.Errorf("Execute() result = %v, want nil", result)
-	}
-}
-
+// Alert persistence is the only 5xx-worthy failure: no alert means nothing
+// to dispatch, so the notifier must not run (#37).
 func TestTriggerSOSUseCaseExecuteAlertSaveError(t *testing.T) {
 	saveErr := errors.New("db write failed")
 	locRepo := &fakeLocationRepository{
@@ -748,6 +748,12 @@ func TestTriggerSOSUseCaseExecuteAlertSaveError(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("Execute() result = %v, want nil", result)
+	}
+	if !alertRepo.createCalled {
+		t.Error("AlertRepository.Create() was not attempted")
+	}
+	if notifier.notifyCalled {
+		t.Error("Notifier.Notify() must not run when the alert could not be persisted")
 	}
 	if locRepo.geoSearchCalls != 0 {
 		t.Errorf("GeoSearch() called %d times, want 0 after save failure", locRepo.geoSearchCalls)

@@ -204,6 +204,12 @@ Detail trigger:
   `Pelapor menyebut: ...`. Nama lama `severity`/`summary` diabaikan (bukan
   error), jadi aplikasi versi lama tetap jalan.
 - Radius fan-out adaptif 1/2/5 km, maksimal 50 penerima, ditambah emergency contacts.
+- **Fan-out fail-open setelah alert tersimpan**: kalau lookup penerima gagal
+  (Redis `GEOSEARCH`/`users:last_seen`), trigger tetap `201` dengan
+  `recipients_notified: 0`, alert tetap `TRIGGERED`, dan dispatch (push + SMS
+  kontak darurat) tetap dijalankan tanpa penerima. `5xx` hanya kalau alert
+  sendiri gagal disimpan; kegagalan lookup dihitung di metrik
+  `sos_fanout_failures_total`.
 - Klip audio yang baru ditranskrip setelah trigger dan menaikkan severity
   memperlebar fan-out ke radius baru: hanya responder baru yang dinotifikasi,
   tetap menunggu grace period, dan response media menandainya `escalated`.

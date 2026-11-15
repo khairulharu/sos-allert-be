@@ -17,6 +17,7 @@ import (
 type SOSMetrics interface {
 	ObserveDispatchDuration(ms float64)
 	IncPushFailures()
+	IncFanoutFailures()
 	SetActiveSOS(n int64)
 }
 

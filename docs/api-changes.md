@@ -371,6 +371,48 @@ Catatan tambahan:
 - `409` hanya muncul untuk retry milik user itu sendiri ketika trigger pertama
   masih berjalan (key sudah diklaim, hasil belum tersimpan).
 
+## Klaim idempotency dilepas saat trigger gagal (#36)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku.
+
+- Sebelumnya, trigger yang gagal (lokasi tidak ada, gagal tulis DB, dan dulu
+  juga gagal mencari penerima) meninggalkan klaim `pending` selama TTL 5
+  menit, sehingga retry dengan key yang sama dijawab `409` padahal belum ada
+  alert yang dibuat.
+- Sekarang klaim dilepas pada setiap kegagalan sebelum hasil tersimpan: retry
+  dengan `X-Idempotency-Key` yang sama setelah percobaan gagal akan diproses
+  normal dan mengembalikan `201` (bukan `409`).
+- Klaim hanya dilepas selama nilainya masih `pending` (compare-and-delete),
+  jadi hasil trigger yang sudah selesai tidak pernah terhapus dan tetap
+  di-replay seperti sebelumnya.
+- Klien tidak perlu mengubah apa pun: key yang sama tetap aman dipakai ulang
+  untuk retry setelah error jaringan/server.
+
+## Fan-out SOS fail-open setelah alert tersimpan (#37)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku, plus satu metrik baru.
+
+- Sebelumnya, kalau pencarian penerima gagal (`GEOSEARCH`/`users:last_seen`
+  error di Redis), `POST /api/sos` mengembalikan `5xx` **setelah** alert
+  tersimpan: tidak ada satu pun notifikasi (termasuk SMS kontak darurat), dan
+  alert tertinggal `TRIGGERED` selamanya.
+- Sekarang fan-out fail-open: alert tetap dibuat, dispatch tetap dijalankan
+  dengan daftar penerima kosong (jadi push tidak terkirim ke siapa pun, tetapi
+  SMS fallback ke emergency contacts tetap jalan), dan response tetap `201`
+  dengan `recipients_notified: 0`.
+- `5xx` hanya tersisa untuk kegagalan yang membuat alert sendiri tidak
+  tersimpan (atau lookup lokasi pengirim sebelum alert dibuat).
+- Klien tidak perlu retry saat melihat `201` dengan `recipients_notified: 0`:
+  alert sudah tercatat dan muncul di `GET /api/sos/active`; retry dengan
+  `X-Idempotency-Key` yang sama akan me-replay alert itu, bukan membuat
+  duplikat.
+- Metrik baru di `GET /metrics`: `sos_fanout_failures_total` (counter trigger
+  yang di-dispatch dengan fan-out kosong karena lookup penerima gagal). Metrik
+  lama `sos_dispatch_latency_ms`, `push_delivery_failures_total`,
+  `active_sos_count` tidak berubah.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

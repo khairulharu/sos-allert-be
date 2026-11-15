@@ -20,6 +20,10 @@ import (
 
 const staleThreshold = 2 * 60 * 1000 // 2 minutes in milliseconds
 
+// idempotencyReleaseTimeout bounds the detached Release call that hands a
+// pending idempotency claim back after a failed trigger.
+const idempotencyReleaseTimeout = 2 * time.Second
+
 // LocationRepository is the subset of location storage used by TriggerSOS.
 // It is satisfied by *repository.LocationCacheRepository (Redis GEO).
 type LocationRepository interface {
@@ -85,11 +89,14 @@ type RecipientNotifier interface {
 }
 
 // IdempotencyStore maps X-Idempotency-Key values to finished alerts.
+// Release hands back an unfinished claim (compare-and-delete on the
+// pending marker only) so a failed trigger does not block its own retry.
 // Satisfied by *repository.IdempotencyRepository.
 type IdempotencyStore interface {
 	Claim(ctx context.Context, key string) (bool, error)
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string) error
+	Release(ctx context.Context, key string) error
 }
 
 // RateLimiter is a per-user SOS trigger limiter.
@@ -227,6 +234,13 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	if idempotencyKey != "" {
 		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
 	}
+	// claimHeld tracks the pending claim this call owns: the alert does
+	// not exist yet, so every failure below must hand the claim back.
+	// Otherwise the retry of a failed trigger is answered 409 for the
+	// rest of the 5-minute TTL even though no alert was ever created
+	// (#36). Once the finished result is written with Set the flag is
+	// cleared, so a success never releases.
+	claimHeld := false
 	if scopedKey != "" && u.Deps.Idempotency != nil {
 		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
 			return nil, err
@@ -242,7 +256,25 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				return replay, nil
 			}
 			return nil, fiber.ErrConflict
+		} else {
+			claimHeld = true
 		}
+	}
+	if claimHeld {
+		// Fail-open: a Release error only warns, and the deferred call
+		// never replaces the error that aborted the trigger.
+		defer func() {
+			if !claimHeld {
+				return
+			}
+			// A cancelled or expired request context must not strand
+			// the claim, so release on a detached one.
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), idempotencyReleaseTimeout)
+			defer cancel()
+			if err := u.Deps.Idempotency.Release(releaseCtx, scopedKey); err != nil {
+				u.Log.WithError(err).Warn("could not release idempotency claim")
+			}
+		}()
 	}
 
 	latitude, longitude, err := u.resolveCoordinates(ctx, senderID, req)
@@ -317,9 +349,28 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 	u.Log.Infof("alert %s saved for sender %s at (%.6f, %.6f)", alert.ID, senderID, longitude, latitude)
 
+	// The fan-out is fail-open (#37): the alert row is already persisted, so
+	// a recipient lookup outage (Redis GEOSEARCH/HMGET) must not turn a
+	// life-safety trigger into a 500 that notifies nobody. Returning an
+	// error here used to skip the dispatch entirely — the sender's
+	// emergency contacts were never texted and the alert stayed TRIGGERED.
+	// Degrade to an empty fan-out instead; the dispatch below still runs,
+	// which is what carries the emergency-contact SMS fallback.
+	// fanoutDegraded marks a failed recipient lookup: the fan-out then has
+	// nobody to reach, so the emergency-contact fallback must not be
+	// skipped just because Kafka accepted the (empty) event.
+	fanoutDegraded := false
 	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude, radiusStart)
 	if err != nil {
-		return nil, err
+		u.Log.WithError(err).Errorf("alert %s: recipient lookup failed, dispatching without nearby responders", alert.ID)
+		if u.Deps.Metrics != nil {
+			u.Deps.Metrics.IncFanoutFailures()
+		}
+		fanoutDegraded = true
+		recipients = []string{}
+		// No radius was actually searched; report the widest configured
+		// one instead of a misleading 0.
+		radius = u.widestRadius()
 	}
 	if err := u.Deps.Alerts.CreateRecipients(ctx, u.DB, alert.ID, recipients, alert.TriggeredAt); err != nil {
 		u.Log.WithError(err).Warn("could not record alert recipients")
@@ -345,6 +396,11 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 
 	if scopedKey != "" && u.Deps.Idempotency != nil {
 		value := alert.ID + "|" + strconv.Itoa(len(recipients))
+		// The alert is recorded and the result is being written: from
+		// here on the key belongs to a finished trigger and must not be
+		// released, even when the Set itself fails (a release would let
+		// a retry duplicate the alert).
+		claimHeld = false
 		if err := u.Deps.Idempotency.Set(ctx, scopedKey, value); err != nil {
 			u.Log.WithError(err).Warn("could not store idempotency result")
 		}
@@ -361,6 +417,10 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 
 	dispatch := func(dispatchCtx context.Context) {
+		// An empty recipient list is expected after a failed lookup (#37):
+		// the dispatcher then skips push and still runs the
+		// emergency-contact SMS fallback.
+		published := false
 		if u.Deps.Publisher != nil {
 			event := model.SOSEvent{
 				EventType:      "sos.dispatched",
@@ -378,10 +438,18 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				ClientSummary:  req.ClientSummary,
 			}
 			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
-				u.recordDispatch(startedAt)
-				return
+				published = true
+			} else {
+				u.Log.Warn("Kafka publish failed, falling back to direct notify")
 			}
-			u.Log.Warn("Kafka publish failed, falling back to direct notify")
+		}
+		// A published event normally replaces the direct notify. After a
+		// degraded fan-out the worker has no responder to reach and no
+		// contact resolver, so the local dispatcher still runs to keep the
+		// emergency-contact SMS fallback (#37).
+		if published && !fanoutDegraded {
+			u.recordDispatch(startedAt)
+			return
 		}
 		if u.Deps.Notifier != nil {
 			if err := u.Deps.Notifier.Notify(dispatchCtx, recipients, alertModel); err != nil {
@@ -536,6 +604,16 @@ func (u *TriggerSOSUseCase) radiusStartIndex(severity float64) int {
 	return idx
 }
 
+// widestRadius is the outermost configured fan-out radius. It is the
+// honest fallback when the recipient lookup failed and nothing was
+// actually searched.
+func (u *TriggerSOSUseCase) widestRadius() float64 {
+	if len(u.Deps.Radii) == 0 {
+		return 0
+	}
+	return u.Deps.Radii[len(u.Deps.Radii)-1]
+}
+
 // findRecipients runs adaptive-radius GeoSearch: start at the radius
 // selected by startIndex (0 = 1 km; an AI severity may start wider) and
 // expand upward until at least MinRecipients fresh users are found,
@@ -549,12 +627,12 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 	}
 	now := time.Now().UnixMilli()
 	var recipients []string
-	usedRadius := u.Deps.Radii[len(u.Deps.Radii)-1]
+	usedRadius := u.widestRadius()
 	for _, radius := range u.Deps.Radii[startIndex:] {
 		usedRadius = radius
 		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius)
 		if err != nil {
-			return nil, 0, fmt.Errorf("search nearby users: %w", err)
+			return nil, usedRadius, fmt.Errorf("search nearby users: %w", err)
 		}
 		seen := make(map[string]struct{}, len(nearby))
 		candidates := make([]string, 0, len(nearby))

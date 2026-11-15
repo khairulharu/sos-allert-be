@@ -97,6 +97,10 @@ func (f *foreignIdempotency) Set(ctx context.Context, key, value string) error {
 	return nil
 }
 
+func (f *foreignIdempotency) Release(ctx context.Context, key string) error {
+	return nil
+}
+
 // Defense in depth: even if the store hands back an alert id owned by someone
 // else, it must not be replayed and must not appear in the response.
 func TestTriggerSOSIdempotencyIgnoresForeignAlert(t *testing.T) {
@@ -149,6 +153,10 @@ func (f *failingIdempotency) Set(ctx context.Context, key, value string) error {
 	return errors.New("redis down")
 }
 
+func (f *failingIdempotency) Release(ctx context.Context, key string) error {
+	return errors.New("redis down")
+}
+
 // Fail-open: an unavailable idempotency store must never block a life-safety
 // trigger.
 func TestTriggerSOSIdempotencyStoreErrorFailsOpen(t *testing.T) {
@@ -164,5 +172,125 @@ func TestTriggerSOSIdempotencyStoreErrorFailsOpen(t *testing.T) {
 	}
 	if result == nil || result.Alert.ID == "" {
 		t.Fatalf("result = %+v, want a created alert", result)
+	}
+}
+
+// A trigger that dies after the claim but before the alert is stored must hand
+// the claim back, so the retry with the same key creates the alert instead of
+// being answered 409 for the rest of the 5-minute TTL (#36).
+func TestTriggerSOSIdempotencyReleasedWhenAlertCreateFails(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	idem := &fakeIdempotency{}
+	uc.Deps.Idempotency = idem
+
+	saveErr := errors.New("db write failed")
+	alertRepo.createErr = saveErr
+	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "retry-key"); !errors.Is(err, saveErr) {
+		t.Fatalf("first trigger error = %v, want %v", err, saveErr)
+	}
+	if idem.releases != 1 {
+		t.Fatalf("Release calls = %d, want 1 after a failed trigger", idem.releases)
+	}
+	if len(idem.releaseKeys) != 1 || idem.releaseKeys[0] != "sender:retry-key" {
+		t.Fatalf("released keys = %v, want the sender-scoped key", idem.releaseKeys)
+	}
+	if _, held := idem.values["sender:retry-key"]; held {
+		t.Fatalf("pending claim still held after the failure: %v", idem.values)
+	}
+
+	alertRepo.createErr = nil
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "retry-key")
+	if err != nil {
+		t.Fatalf("retry error = %v, want the retry to succeed instead of 409", err)
+	}
+	if result == nil || result.Alert.ID == "" {
+		t.Fatalf("retry result = %+v, want a created alert", result)
+	}
+	if len(alertRepo.alerts) != 1 {
+		t.Fatalf("alerts created = %d, want 1 after the successful retry", len(alertRepo.alerts))
+	}
+	if _, ok := alertRepo.alerts[result.Alert.ID]; !ok {
+		t.Fatalf("alert %s from the retry was not created", result.Alert.ID)
+	}
+	if stored := idem.values["sender:retry-key"]; stored == "" || stored == "pending" {
+		t.Fatalf("stored idempotency value = %q, want the retry's alert id", stored)
+	}
+}
+
+// The recipient fan-out failure happens after the alert is persisted, so with
+// the fail-open fan-out (#37) the trigger finishes: the key keeps the alert
+// instead of being released, and the retry replays it rather than duplicating
+// a trigger that already recorded an alert.
+func TestTriggerSOSIdempotencyFanoutFailureStillFinishes(t *testing.T) {
+	uc, locRepo, alertRepo, notifier := triggerSetup(t)
+	idem := &fakeIdempotency{}
+	uc.Deps.Idempotency = idem
+
+	locRepo.nearbyErr = errors.New("redis geo down")
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "fanout-key")
+	if err != nil {
+		t.Fatalf("fan-out failure must fail open, got %v", err)
+	}
+	if idem.releases != 0 {
+		t.Fatalf("Release calls = %d, want 0 (the alert was persisted)", idem.releases)
+	}
+	if stored := idem.values["sender:fanout-key"]; stored == "" || stored == "pending" {
+		t.Fatalf("stored idempotency value = %q, want the finished result", stored)
+	}
+	if !notifier.notifyCalled {
+		t.Fatal("the trigger must still dispatch after a failed lookup")
+	}
+	if len(alertRepo.alerts) != 1 {
+		t.Fatalf("alerts created = %d, want 1", len(alertRepo.alerts))
+	}
+
+	replay, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "fanout-key")
+	if err != nil {
+		t.Fatalf("replay error = %v", err)
+	}
+	if replay.Alert.ID != result.Alert.ID {
+		t.Fatalf("replay alert id = %s, want %s", replay.Alert.ID, result.Alert.ID)
+	}
+	if len(alertRepo.alerts) != 1 {
+		t.Fatalf("alerts created = %d, want 1 after the replay", len(alertRepo.alerts))
+	}
+}
+
+// A trigger that stores its result owns the key: releasing it would let a
+// retry duplicate the alert.
+func TestTriggerSOSIdempotencySuccessDoesNotRelease(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	idem := &fakeIdempotency{}
+	uc.Deps.Idempotency = idem
+
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "done-key")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	if idem.releases != 0 {
+		t.Fatalf("Release calls = %d, want 0 after a successful trigger", idem.releases)
+	}
+	if stored := idem.values["sender:done-key"]; stored != result.Alert.ID+"|3" {
+		t.Fatalf("stored idempotency value = %q, want the finished result", stored)
+	}
+	if len(alertRepo.alerts) != 1 {
+		t.Fatalf("alerts created = %d, want 1", len(alertRepo.alerts))
+	}
+}
+
+// A Release failure is fail-open and must not replace the error that aborted
+// the trigger.
+func TestTriggerSOSIdempotencyReleaseErrorKeepsOriginalError(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	idem := &fakeIdempotency{releaseErr: errors.New("redis down")}
+	uc.Deps.Idempotency = idem
+
+	saveErr := errors.New("db write failed")
+	alertRepo.createErr = saveErr
+	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "boom-key"); !errors.Is(err, saveErr) {
+		t.Fatalf("trigger error = %v, want the original %v", err, saveErr)
+	}
+	if idem.releases != 1 {
+		t.Fatalf("Release calls = %d, want the release to be attempted once", idem.releases)
 	}
 }
