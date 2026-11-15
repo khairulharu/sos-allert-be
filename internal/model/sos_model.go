@@ -168,7 +168,7 @@ type SearchAlertHistoryRequest struct {
 	UserID string `json:"-" validate:"required"`
 	Role   string `json:"-" validate:"required,oneof=sent received"`
 	Status string `json:"-" validate:"omitempty,oneof=TRIGGERED ACKNOWLEDGED RESOLVED CANCELLED EXPIRED active closed"`
-	Page   int    `json:"-" validate:"min=1"`
+	Page   int    `json:"-" validate:"min=1,max=100000"`
 	Size   int    `json:"-" validate:"min=1,max=100"`
 	FromMs *int64 `json:"-" validate:"omitempty,gt=0"`
 	ToMs   *int64 `json:"-" validate:"omitempty,gt=0"`
