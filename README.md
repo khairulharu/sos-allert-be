@@ -588,6 +588,30 @@ CREATE TABLE emergency_contacts (
   duluan, binary lama gagal saat auth). Rollback: `migrate down` dulu, baru
   deploy binary lama; token tetap tidak bisa dipulihkan.
 
+### Migrasi grace period outbox (`20261115000000_alert_dispatch_outbox.*.sql`)
+
+- Menambah `alerts.dispatch_due_at BIGINT NULL` dan `alerts.dispatched_at
+  BIGINT NULL`, plus index `(status, dispatch_due_at, dispatched_at)` untuk
+  scan due.
+- Latar belakang: fan-out setelah grace period dulu dijadwalkan dengan
+  `time.AfterFunc` di proses web. Restart/deploy/OOM di dalam window 10 detik
+  membuat alert tetap `TRIGGERED` (penerima sudah tercatat di
+  `alert_recipients`) tapi **tidak pernah dikirim ke siapa pun**.
+- Sekarang `dispatch_due_at` (= `triggered_at` + grace) disimpan bersama alert
+  saat `Create`, dan `TriggerSOSUseCase.RunDispatchLoop` (proses web saja)
+  memindai baris yang sudah due setiap `sos.dispatch_poll_seconds` (default 1,
+  minimal 0.1 detik): re-check status masih `TRIGGERED`, muat penerima dari
+  `alert_recipients`, dispatch seperti jalur trigger (Kafka kalau aktif, kalau
+  tidak `Notifier`), lalu `MarkDispatched` (`UPDATE … WHERE dispatched_at IS
+  NULL`). Alert yang di-cancel/resolve dilewati dan tetap ditandai.
+- Semantik **at-least-once**: crash setelah kirim tapi sebelum menandai akan
+  mengirim ulang. Duplikat notifikasi masih bisa diterima; SOS yang hilang
+  tidak. `sos.grace_period_seconds = 0` tetap dispatch inline dan tidak menulis
+  `dispatch_due_at`.
+- Catatan: perluasan fan-out pasca-audio (`escalateFanout`) masih menunggu sisa
+  grace period lewat timer in-process; alert yang di-cancel tetap tidak
+  menyebar karena status di-recheck.
+
 Untuk environment lain, jalankan `migrate up` (termasuk migrasi sesi di atas).
 
 ---
@@ -705,6 +729,14 @@ go run cmd/worker/main.go
 # 3. Build & Vet
 go build ./... && go vet ./...
 ```
+
+`cmd/web` menangani `SIGINT`/`SIGTERM`: listener berhenti menerima koneksi
+baru, request yang sedang jalan diberi waktu sampai 10 detik
+(`app.ShutdownWithTimeout`), dan context root dibatalkan sehingga loop
+background (gauge `active_sos_count` dan scan grace-period outbox) ikut
+berhenti. Fan-out yang belum jatuh tempo tetap aman karena due time-nya sudah
+tersimpan di tabel `alerts`; proses berikutnya yang mengirimkannya (§6).
+Ctrl-C kedua langsung mematikan proses tanpa menunggu drain.
 
 ---
 
