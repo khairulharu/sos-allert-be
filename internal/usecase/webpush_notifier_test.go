@@ -316,3 +316,17 @@ func TestWebPushNotifierNoSubscriptionsIsNotAnError(t *testing.T) {
 		t.Fatalf("a user without subscriptions must not fail dispatch: %v", err)
 	}
 }
+
+// A nil Log used to panic in the dispatcher's timer goroutine, which
+// would take the whole web process down.
+func TestWebPushNotifierNilLoggerDoesNotPanic(t *testing.T) {
+	store := newFakePushStore()
+	n := testNotifier(t, store)
+	n.Log = nil
+	if err := n.SendToUser(context.Background(), "user-b", "SOS Alert", "Emergency nearby.", nil); err != nil {
+		t.Fatalf("SendToUser with a nil logger: %v", err)
+	}
+	if err := n.SendToUser(context.Background(), "user-b", "SOS Alert", "Emergency nearby.", nil); err != nil {
+		t.Fatalf("second SendToUser with a nil logger: %v", err)
+	}
+}

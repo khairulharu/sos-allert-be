@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
@@ -33,12 +34,55 @@ type EmergencyContactStore interface {
 type MediaStorage interface {
 	Save(ctx context.Context, filename string, r io.Reader) (string, error)
 	Open(ctx context.Context, path string) (io.ReadCloser, error)
+	// Delete removes a stored file, used to undo an upload whose
+	// metadata insert failed.
+	Delete(ctx context.Context, path string) error
 }
 
 const (
 	maxMediaBytes         = 50 << 20   // 50 MB
 	maxTranscriptionBytes = 25_000_000 // Groq free tier: 25 MB (decimal)
+
+	// alert_media.filename is VARCHAR(255); keep a margin and preserve
+	// the extension so a very long client filename cannot fail the
+	// insert (which used to surface as a 500).
+	maxMediaFilenameRunes    = 200
+	maxMediaFilenameExtRunes = 16
 )
+
+// sanitizeFilename turns an untrusted multipart filename into a value
+// that is safe to store (VARCHAR(255)) and on disk: path separators and
+// control characters are dropped, ".." is collapsed, and the name is
+// truncated to maxMediaFilenameRunes while keeping its extension.
+func sanitizeFilename(name string) (string, error) {
+	name = strings.Map(func(r rune) rune {
+		if r == 0 || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name)
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	for strings.Contains(name, "..") {
+		name = strings.ReplaceAll(name, "..", ".")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." {
+		return "", fiber.ErrBadRequest
+	}
+	runes := []rune(name)
+	if len(runes) <= maxMediaFilenameRunes {
+		return name, nil
+	}
+	ext := filepath.Ext(name)
+	extRunes := []rune(ext)
+	if len(extRunes) > 1 && len(extRunes) <= maxMediaFilenameExtRunes {
+		keep := maxMediaFilenameRunes - len(extRunes)
+		return string(runes[:keep]) + ext, nil
+	}
+	return string(runes[:maxMediaFilenameRunes]), nil
+}
 
 // isParticipant reports whether a user may act on an incident. Recipients
 // are recorded at trigger time, before the grace-period dispatch, so a
@@ -444,6 +488,17 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 	}, nil
 }
 
+// Breadcrumb timestamps are client-supplied and ordering-sensitive:
+// LatestBreadcrumb sorts recorded_at DESC, so a far-future timestamp
+// would pin latest_location to that point forever.
+const (
+	// breadcrumbFutureSkewMs is the clock skew tolerated before a
+	// client timestamp is clamped to now.
+	breadcrumbFutureSkewMs = 60 * 1000
+	// breadcrumbMaxAgeMs is how old a client timestamp may be.
+	breadcrumbMaxAgeMs = 24 * 60 * 60 * 1000
+)
+
 // AddBreadcrumb stores one live-tracking point, refreshes Redis GEO,
 // and broadcasts it to WebSocket subscribers of the incident.
 func (u *TriggerSOSUseCase) AddBreadcrumb(ctx context.Context, senderID, alertID string, req *model.BreadcrumbRequest) (*model.BreadcrumbResponse, error) {
@@ -463,9 +518,22 @@ func (u *TriggerSOSUseCase) AddBreadcrumb(ctx context.Context, senderID, alertID
 	if !alert.IsActive() {
 		return nil, model.ErrInvalidTransition
 	}
-	recordedAt := time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	recordedAt := now
 	if req.Timestamp != nil {
-		recordedAt = *req.Timestamp
+		ts := *req.Timestamp
+		switch {
+		case ts <= 0 || ts < now-breadcrumbMaxAgeMs:
+			// Absurdly old (or negative) timestamps cannot belong to
+			// this incident.
+			return nil, fiber.ErrBadRequest
+		case ts > now+breadcrumbFutureSkewMs:
+			// A future point would sort above every later breadcrumb
+			// and freeze latest_location; clamp it to now.
+			recordedAt = now
+		default:
+			recordedAt = ts
+		}
 	}
 	crumb := &entity.AlertBreadcrumb{
 		AlertID:           alertID,
@@ -646,6 +714,10 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 	if size > maxMediaBytes {
 		return nil, fiber.ErrBadRequest
 	}
+	filename, err = sanitizeFilename(filename)
+	if err != nil {
+		return nil, err
+	}
 	if u.Deps.MediaStore == nil {
 		return nil, model.ErrStorageNotConfigured
 	}
@@ -722,16 +794,30 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 		defer tx.Rollback()
 		db = tx
 	}
+	// The bytes are already on disk; if the metadata write fails (or the
+	// transaction rolls back) the row never exists, so remove the file
+	// instead of leaving an orphan behind.
+	discardStored := func() {
+		if media.StoragePath == "" {
+			return
+		}
+		if err := u.Deps.MediaStore.Delete(ctx, media.StoragePath); err != nil {
+			u.Log.WithError(err).Warn("could not remove stored media after a failed insert")
+		}
+	}
 	if err := u.Deps.Alerts.CreateMedia(ctx, db, media); err != nil {
+		discardStored()
 		return nil, err
 	}
 	if triageInfo != nil {
 		if err := u.Deps.Alerts.UpdateTriage(ctx, db, alertID, triageInfo.EmergencyType, triageInfo.Severity, triageInfo.Summary); err != nil {
+			discardStored()
 			return nil, err
 		}
 	}
 	if tx != nil {
 		if err := tx.Commit().Error; err != nil {
+			discardStored()
 			return nil, err
 		}
 	}

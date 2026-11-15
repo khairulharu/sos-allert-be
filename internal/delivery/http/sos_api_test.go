@@ -361,7 +361,7 @@ func (l *memLocation) Get(ctx context.Context, userID string) (*entity.LocationC
 
 func (l *memLocation) Save(ctx context.Context, loc *entity.LocationCache) error { return nil }
 
-func (l *memLocation) GeoSearch(ctx context.Context, lng, lat, radius float64) ([]string, error) {
+func (l *memLocation) GeoSearch(ctx context.Context, lng, lat, radius float64, count int) ([]string, error) {
 	return []string{"user-b"}, nil
 }
 
@@ -714,6 +714,17 @@ func TestSOSHistoryAndSummaryAPI(t *testing.T) {
 	if history.Paging == nil || history.Paging.Page != 1 || history.Paging.Size != 20 ||
 		history.Paging.TotalItem != 2 || history.Paging.TotalPage != 1 {
 		t.Fatalf("paging = %+v", history.Paging)
+	}
+
+	// A page that would overflow the OFFSET must be a 4xx, never a silent
+	// page-1 answer.
+	for _, path := range []string{
+		"/api/sos/history?role=sent&page=9223372036854775807",
+		"/api/sos/history?role=sent&page=100001",
+	} {
+		if status, body := do(path, "sender"); status != http.StatusBadRequest {
+			t.Fatalf("%s status = %d body = %s, want 400", path, status, body)
+		}
 	}
 	if len(history.Data) != 2 || history.Data[0].AlertID != "a-active" || history.Data[1].AlertID != "a-resolved" {
 		t.Fatalf("history data = %+v", history.Data)

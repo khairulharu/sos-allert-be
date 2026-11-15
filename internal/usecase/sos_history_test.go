@@ -329,3 +329,25 @@ func TestHistoryValidation(t *testing.T) {
 		})
 	}
 }
+
+// A huge page must be rejected instead of overflowing (Page-1)*Size into
+// a negative OFFSET, which GORM drops and answers with page 1.
+func TestHistoryRejectsOverflowingPage(t *testing.T) {
+	uc, _ := historySetup(t)
+
+	for _, page := range []int{maxHistoryPage + 1, 9223372036854775807} {
+		if _, _, err := uc.ListHistory(context.Background(), &model.SearchAlertHistoryRequest{
+			UserID: "sender", Role: "sent", Page: page, Size: 20,
+		}); !errors.Is(err, fiber.ErrBadRequest) {
+			t.Fatalf("page %d error = %v, want 400", page, err)
+		}
+	}
+
+	// The same guard holds when validation is disabled entirely.
+	ucWithoutValidator := newUseCaseWithDeps(TriggerSOSDeps{Alerts: &fakeAlertRepository{}})
+	if _, _, err := ucWithoutValidator.ListHistory(context.Background(), &model.SearchAlertHistoryRequest{
+		UserID: "sender", Role: "sent", Page: 9223372036854775807, Size: 20,
+	}); !errors.Is(err, fiber.ErrBadRequest) {
+		t.Fatalf("page overflow without a validator: %v, want 400", err)
+	}
+}
