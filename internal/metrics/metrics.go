@@ -34,6 +34,11 @@ func New() *Metrics {
 }
 
 // ObserveDispatchDuration records one POST /api/sos dispatch latency.
+// Exactly one bucket is incremented: the first bound the observation
+// fits into (the le="+Inf" bucket is the observation count). Render
+// accumulates the counters once into Prometheus' cumulative form, so
+// incrementing every matching bucket here would double-count and could
+// emit `le` values larger than `count`.
 func (m *Metrics) ObserveDispatchDuration(ms float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -42,6 +47,7 @@ func (m *Metrics) ObserveDispatchDuration(ms float64) {
 	for i, b := range m.buckets {
 		if ms <= b {
 			m.bucketCounts[i]++
+			return
 		}
 	}
 }
@@ -84,8 +90,8 @@ func (m *Metrics) Render() string {
 	b.WriteString("# HELP sos_dispatch_latency_ms Dispatch latency for POST /api/sos in milliseconds.\n")
 	b.WriteString("# TYPE sos_dispatch_latency_ms histogram\n")
 	cumulative := uint64(0)
-	// Buckets are cumulative in Prometheus; our counts are per-bucket
-	// observations, so accumulate in order.
+	// Buckets are cumulative in Prometheus while bucketCounts holds one
+	// observation per bucket (non-cumulative), so accumulate in order.
 	// bucketCounts were recorded in latencyBuckets order (already sorted).
 	for i, bound := range m.buckets {
 		cumulative += buckets[i]
