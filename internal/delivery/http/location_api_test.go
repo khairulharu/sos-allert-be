@@ -71,7 +71,7 @@ func (f *fakeLocationStore) GetLastSeenBatch(ctx context.Context, userIds []stri
 	return out, nil
 }
 
-func (f *fakeLocationStore) GeoSearch(ctx context.Context, longitude, latitude, radiusMeters float64) ([]string, error) {
+func (f *fakeLocationStore) GeoSearch(ctx context.Context, longitude, latitude, radiusMeters float64, count int) ([]string, error) {
 	return nil, nil
 }
 

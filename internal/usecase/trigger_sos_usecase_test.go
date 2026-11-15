@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"fmt"
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
 	"io"
@@ -41,6 +42,7 @@ type fakeLocationRepository struct {
 	gotLongitude   float64
 	gotLatitude    float64
 	gotRadius      float64
+	gotCounts      []int
 	radii          []float64
 	geoSearchCalls int
 	saved          []*entity.LocationCache
@@ -49,6 +51,9 @@ type fakeLocationRepository struct {
 	// zero for the nearby list and the SOS fan-out.
 	lastSeenSingleCalls int
 	lastSeenBatchCalls  int
+	// lastSeenBatchMax is the largest candidate set passed to
+	// GetLastSeenBatch, so the candidate cap can be asserted.
+	lastSeenBatchMax int
 }
 
 func (f *fakeLocationRepository) Get(ctx context.Context, userId string) (*entity.LocationCache, error) {
@@ -64,19 +69,28 @@ func (f *fakeLocationRepository) Save(ctx context.Context, loc *entity.LocationC
 	return nil
 }
 
-func (f *fakeLocationRepository) GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error) {
+func (f *fakeLocationRepository) GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]string, error) {
 	f.geoSearchCalls++
 	f.gotLongitude = longitude
 	f.gotLatitude = latitude
 	f.gotRadius = radiusMeters
+	f.gotCounts = append(f.gotCounts, count)
 	f.radii = append(f.radii, radiusMeters)
 	if f.nearbyErr != nil {
 		return nil, f.nearbyErr
 	}
-	if list, ok := f.nearbyByRadius[radiusMeters]; ok {
-		return list, nil
+	var list []string
+	if byRadius, ok := f.nearbyByRadius[radiusMeters]; ok {
+		list = byRadius
+	} else {
+		list = f.nearby
 	}
-	return f.nearby, nil
+	// Emulate Redis GEOSEARCH COUNT: nearest first, so truncating keeps
+	// the closest candidates.
+	if count > 0 && len(list) > count {
+		list = list[:count]
+	}
+	return list, nil
 }
 
 func (f *fakeLocationRepository) GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error) {
@@ -105,6 +119,9 @@ func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string)
 
 func (f *fakeLocationRepository) GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error) {
 	f.lastSeenBatchCalls++
+	if len(userIds) > f.lastSeenBatchMax {
+		f.lastSeenBatchMax = len(userIds)
+	}
 	out := make(map[string]int64, len(userIds))
 	for _, id := range userIds {
 		if ts, ok := f.lastSeenMs[id]; ok {
@@ -895,5 +912,55 @@ func TestDispatchLatencyExcludesGracePeriod(t *testing.T) {
 	if sample >= float64(uc.Deps.GracePeriod.Milliseconds()) {
 		t.Fatalf("dispatch latency = %v ms, want the send time only (grace period = %v ms)",
 			sample, uc.Deps.GracePeriod.Milliseconds())
+	}
+}
+
+// findRecipients used to pull every user in the radius and run an HMGET
+// over all of them: the candidate set must be bounded (MaxRecipients*4)
+// both at Redis (GEOSEARCH COUNT) and before the last-seen batch, while
+// still returning the closest fresh recipients.
+func TestFindRecipientsCapsCandidates(t *testing.T) {
+	uc, locRepo, _, _ := triggerSetup(t)
+
+	nearby := []string{"sender"}
+	lastSeen := map[string]int64{"sender": freshLastSeen()}
+	for i := 0; i < 500; i++ {
+		id := fmt.Sprintf("u%03d", i)
+		nearby = append(nearby, id)
+		if i < 60 {
+			// Stale users still occupy candidate slots; the cap must not
+			// hide the fresh users behind them.
+			lastSeen[id] = staleLastSeen()
+			continue
+		}
+		lastSeen[id] = freshLastSeen()
+	}
+	locRepo.nearby = nearby
+	locRepo.lastSeenMs = lastSeen
+
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("ExecuteWithRequest error = %v", err)
+	}
+
+	wantCandidates := uc.Deps.MaxRecipients * 4
+	if len(locRepo.gotCounts) == 0 {
+		t.Fatal("GeoSearch was not called")
+	}
+	if got := locRepo.gotCounts[0]; got != wantCandidates+1 {
+		t.Fatalf("GeoSearch count = %d, want %d (cap + sender slot)", got, wantCandidates+1)
+	}
+	if locRepo.lastSeenBatchMax > wantCandidates {
+		t.Fatalf("GetLastSeenBatch got %d candidates, want at most %d", locRepo.lastSeenBatchMax, wantCandidates)
+	}
+	if len(result.Recipients) != uc.Deps.MaxRecipients {
+		t.Fatalf("recipients = %d, want the cap %d", len(result.Recipients), uc.Deps.MaxRecipients)
+	}
+	// Nearest first, stale skipped: the first 60 candidates are stale.
+	if result.Recipients[0] != "u060" {
+		t.Fatalf("first recipient = %q, want u060 (closest fresh candidate)", result.Recipients[0])
+	}
+	if last := result.Recipients[len(result.Recipients)-1]; last != "u109" {
+		t.Fatalf("last recipient = %q, want u109", last)
 	}
 }
