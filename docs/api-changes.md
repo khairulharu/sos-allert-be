@@ -371,6 +371,24 @@ Catatan tambahan:
 - `409` hanya muncul untuk retry milik user itu sendiri ketika trigger pertama
   masih berjalan (key sudah diklaim, hasil belum tersimpan).
 
+## Klaim idempotency dilepas saat trigger gagal (#36)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku.
+
+- Sebelumnya, trigger yang gagal (lokasi tidak ada, `GEOSEARCH` error, gagal
+  tulis DB, gagal cari penerima) meninggalkan klaim `pending` selama TTL 5
+  menit, sehingga retry dengan key yang sama dijawab `409` padahal belum ada
+  alert yang dibuat.
+- Sekarang klaim dilepas pada setiap kegagalan sebelum hasil tersimpan: retry
+  dengan `X-Idempotency-Key` yang sama setelah percobaan gagal akan diproses
+  normal dan mengembalikan `201` (bukan `409`).
+- Klaim hanya dilepas selama nilainya masih `pending` (compare-and-delete),
+  jadi hasil trigger yang sudah selesai tidak pernah terhapus dan tetap
+  di-replay seperti sebelumnya.
+- Klien tidak perlu mengubah apa pun: key yang sama tetap aman dipakai ulang
+  untuk retry setelah error jaringan/server.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai
