@@ -689,10 +689,15 @@ func TestEmergencyContactsKeepLegacyRowsReadable(t *testing.T) {
 }
 
 type fakeMediaStorage struct {
-	files map[string][]byte
+	files   map[string][]byte
+	deleted []string
+	saveErr error
 }
 
 func (f *fakeMediaStorage) Save(ctx context.Context, filename string, r io.Reader) (string, error) {
+	if f.saveErr != nil {
+		return "", f.saveErr
+	}
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", err
@@ -711,6 +716,12 @@ func (f *fakeMediaStorage) Open(ctx context.Context, path string) (io.ReadCloser
 		return nil, errors.New("media file not found")
 	}
 	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func (f *fakeMediaStorage) Delete(ctx context.Context, path string) error {
+	f.deleted = append(f.deleted, path)
+	delete(f.files, path)
+	return nil
 }
 
 func TestAcknowledgeRejectsOutsider(t *testing.T) {
@@ -1119,5 +1130,185 @@ func TestRunActiveSOSGaugeRecomputesFromStore(t *testing.T) {
 	}
 	if got := met.value(); got != 2 {
 		t.Fatalf("active_sos_count = %d, want 2", got)
+	}
+}
+
+// A multipart filename is client-controlled: path separators must not
+// reach the storage layer and an over-long name must not fail the
+// VARCHAR(255) insert (which surfaced as a 500).
+func TestUploadMediaSanitizesFilename(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+
+	up, err := uc.UploadMedia(context.Background(), "sender", alertID,
+		"../../etc/passwd\x00.wav", "audio/wav", 4, strings.NewReader("data"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.Filename != "passwd.wav" {
+		t.Fatalf("stored filename = %q, want passwd.wav", up.Filename)
+	}
+
+	longName := strings.Repeat("a", 300) + ".m4a"
+	up, err = uc.UploadMedia(context.Background(), "sender", alertID,
+		longName, "audio/mp4", 4, strings.NewReader("data"))
+	if err != nil {
+		t.Fatalf("UploadMedia with a long name error = %v", err)
+	}
+	runes := []rune(up.Filename)
+	if len(runes) != maxMediaFilenameRunes {
+		t.Fatalf("stored filename has %d runes, want %d", len(runes), maxMediaFilenameRunes)
+	}
+	if !strings.HasSuffix(up.Filename, ".m4a") {
+		t.Fatalf("stored filename = %q, want the extension kept", up.Filename)
+	}
+	if got := len(alertRepo.media[alertID]); got != 2 {
+		t.Fatalf("stored media rows = %d, want 2", got)
+	}
+}
+
+func TestUploadMediaRejectsUnusableFilename(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+
+	for _, name := range []string{"", "   ", "/", "..", "\x00"} {
+		_, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+			name, "audio/wav", 4, strings.NewReader("data"))
+		if !errors.Is(err, fiber.ErrBadRequest) {
+			t.Fatalf("filename %q error = %v, want 400", name, err)
+		}
+	}
+	if len(store.files) != 0 {
+		t.Fatalf("nothing may be written for an invalid filename: %v", store.files)
+	}
+	if len(alertRepo.media[created.Alert.ID]) != 0 {
+		t.Fatal("no media row may be created for an invalid filename")
+	}
+}
+
+// The bytes are written before the row; a failed insert must not leave
+// an orphan file on disk.
+func TestUploadMediaDeletesFileWhenInsertFails(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	alertRepo.createMediaErr = errors.New("insert failed")
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+
+	if _, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"panic.m4a", "audio/mp4", 5, strings.NewReader("voice")); err == nil {
+		t.Fatal("a failed media insert must be reported")
+	}
+	if len(store.deleted) != 1 {
+		t.Fatalf("deleted = %v, want the written file removed", store.deleted)
+	}
+	if len(store.files) != 0 {
+		t.Fatalf("stored files = %v, want none left behind", store.files)
+	}
+}
+
+// A client timestamp far in the future would sort above every later
+// breadcrumb and pin latest_location to it forever.
+func TestAddBreadcrumbClampsFutureTimestamp(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+	lat, lng := -6.2092, 106.8462
+
+	future := time.Now().Add(6 * time.Hour).UnixMilli()
+	crumb, err := uc.AddBreadcrumb(context.Background(), "sender", alertID, &model.BreadcrumbRequest{
+		Latitude: &lat, Longitude: &lng, Timestamp: &future,
+	})
+	if err != nil {
+		t.Fatalf("future timestamp error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if crumb.RecordedAt > now+breadcrumbFutureSkewMs {
+		t.Fatalf("RecordedAt = %d, want it clamped to ~now (%d)", crumb.RecordedAt, now)
+	}
+
+	// A later heartbeat must become the latest location, not the clamp.
+	lat2, lng2 := -6.2100, 106.8470
+	later := now
+	if _, err := uc.AddBreadcrumb(context.Background(), "sender", alertID, &model.BreadcrumbRequest{
+		Latitude: &lat2, Longitude: &lng2, Timestamp: &later,
+	}); err != nil {
+		t.Fatalf("second breadcrumb error = %v", err)
+	}
+	latest, err := alertRepo.LatestBreadcrumb(context.Background(), nil, alertID)
+	if err != nil {
+		t.Fatalf("LatestBreadcrumb error = %v", err)
+	}
+	if latest == nil || latest.Latitude != lat2 {
+		t.Fatalf("latest breadcrumb = %+v, want the newer heartbeat", latest)
+	}
+}
+
+func TestAddBreadcrumbAcceptsStaleButValidTimestamp(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	lat, lng := -6.2092, 106.8462
+	stale := time.Now().Add(-5 * time.Minute).UnixMilli()
+
+	crumb, err := uc.AddBreadcrumb(context.Background(), "sender", created.Alert.ID, &model.BreadcrumbRequest{
+		Latitude: &lat, Longitude: &lng, Timestamp: &stale,
+	})
+	if err != nil {
+		t.Fatalf("stale timestamp error = %v", err)
+	}
+	if crumb.RecordedAt != stale {
+		t.Fatalf("RecordedAt = %d, want the client timestamp %d kept", crumb.RecordedAt, stale)
+	}
+	crumbs := alertRepo.breadcrumbs[created.Alert.ID]
+	if len(crumbs) != 1 || crumbs[0].RecordedAt != stale {
+		t.Fatalf("stored breadcrumbs = %+v, want the client timestamp", crumbs)
+	}
+
+	// Within the tolerated skew a slightly fast client clock is kept.
+	skewed := time.Now().Add(30 * time.Second).UnixMilli()
+	if _, err := uc.AddBreadcrumb(context.Background(), "sender", created.Alert.ID, &model.BreadcrumbRequest{
+		Latitude: &lat, Longitude: &lng, Timestamp: &skewed,
+	}); err != nil {
+		t.Fatalf("slightly future timestamp error = %v", err)
+	}
+}
+
+func TestAddBreadcrumbRejectsAbsurdlyOldTimestamp(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	lat, lng := -6.2092, 106.8462
+	for _, ts := range []int64{0, -1, time.Now().Add(-48 * time.Hour).UnixMilli()} {
+		value := ts
+		if _, err := uc.AddBreadcrumb(context.Background(), "sender", created.Alert.ID, &model.BreadcrumbRequest{
+			Latitude: &lat, Longitude: &lng, Timestamp: &value,
+		}); !errors.Is(err, fiber.ErrBadRequest) {
+			t.Fatalf("timestamp %d error = %v, want 400", ts, err)
+		}
+	}
+	if len(alertRepo.breadcrumbs[created.Alert.ID]) != 0 {
+		t.Fatal("no breadcrumb may be stored for a rejected timestamp")
 	}
 }

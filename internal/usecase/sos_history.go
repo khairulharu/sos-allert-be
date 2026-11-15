@@ -9,6 +9,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// maxHistoryPage bounds the paging OFFSET (page * size must stay far
+// below the int range so the multiplication cannot overflow).
+const maxHistoryPage = 100000
+
 // ListHistory returns one page of the caller's incident history plus the
 // total row count behind the paging metadata. role=sent lists incidents
 // the caller triggered; role=received lists incidents they were notified
@@ -29,6 +33,11 @@ func (u *TriggerSOSUseCase) ListHistory(ctx context.Context, request *model.Sear
 	// Limit(0) into "no limit" and a zero Page into a negative OFFSET.
 	if request.Page < 1 {
 		request.Page = 1
+	}
+	// (Page-1)*Size must not overflow: a negative OFFSET makes GORM drop
+	// the clause and answer with page 1, which hides the mistake.
+	if request.Page > maxHistoryPage {
+		return nil, 0, fiber.ErrBadRequest
 	}
 	if request.Size < 1 || request.Size > 100 {
 		request.Size = 20

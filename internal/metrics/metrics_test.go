@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,5 +63,81 @@ func TestRender(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("render missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestRenderHistogramIsCumulativeOnce guards against the double-cumulative
+// bug: ObserveDispatchDuration used to increment every bucket the
+// observation fit into, and Render accumulated them again.
+func TestRenderHistogramIsCumulativeOnce(t *testing.T) {
+	m := New()
+	m.ObserveDispatchDuration(120)
+	m.ObserveDispatchDuration(300)
+	out := m.Render()
+
+	want := map[string]string{
+		"50":   "0",
+		"100":  "0",
+		"150":  "1",
+		"200":  "1",
+		"500":  "2",
+		"1000": "2",
+		"2000": "2",
+		"+Inf": "2",
+	}
+	got := map[string]uint64{}
+	for _, bound := range []string{"50", "100", "150", "200", "500", "1000", "2000", "+Inf"} {
+		line := `sos_dispatch_latency_ms_bucket{le="` + bound + `"} `
+		idx := strings.Index(out, line)
+		if idx < 0 {
+			t.Fatalf("render missing %q:\n%s", line, out)
+		}
+		rest := out[idx+len(line):]
+		end := strings.IndexByte(rest, '\n')
+		if end < 0 {
+			end = len(rest)
+		}
+		var value uint64
+		if _, err := fmt.Sscanf(rest[:end], "%d", &value); err != nil {
+			t.Fatalf("bucket le=%q value %q is not an integer: %v", bound, rest[:end], err)
+		}
+		got[bound] = value
+		if fmt.Sprint(value) != want[bound] {
+			t.Errorf("bucket le=%q = %d, want %s", bound, value, want[bound])
+		}
+	}
+
+	// Cumulative buckets must be monotonic and never exceed count.
+	order := []string{"50", "100", "150", "200", "500", "1000", "2000", "+Inf"}
+	for i := 1; i < len(order); i++ {
+		if got[order[i]] < got[order[i-1]] {
+			t.Fatalf("buckets are not monotonic: %v", got)
+		}
+	}
+	if !strings.Contains(out, fmt.Sprintf("sos_dispatch_latency_ms_count %d", got["+Inf"])) {
+		t.Fatalf("+Inf bucket does not match count:\n%s", out)
+	}
+}
+
+func TestObserveDispatchDurationCountsOneBucket(t *testing.T) {
+	m := New()
+	m.ObserveDispatchDuration(30)   // le=50
+	m.ObserveDispatchDuration(4000) // above every bound: +Inf only
+	m.mu.Lock()
+	counts, count := append([]uint64(nil), m.bucketCounts...), m.dispatchCount
+	m.mu.Unlock()
+
+	total := uint64(0)
+	for _, c := range counts {
+		total += c
+	}
+	if total != 1 {
+		t.Fatalf("bucket counters sum to %d, want 1 (only the 30 ms observation is bounded)", total)
+	}
+	if counts[0] != 1 {
+		t.Fatalf("le=50 counter = %d, want 1", counts[0])
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
 	}
 }

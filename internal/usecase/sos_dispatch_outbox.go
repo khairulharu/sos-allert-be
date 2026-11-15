@@ -148,7 +148,7 @@ func (u *TriggerSOSUseCase) dispatchDueAlert(ctx context.Context, due *entity.Al
 		Summary:       summary,
 	}
 
-	u.sendFanout(alertCtx, event, recipients, alertModel, degraded, time.Now())
+	u.sendFanout(alertCtx, event, recipients, alertModel, degraded)
 	// At-least-once: if this mark fails the next tick re-sends.
 	u.markDispatched(alertCtx, alert.ID)
 	return true

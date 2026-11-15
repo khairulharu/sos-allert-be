@@ -60,4 +60,12 @@ func normalizeLegacyKeys(config *viper.Viper) {
 	// logrus level 0 is PanicLevel, which hides the Warnf logs that make
 	// Redis/location failures diagnosable. Default to Info when unset.
 	config.SetDefault("log.level", 4)
+
+	// database.pool.* holds database/sql connection-pool settings where 0
+	// means "unlimited open/idle connections" / "never recycle". Default
+	// them here; NewDatabase also warns and falls back when a config file
+	// sets 0 explicitly (an explicit 0 wins over a viper default).
+	config.SetDefault("database.pool.idle", defaultPoolIdle)
+	config.SetDefault("database.pool.max", defaultPoolMax)
+	config.SetDefault("database.pool.lifetime", defaultPoolLifetime)
 }

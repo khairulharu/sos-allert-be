@@ -29,7 +29,9 @@ const idempotencyReleaseTimeout = 2 * time.Second
 type LocationRepository interface {
 	Get(ctx context.Context, userId string) (*entity.LocationCache, error)
 	Save(ctx context.Context, loc *entity.LocationCache) error
-	GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64) ([]string, error)
+	// GeoSearch returns user ids inside radiusMeters, nearest first,
+	// limited to count results when count > 0.
+	GeoSearch(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]string, error)
 	GeoSearchWithDistance(ctx context.Context, longitude float64, latitude float64, radiusMeters float64, count int) ([]entity.GeoLocation, error)
 	GetLastSeen(ctx context.Context, userId string) (int64, error)
 	GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error)
@@ -204,7 +206,6 @@ func (u *TriggerSOSUseCase) Execute(ctx context.Context, senderID string) (*mode
 // ExecuteWithRequest records the alert, finds active recipients with the
 // adaptive radius, and dispatches (after the grace period when set).
 func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID string, req *model.TriggerSOSRequest, idempotencyKey string) (*model.TriggerSOSResult, error) {
-	startedAt := time.Now()
 	if req == nil {
 		req = &model.TriggerSOSRequest{}
 	}
@@ -447,7 +448,7 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 			ClientSeverity: req.ClientSeverity,
 			ClientSummary:  req.ClientSummary,
 		}
-		u.sendFanout(dispatchCtx, event, recipients, alertModel, fanoutDegraded, startedAt)
+		u.sendFanout(dispatchCtx, event, recipients, alertModel, fanoutDegraded)
 	}
 
 	if u.Deps.GracePeriod > 0 {
@@ -471,22 +472,28 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 // the dispatch metric. The inline trigger path and the durable outbox loop
 // share it so both degrade identically.
 //
+// The latency is measured from just before the publish/notify call, not
+// from the request: the outbox runs after the grace period, and measuring
+// from the trigger would always report the grace period itself (#43).
+//
 // An empty recipient list is expected after a failed lookup (#37): the
 // dispatcher then skips push and still runs the emergency-contact SMS
 // fallback. A published event normally replaces the direct notify, but
-// after a degraded fan-out the worker has no responder to reach and no
-// contact resolver, so the local dispatcher still runs.
-func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent, recipients []string, alert model.Alert, degraded bool, startedAt time.Time) {
+// after a degraded fan-out the local dispatcher still runs so the contacts
+// are reached even if the worker has no responder to notify.
+func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent, recipients []string, alert model.Alert, degraded bool) {
+	sentAt := time.Now()
 	published := false
 	if u.Deps.Publisher != nil {
 		if err := u.Deps.Publisher.Send(ctx, event); err == nil {
 			published = true
 		} else {
 			u.Log.Warn("Kafka publish failed, falling back to direct notify")
+			sentAt = time.Now()
 		}
 	}
 	if published && !degraded {
-		u.recordDispatch(startedAt)
+		u.recordDispatch(sentAt)
 		return
 	}
 	if u.Deps.Notifier != nil {
@@ -494,12 +501,14 @@ func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent
 			u.Log.WithError(err).Error("failed to notify recipients")
 		}
 	}
-	u.recordDispatch(startedAt)
+	u.recordDispatch(sentAt)
 }
 
-func (u *TriggerSOSUseCase) recordDispatch(startedAt time.Time) {
+// recordDispatch reports the notification-send latency; sentAt is taken
+// immediately before the publish/notify call.
+func (u *TriggerSOSUseCase) recordDispatch(sentAt time.Time) {
 	if u.Deps.Metrics != nil {
-		u.Deps.Metrics.ObserveDispatchDuration(float64(time.Since(startedAt).Milliseconds()))
+		u.Deps.Metrics.ObserveDispatchDuration(float64(time.Since(sentAt).Milliseconds()))
 	}
 }
 
@@ -640,11 +649,21 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 		startIndex = len(u.Deps.Radii) - 1
 	}
 	now := time.Now().UnixMilli()
+	// Bound the candidate set pulled from Redis: GeoSearch is unbounded
+	// otherwise and GetLastSeenBatch would run an HMGET over every user
+	// in the radius. A few times the fan-out cap leaves room for stale
+	// and already-seen candidates while still returning the closest
+	// fresh recipients.
+	maxCandidates := u.Deps.MaxRecipients * 4
+	if maxCandidates < u.Deps.MaxRecipients {
+		maxCandidates = u.Deps.MaxRecipients
+	}
 	var recipients []string
 	usedRadius := u.widestRadius()
 	for _, radius := range u.Deps.Radii[startIndex:] {
 		usedRadius = radius
-		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius)
+		// +1 so the sender (excluded below) cannot eat a candidate slot.
+		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius, maxCandidates+1)
 		if err != nil {
 			return nil, usedRadius, fmt.Errorf("search nearby users: %w", err)
 		}
@@ -659,6 +678,9 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 			}
 			seen[userID] = struct{}{}
 			candidates = append(candidates, userID)
+			if len(candidates) >= maxCandidates {
+				break
+			}
 		}
 		// One HMGET per radius instead of one HGET per candidate: the
 		// old loop paid a Redis round trip per nearby user.

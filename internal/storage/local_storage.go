@@ -47,20 +47,44 @@ func (s *LocalStorage) Save(ctx context.Context, filename string, r io.Reader) (
 // storage root so a corrupted DB row cannot read arbitrary files.
 func (s *LocalStorage) Open(ctx context.Context, path string) (io.ReadCloser, error) {
 	_ = ctx
-	root, err := filepath.Abs(s.Dir)
+	target, err := s.resolve(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve storage dir: %w", err)
-	}
-	target, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("resolve storage path: %w", err)
-	}
-	if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
-		return nil, fmt.Errorf("storage path %q escapes %q", target, root)
+		return nil, err
 	}
 	f, err := os.Open(target)
 	if err != nil {
 		return nil, fmt.Errorf("open storage file: %w", err)
 	}
 	return f, nil
+}
+
+// Delete removes a stored file. It is used to drop an upload whose
+// metadata insert failed, so no orphan bytes are left on disk. A file
+// that is already gone is not an error.
+func (s *LocalStorage) Delete(ctx context.Context, path string) error {
+	_ = ctx
+	target, err := s.resolve(path)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete storage file: %w", err)
+	}
+	return nil
+}
+
+// resolve maps a stored path to an absolute path inside the storage root.
+func (s *LocalStorage) resolve(path string) (string, error) {
+	root, err := filepath.Abs(s.Dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve storage dir: %w", err)
+	}
+	target, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve storage path: %w", err)
+	}
+	if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
+		return "", fmt.Errorf("storage path %q escapes %q", target, root)
+	}
+	return target, nil
 }

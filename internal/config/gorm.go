@@ -17,10 +17,12 @@ func NewDatabase(viper *viper.Viper, log *logrus.Logger) *gorm.DB {
 	host := viper.GetString("database.host")
 	port := viper.GetInt("database.port")
 	database := viper.GetString("database.name")
-	idleConnection := viper.GetInt("database.pool.idle")
-	maxConnection := viper.GetInt("database.pool.max")
-	maxLifeTimeConnection := viper.GetInt("database.pool.lifetime")
+	idleConnection := poolValue(log, viper.GetInt("database.pool.idle"), defaultPoolIdle, "database.pool.idle")
+	maxConnection := poolValue(log, viper.GetInt("database.pool.max"), defaultPoolMax, "database.pool.max")
+	maxLifeTimeConnection := poolValue(log, viper.GetInt("database.pool.lifetime"), defaultPoolLifetime, "database.pool.lifetime")
 
+	// TLS is NOT implemented: the DSN below has no tls parameter, so the
+	// MySQL connection is plain (or provider-terminated, e.g. Aiven).
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local", username, password, host, port, database)
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
@@ -46,6 +48,27 @@ func NewDatabase(viper *viper.Viper, log *logrus.Logger) *gorm.DB {
 	connection.SetConnMaxLifetime(time.Second * time.Duration(maxLifeTimeConnection))
 
 	return db
+}
+
+// Database pool fallbacks. database/sql treats 0 as "unlimited open/idle
+// connections", and a 0 lifetime means connections are never recycled, so
+// an unset or explicitly zero pool setting is replaced by these values.
+const (
+	defaultPoolIdle     = 10
+	defaultPoolMax      = 100
+	defaultPoolLifetime = 300 // seconds
+)
+
+// poolValue returns the configured pool setting, warning and falling back
+// to the sane default when it is zero (or negative).
+func poolValue(log *logrus.Logger, configured, fallback int, key string) int {
+	if configured > 0 {
+		return configured
+	}
+	if log != nil {
+		log.Warnf("%s is %d; using %d (0 means unlimited connections / no connection recycling)", key, configured, fallback)
+	}
+	return fallback
 }
 
 type logrusWriter struct {

@@ -68,3 +68,37 @@ func TestNormalizeLegacyKeysPreservesNewKeys(t *testing.T) {
 		t.Fatalf("log.level = %d, want 6", got)
 	}
 }
+
+func TestNormalizeLegacyKeysDefaultsDatabasePool(t *testing.T) {
+	config := viper.New()
+	normalizeLegacyKeys(config)
+
+	if got := config.GetInt("database.pool.idle"); got != defaultPoolIdle {
+		t.Fatalf("database.pool.idle = %d, want %d", got, defaultPoolIdle)
+	}
+	if got := config.GetInt("database.pool.max"); got != defaultPoolMax {
+		t.Fatalf("database.pool.max = %d, want %d", got, defaultPoolMax)
+	}
+	if got := config.GetInt("database.pool.lifetime"); got != defaultPoolLifetime {
+		t.Fatalf("database.pool.lifetime = %d, want %d", got, defaultPoolLifetime)
+	}
+}
+
+func TestNormalizeLegacyKeysKeepsConfiguredDatabasePool(t *testing.T) {
+	config := viper.New()
+	config.Set("database.pool.idle", 3)
+	config.Set("database.pool.max", 7)
+	config.Set("database.pool.lifetime", 60)
+
+	normalizeLegacyKeys(config)
+
+	if got := config.GetInt("database.pool.idle"); got != 3 {
+		t.Fatalf("database.pool.idle = %d, want 3", got)
+	}
+	if got := config.GetInt("database.pool.max"); got != 7 {
+		t.Fatalf("database.pool.max = %d, want 7", got)
+	}
+	if got := config.GetInt("database.pool.lifetime"); got != 60 {
+		t.Fatalf("database.pool.lifetime = %d, want 60", got)
+	}
+}

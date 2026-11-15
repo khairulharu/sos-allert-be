@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
@@ -324,13 +326,31 @@ func recipientHistoryQuery(ctx context.Context, db *gorm.DB, userID string) *gor
 		Where("r.user_id = ?", userID)
 }
 
+// historyOffset computes the SQL OFFSET for a history page. The
+// multiplication is checked: an overflowing (or negative) OFFSET makes
+// GORM silently drop the clause and answer with page 1, so it is
+// reported instead.
+func historyOffset(req *model.SearchAlertHistoryRequest) (int, error) {
+	if req.Page < 1 || req.Size < 1 {
+		return 0, fmt.Errorf("invalid paging: page=%d size=%d", req.Page, req.Size)
+	}
+	if req.Page > math.MaxInt/req.Size {
+		return 0, fmt.Errorf("paging overflow: page=%d size=%d", req.Page, req.Size)
+	}
+	return (req.Page - 1) * req.Size, nil
+}
+
 // ListHistoryBySender returns one page of the caller's sent incidents
 // (all statuses) plus the total row count, newest first.
 func (a *AlertRepository) ListHistoryBySender(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error) {
+	offset, err := historyOffset(req)
+	if err != nil {
+		return nil, 0, err
+	}
 	var out []*entity.Alert
 	if err := applyAlertHistoryFilter(senderHistoryQuery(ctx, db, req.UserID), req).
 		Order("alerts.triggered_at DESC, alerts.id DESC").
-		Offset((req.Page - 1) * req.Size).Limit(req.Size).
+		Offset(offset).Limit(req.Size).
 		Find(&out).Error; err != nil {
 		return nil, 0, err
 	}
@@ -347,11 +367,15 @@ func (a *AlertRepository) ListHistoryBySender(ctx context.Context, db *gorm.DB, 
 // was notified for, plus the total. The sender never enters
 // alert_recipients, so a user's own alerts are never listed here.
 func (a *AlertRepository) ListHistoryForRecipient(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error) {
+	offset, err := historyOffset(req)
+	if err != nil {
+		return nil, 0, err
+	}
 	var out []*entity.Alert
 	if err := applyAlertHistoryFilter(recipientHistoryQuery(ctx, db, req.UserID), req).
 		Select("alerts.*").
 		Order("alerts.triggered_at DESC, alerts.id DESC").
-		Offset((req.Page - 1) * req.Size).Limit(req.Size).
+		Offset(offset).Limit(req.Size).
 		Find(&out).Error; err != nil {
 		return nil, 0, err
 	}
