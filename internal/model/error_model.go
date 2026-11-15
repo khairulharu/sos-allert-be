@@ -21,6 +21,18 @@ var (
 	ErrStorageNotConfigured = errors.New("media storage is not configured")
 	ErrMediaNotFound        = errors.New("media not found")
 
+	// Emergency-contact validation. The phone number becomes an SMS
+	// target (billable toll fraud), so it must be a real E.164 number and
+	// each user only gets a small, deduplicated list.
+	ErrInvalidPhoneNumber        = errors.New("phone number must be in E.164 format, e.g. +6281234567890")
+	ErrTooManyEmergencyContacts  = errors.New("too many emergency contacts (max 10)")
+	ErrDuplicateEmergencyContact = errors.New("this phone number is already an emergency contact")
+
+	// ErrPushEndpointOwned is returned when a browser push endpoint is
+	// already registered to another user; re-pointing it would let anyone
+	// who learns an endpoint receive (or hijack) that user's pushes.
+	ErrPushEndpointOwned = errors.New("push endpoint is already registered to another user")
+
 	// Audio transcription errors for POST /api/sos/classify.
 	ErrTranscriptionNotConfigured = errors.New("audio transcription is not configured")
 	ErrTranscriptionFailed        = errors.New("audio transcription failed")

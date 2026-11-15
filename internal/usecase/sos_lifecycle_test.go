@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -473,8 +474,8 @@ func TestMediaUploadListAndDownload(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].ID != up.ID {
 		t.Fatalf("list = %+v, err = %v", list, err)
 	}
-	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-outside", alertID, up.ID); !errors.Is(err, model.ErrNotAlertParticipant) {
-		t.Fatalf("outsider open error = %v, want ErrNotAlertParticipant", err)
+	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-outside", alertID, up.ID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("outsider open error = %v, want ErrAlertNotFound (same as an unknown id)", err)
 	}
 	lat, lng := -6.21, 106.85
 	if _, err := uc.Respond(context.Background(), "user-b", alertID, &model.RespondSOSRequest{
@@ -493,6 +494,38 @@ func TestMediaUploadListAndDownload(t *testing.T) {
 	}
 	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-b", alertID, "missing"); !errors.Is(err, model.ErrMediaNotFound) {
 		t.Fatalf("missing media error = %v, want ErrMediaNotFound", err)
+	}
+}
+
+// The read-only tracking paths (breadcrumbs, live stream auth) must answer
+// like an unknown id for a non-participant, so they cannot be used to probe
+// which alert ids exist.
+func TestReadPathsHideForeignAlerts(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+
+	if _, err := uc.ListBreadcrumbs(context.Background(), "stranger", alertID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("stranger breadcrumbs error = %v, want ErrAlertNotFound", err)
+	}
+	if _, err := uc.ListBreadcrumbs(context.Background(), "stranger", "no-such-alert"); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("unknown-id breadcrumbs error = %v, want ErrAlertNotFound", err)
+	}
+	if err := uc.AuthorizeTracking(context.Background(), "stranger", alertID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("stranger tracking auth error = %v, want ErrAlertNotFound", err)
+	}
+	if err := uc.AuthorizeTracking(context.Background(), "stranger", "no-such-alert"); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("unknown-id tracking auth error = %v, want ErrAlertNotFound", err)
+	}
+	// The participant happy paths are unchanged.
+	if err := uc.AuthorizeTracking(context.Background(), "sender", alertID); err != nil {
+		t.Fatalf("sender tracking auth error = %v, want nil", err)
+	}
+	if _, err := uc.ListBreadcrumbs(context.Background(), "sender", alertID); err != nil {
+		t.Fatalf("sender breadcrumbs error = %v, want nil", err)
 	}
 }
 
@@ -534,6 +567,106 @@ func TestEmergencyContactCRUD(t *testing.T) {
 	list, err := uc.ListEmergencyContacts(context.Background(), "sender")
 	if err != nil || len(list) != 1 || list[0].ID != created.ID {
 		t.Fatalf("list = %+v, err = %v", list, err)
+	}
+}
+
+// A contact phone becomes a billable SMS target, so only real E.164
+// numbers may be stored.
+func TestEmergencyContactRejectsInvalidPhoneNumbers(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	contacts := &fakeEmergencyContacts{}
+	uc.Deps.EmergencyContacts = contacts
+
+	create := func(phone string) error {
+		_, err := uc.CreateEmergencyContact(context.Background(), &model.CreateEmergencyContactRequest{
+			UserID: "sender", ContactName: "Ibu", PhoneNumber: phone, Relationship: "Mother",
+		})
+		return err
+	}
+
+	for _, phone := range []string{
+		"abc",               // not a number at all
+		"1234",              // premium short code
+		"081234567890",      // national format, no country code
+		"+123",              // too short
+		"+6281234567890123", // too long (17 digits)
+		"++6281234567890",   // double plus
+	} {
+		if err := create(phone); !errors.Is(err, model.ErrInvalidPhoneNumber) {
+			t.Fatalf("create(%q) error = %v, want ErrInvalidPhoneNumber", phone, err)
+		}
+	}
+	if len(contacts.contacts) != 0 {
+		t.Fatalf("invalid numbers were persisted: %+v", contacts.contacts)
+	}
+
+	// A human-formatted number is accepted and stored canonically.
+	first, err := uc.CreateEmergencyContact(context.Background(), &model.CreateEmergencyContactRequest{
+		UserID: "sender", ContactName: "Ibu", PhoneNumber: "+62 812-3456-7890", Relationship: "Mother",
+	})
+	if err != nil {
+		t.Fatalf("create formatted number error = %v", err)
+	}
+	if first.PhoneNumber != "+6281234567890" {
+		t.Fatalf("stored phone = %q, want canonical E.164", first.PhoneNumber)
+	}
+
+	// The same number in another format is a duplicate for this user.
+	if err := create("+62 812 3456 7890"); !errors.Is(err, model.ErrDuplicateEmergencyContact) {
+		t.Fatalf("duplicate error = %v, want ErrDuplicateEmergencyContact", err)
+	}
+}
+
+func TestEmergencyContactRejectsEleventhContact(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	contacts := &fakeEmergencyContacts{}
+	uc.Deps.EmergencyContacts = contacts
+
+	for i := 0; i < maxEmergencyContactsPerUser; i++ {
+		if _, err := uc.CreateEmergencyContact(context.Background(), &model.CreateEmergencyContactRequest{
+			UserID: "sender", ContactName: fmt.Sprintf("Contact %d", i),
+			PhoneNumber: fmt.Sprintf("+62812345%04d", i), Relationship: "Friend",
+		}); err != nil {
+			t.Fatalf("create contact %d error = %v", i, err)
+		}
+	}
+	if _, err := uc.CreateEmergencyContact(context.Background(), &model.CreateEmergencyContactRequest{
+		UserID: "sender", ContactName: "Eleventh", PhoneNumber: "+628999999999", Relationship: "Friend",
+	}); !errors.Is(err, model.ErrTooManyEmergencyContacts) {
+		t.Fatalf("eleventh contact error = %v, want ErrTooManyEmergencyContacts", err)
+	}
+	if len(contacts.contacts) != maxEmergencyContactsPerUser {
+		t.Fatalf("stored contacts = %d, want %d", len(contacts.contacts), maxEmergencyContactsPerUser)
+	}
+
+	// The cap is per user, not global.
+	if _, err := uc.CreateEmergencyContact(context.Background(), &model.CreateEmergencyContactRequest{
+		UserID: "other", ContactName: "Ibu", PhoneNumber: "+628123450000", Relationship: "Mother",
+	}); err != nil {
+		t.Fatalf("contact for another user error = %v", err)
+	}
+}
+
+// Rows stored before the E.164 rule must stay readable and must not block
+// a new valid contact.
+func TestEmergencyContactsKeepLegacyRowsReadable(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	contacts := &fakeEmergencyContacts{contacts: []*entity.EmergencyContact{
+		{ID: "legacy", UserID: "sender", ContactName: "Old", PhoneNumber: "0812-ABC", Relationship: "Friend"},
+	}}
+	uc.Deps.EmergencyContacts = contacts
+
+	list, err := uc.ListEmergencyContacts(context.Background(), "sender")
+	if err != nil || len(list) != 1 || list[0].PhoneNumber != "0812-ABC" {
+		t.Fatalf("legacy list = %+v, err = %v", list, err)
+	}
+	if _, err := uc.CreateEmergencyContact(context.Background(), &model.CreateEmergencyContactRequest{
+		UserID: "sender", ContactName: "Ibu", PhoneNumber: "+6281234567890", Relationship: "Mother",
+	}); err != nil {
+		t.Fatalf("create alongside a legacy row error = %v", err)
+	}
+	if list, err = uc.ListEmergencyContacts(context.Background(), "sender"); err != nil || len(list) != 2 {
+		t.Fatalf("list after create = %+v, err = %v", list, err)
 	}
 }
 

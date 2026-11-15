@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -66,6 +67,11 @@ func (u *PushUseCase) Subscribe(ctx context.Context, req *model.PushSubscribeReq
 		UpdatedAt: now,
 	}
 	if err := u.Subs.Upsert(ctx, sub); err != nil {
+		// The endpoint is bound to the browser that registered it first;
+		// anyone else who learns it cannot take the subscription over.
+		if errors.Is(err, model.ErrPushEndpointOwned) {
+			return nil, fiber.NewError(fiber.StatusConflict, model.ErrPushEndpointOwned.Error())
+		}
 		return nil, err
 	}
 	return &model.PushSubscriptionResponse{

@@ -15,6 +15,11 @@ import (
 
 // PushSubscriptionStore reads and cleans up browser push subscriptions.
 // Satisfied by *repository.PushSubscriptionRepository.
+//
+// Upsert must keep the creating user's ownership of an endpoint: when the
+// endpoint is already stored for another user it returns
+// model.ErrPushEndpointOwned instead of re-pointing the row, and when the
+// same user re-subscribes it refreshes that row.
 type PushSubscriptionStore interface {
 	Upsert(ctx context.Context, sub *entity.PushSubscription) error
 	ListByUserID(ctx context.Context, userID string) ([]*entity.PushSubscription, error)

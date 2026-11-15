@@ -15,12 +15,15 @@ import (
 	"testing"
 
 	"golang-clean-architecture/internal/entity"
+	"golang-clean-architecture/internal/model"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
 	"github.com/sirupsen/logrus"
 )
 
-// fakePushStore is an in-memory PushSubscriptionStore.
+// fakePushStore is an in-memory PushSubscriptionStore. It honours the same
+// ownership contract as the real repository: an endpoint belongs to the
+// user that registered it first.
 type fakePushStore struct {
 	mu      sync.Mutex
 	subs    map[string][]*entity.PushSubscription
@@ -34,14 +37,20 @@ func newFakePushStore() *fakePushStore {
 func (f *fakePushStore) Upsert(ctx context.Context, sub *entity.PushSubscription) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	rows := f.subs[sub.UserID]
-	for i, row := range rows {
-		if row.Endpoint == sub.Endpoint {
+	for userID, rows := range f.subs {
+		for i, row := range rows {
+			if row.Endpoint != sub.Endpoint {
+				continue
+			}
+			if userID != sub.UserID {
+				return model.ErrPushEndpointOwned
+			}
+			sub.ID = row.ID
 			rows[i] = sub
 			return nil
 		}
 	}
-	f.subs[sub.UserID] = append(rows, sub)
+	f.subs[sub.UserID] = append(f.subs[sub.UserID], sub)
 	return nil
 }
 
@@ -121,12 +130,14 @@ func silentLogger() *logrus.Logger {
 	return log
 }
 
-// testPushService starts an httptest server that captures push requests
-// and answers with the given status (201 when zero).
+// testPushService starts an httptest TLS server that captures push
+// requests and answers with the given status (201 when zero). Real push
+// services are https-only and the allowlist now enforces the scheme, so
+// the fake must speak TLS too; callers pass srv.Client() as HTTPClient.
 func testPushService(t *testing.T, status int) (*httptest.Server, *fakePushService) {
 	t.Helper()
 	svc := &fakePushService{status: status}
-	srv := httptest.NewServer(svc)
+	srv := httptest.NewTLSServer(svc)
 	t.Cleanup(srv.Close)
 	return srv, svc
 }
