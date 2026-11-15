@@ -60,7 +60,7 @@ When a user in distress triggers an emergency SOS:
 | **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
 | **Anti-Abuse & Rate Limiting** | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. Wajib set `web.proxy_header` kalau deploy di belakang proxy/tunnel (§9), kalau tidak limit per-IP jadi satu bucket global untuk semua user. |
 | | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
-| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. Route hanya didaftarkan bila `metrics.token` diisi dan scrape wajib mengirim `Authorization: <token>`. |
+| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, `active_sos_count`. Route hanya didaftarkan bila `metrics.token` diisi dan scrape wajib mengirim `Authorization: <token>`. |
 
 ---
 
@@ -117,7 +117,7 @@ sequenceDiagram
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
 | `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
 | `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50. `users:last_seen` dibaca satu `HMGET` per request (bukan `HGET` per kandidat) |
-| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit per jam default 3 → `sos.rate_limit_per_hour`, matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi |
+| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit per jam default 3 → `sos.rate_limit_per_hour`, matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi. Fan-out **fail-open**: alert sudah tersimpan sebelum pencarian penerima, jadi error Redis GEO/HMGET tetap `201` dengan `recipients_notified: 0` (dispatch + SMS kontak darurat tetap jalan), bukan 5xx |
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
 | `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
@@ -135,7 +135,7 @@ sequenceDiagram
 | `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` saat `webpush.enabled: false` atau key kosong |
 | `GET/POST` | `/api/push/subscriptions` | ✅ | Daftar / simpan langganan Web Push browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → re-subscribe = upsert |
 | `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan milik user (body `{"endpoint": "..."}`); endpoint tak dikenal tetap `200` |
-| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>` (`401` tanpa token, `404` bila token kosong) |
+| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, `active_sos_count`). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>` (`401` tanpa token, `404` bila token kosong) |
 | `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
 | `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
 
@@ -173,6 +173,13 @@ Response 201 Created:
   }
 }
 ```
+
+> **Fail-open fan-out.** Alert disimpan *sebelum* pencarian penerima. Kalau
+> `GEOSEARCH`/`users:last_seen` (Redis) gagal, request tetap `201` dengan
+> `recipients_notified: 0`: alert tetap `TRIGGERED`, dispatch (push + SMS
+> kontak darurat Tier-1) tetap dijalankan dengan daftar penerima kosong, dan
+> kegagalan dihitung di `sos_fanout_failures_total`. `5xx` hanya untuk
+> kegagalan yang membuat alert sendiri tidak tersimpan.
 
 ```http
 POST /api/sos/:alertId/cancel
