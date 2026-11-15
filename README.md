@@ -48,7 +48,7 @@ When a user in distress triggers an emergency SOS:
 | **Multi-Channel Dispatch** | Composite `AlertDispatcher` | ✅ Done | - | FCM/APNs/Twilio when configured; log-only fallback when a channel has no credentials. |
 | | APNs Critical Alerts & FCM v1 | 🟡 In Progress | **P0** | Apple Critical Alerts (bypasses iOS Silent/DND) + Android High-Priority FCM with custom siren sound channel. |
 | | Emergency Contacts SMS/Call Fallback | 🟡 In Progress | **P0** | Integration with Twilio/AWS SNS/Infobip: SMS + automated voice call with Google Maps link to verified contacts. |
-| | Kafka Asynchronous Notification Worker | ✅ Done | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with DLQ and exponential backoff. |
+| | Kafka Asynchronous Notification Worker | ✅ Done | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with retry + dead-letter topic (DLQ). |
 | | PSAP / 911 / E911 Integration | 🔵 Planned | **P2** | RapidSOS / Noonlight integration to push location directly to 911 CAD (Computer Aided Dispatch). |
 | **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | ✅ Done | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
 | | Breadcrumb History (`alert_breadcrumbs`) | ✅ Done | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
@@ -415,7 +415,8 @@ Backend memperlebar sendiri jangkauannya:
 - Notifikasi ini tetap menunggu grace period (`TRIGGERED` + 10 detik) dan
   re-check status, jadi alert yang di-cancel di countdown tidak menyebar.
 - Kalau dispatch lewat Kafka, event `sos.dispatched` kedua dikirim dengan daftar
-  penerima tambahan saja.
+  penerima tambahan saja **plus `push_only: true`**, jadi worker hanya mengirim
+  push ke penerima baru dan tidak mengulang SMS ke kontak darurat pengirim.
 - Response upload menandai perluasan: `escalated: true`, `recipients_added: N`.
 - Kontak darurat pengirim **tidak** di-SMS dua kali (kanal push-only).
 
@@ -710,7 +711,48 @@ berubah; keduanya jalan berdampingan dan masing-masing gagal-terbuka.
 - `enabled: false` atau key kosong → kanal dianggap tidak terkonfigurasi (`ErrPushNotConfigured`); dispatcher hanya menulis log dan SOS tetap sukses.
 - Alur: user menekan toggle **Push notifications** di Profile (butuh gesture untuk prompt izin) → browser `PushManager.subscribe()` → `POST /api/push/subscriptions` → saat SOS fan-out, `AlertDispatcher` mengenkripsi payload (RFC 8291) dan mengirim per langganan. Endpoint yang dijawab `404`/`410` oleh push service langsung dihapus dari `push_subscriptions`.
 - Butuh secure context: `https://` atau `localhost` (alamat LAN `http://` tidak bisa).
-- Kalau `kafka.producer.enabled: true`, dispatch pindah ke worker dan worker tidak punya akses database, sehingga web push tidak terkirim — jalankan web push dengan producer Kafka `false`.
+- Kalau `kafka.producer.enabled: true`, dispatch pindah ke worker; worker membuka
+  MySQL yang sama, jadi FCM token, APNs critical alert, SMS kontak darurat, dan
+  web push (`push_subscriptions`) tetap terkirim dari worker. Web process tidak
+  ikut mengirim setelah publish sukses, jadi tidak ada notifikasi ganda.
+
+### Retry & Dead-Letter Topic Kafka
+
+Consumer worker tidak lagi melewati pesan yang gagal: offset hanya di-commit
+setelah pesan berhasil diproses **atau** sudah aman di DLQ.
+
+```json
+"kafka": {
+  "consumer": {
+    "max_retries": 3,
+    "retry_backoff_seconds": 1
+  },
+  "dlq": {
+    "topic": "sos.dispatched.dlq"
+  }
+}
+```
+
+- `kafka.consumer.max_retries` (default `3`) = jumlah retry pesan yang sama
+  setelah percobaan pertama, dengan jeda `kafka.consumer.retry_backoff_seconds`
+  (default `1` detik, linear) sebelum tiap retry. Nilai `0`/tidak diisi =
+  default; nilai negatif mematikan retry sehingga pesan gagal langsung ke DLQ.
+  Retry pertama sudah menangani gangguan sesaat khas gateway (FCM 5xx, timeout
+  Twilio) tanpa kehilangan notifikasi.
+- `kafka.dlq.topic` (default `sos.dispatched.dlq`) menerima payload **asli
+  byte-for-byte** (key asli ikut dipertahankan) setelah semua retry habis,
+  ditambah header: `dlq.source.topic`, `dlq.source.partition`,
+  `dlq.source.offset`, dan `dlq.error` (error terakhir). Header asli pesan ikut
+  disalin, jadi trace/tenant id tidak hilang. Setelah publish DLQ sukses baru
+  offset di-commit.
+- Kalau publish ke DLQ gagal (broker mati), offset **tidak** di-commit dan
+  claim dihentikan, sehingga consumer group me-replay pesan itu dari offset
+  terakhir yang ter-commit. Kalau `kafka.producer.enabled: false` atau
+  `kafka.dlq.topic` dikosongkan, pesan dicatat di log sebagai dropped setelah
+  retry (tidak panic, tidak menggantung partisi).
+- Topik `users`/`contacts`/`addresses` ikut me-retry tapi tanpa DLQ (mirror
+  best-effort). DLQ belum punya replay otomatis: untuk memproses ulang, isi
+  ulang `sos.dispatched` dari record `sos.dispatched.dlq` secara manual.
 
 ### Menjalankan Database Migration
 ```bash
@@ -724,6 +766,7 @@ migrate -path db/migrations -database "mysql://user:pass@tcp(host:port)/dbname" 
 go run cmd/web/main.go
 
 # 2. Jalankan Worker Kafka (jika Kafka enabled)
+#    Worker butuh MySQL yang sama (token push + kontak darurat) dan Kafka.
 go run cmd/worker/main.go
 
 # 3. Build & Vet
@@ -802,8 +845,17 @@ Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
 - **Media S3/GCS**: upload tersimpan lokal (`storage.local_dir`);
   backend S3 belum di-wire.
 - **OpenTelemetry**: hanya metrik Prometheus manual; tracing OTEL
-  belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) belum di-wire;
-  pesan gagal di-redelivery oleh consumer group.
+  belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) sekarang
+  di-wire: consumer worker me-retry pesan yang gagal di offset yang sama
+  (`kafka.consumer.max_retries`, default 3, backoff
+  `kafka.consumer.retry_backoff_seconds`, default 1 s), lalu
+  mem-publish payload aslinya ke `kafka.dlq.topic` beserta header
+  `dlq.source.topic/partition/offset` + `dlq.error` sebelum offset
+  di-commit. Kalau publish DLQ sendiri gagal, offset **tidak** di-commit
+  supaya pesan di-redeliver; kalau producer Kafka dimatikan atau topik DLQ
+  dikosongkan, pesan dicatat di log lalu di-drop setelah retry. Topik
+  `users`/`contacts`/`addresses` hanya me-retry (tanpa DLQ). `DLQ` belum
+  punya consumer/replay tool otomatis, jadi replay masih manual.
 
 Jalankan semua migrasi (`migrate up`; versi terakhir `20261109000000_push_subscriptions`)
 sebelum memakai endpoint baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
@@ -835,7 +887,9 @@ go build ./... && go vet ./...
 Coverage utama yang diuji:
 - trigger SOS, idempotency, rate limit, adaptive radius, dan error persistence;
 - lifecycle alert, PIN, responder/ETA, breadcrumbs, media, dan akses peserta;
-- AI triage, dispatch FCM/APNs/Twilio melalui `httptest`, consumer Kafka;
+- AI triage, dispatch FCM/APNs/Twilio melalui `httptest`, consumer Kafka
+  (retry pesan yang sama, DLQ dengan payload + header asli, offset tetap
+  uncommitted kalau DLQ gagal);
 - HTTP SOS end-to-end dengan in-memory stores, WebSocket hub, metrics;
 - state machine entity alert (`IsActive` dan `CanTransitionTo`);
 - helper geospatial distance dan repository lokasi Redis live.

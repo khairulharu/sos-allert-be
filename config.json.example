@@ -43,6 +43,13 @@
     },
     "producer": {
       "enabled": false
+    },
+    "consumer": {
+      "max_retries": 3,
+      "retry_backoff_seconds": 1
+    },
+    "dlq": {
+      "topic": "sos.dispatched.dlq"
     }
   },
   "sos": {
