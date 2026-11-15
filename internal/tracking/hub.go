@@ -28,12 +28,20 @@ func (h *Hub) Subscribe(alertID string) (<-chan []byte, func()) {
 	return ch, func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		if m, ok := h.subs[alertID]; ok {
-			delete(m, ch)
-			close(ch)
-			if len(m) == 0 {
-				delete(h.subs, alertID)
-			}
+		m, ok := h.subs[alertID]
+		if !ok {
+			return
+		}
+		// Unsubscribe may be called twice (deferred cleanup plus an
+		// explicit call in the handler); closing an unregistered channel
+		// again panics.
+		if _, registered := m[ch]; !registered {
+			return
+		}
+		delete(m, ch)
+		close(ch)
+		if len(m) == 0 {
+			delete(h.subs, alertID)
 		}
 	}
 }
