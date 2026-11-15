@@ -71,16 +71,30 @@ func NewFiber(config *viper.Viper) *fiber.App {
 	return app
 }
 
-// NewErrorHandler renders errors in the documented WebResponse shape.
+// genericInternalMessage is everything a 5xx client may learn. Internal
+// errors (SQL failures, file paths, provider bodies) are logged instead of
+// echoed, so the response body is not an information leak.
+const genericInternalMessage = "internal server error"
+
+// NewErrorHandler renders errors in the documented WebResponse shape. 4xx
+// messages are passed through; any 5xx is replaced with a generic message
+// and the detail is logged server-side.
 func NewErrorHandler() fiber.ErrorHandler {
 	return func(ctx *fiber.Ctx, err error) error {
 		code := fiber.StatusInternalServerError
+		message := err.Error()
 		if e, ok := err.(*fiber.Error); ok {
 			code = e.Code
+			message = e.Message
+		}
+
+		if code >= fiber.StatusInternalServerError {
+			log.Printf("ERROR %s %s: %v", ctx.Method(), ctx.Path(), err)
+			message = genericInternalMessage
 		}
 
 		return ctx.Status(code).JSON(fiber.Map{
-			"errors": err.Error(),
+			"errors": message,
 		})
 	}
 }

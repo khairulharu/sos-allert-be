@@ -24,7 +24,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// memPushStore is an in-memory PushSubscriptionStore keyed by endpoint.
+// memPushStore is an in-memory PushSubscriptionStore keyed by endpoint. It
+// mirrors the repository contract: an endpoint stays with the user that
+// registered it first.
 type memPushStore struct {
 	mu   sync.Mutex
 	rows []*entity.PushSubscription
@@ -34,10 +36,15 @@ func (s *memPushStore) Upsert(ctx context.Context, sub *entity.PushSubscription)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, row := range s.rows {
-		if row.Endpoint == sub.Endpoint {
-			s.rows[i] = sub
-			return nil
+		if row.Endpoint != sub.Endpoint {
+			continue
 		}
+		if row.UserID != sub.UserID {
+			return model.ErrPushEndpointOwned
+		}
+		sub.ID = row.ID
+		s.rows[i] = sub
+		return nil
 	}
 	s.rows = append(s.rows, sub)
 	return nil
@@ -188,14 +195,22 @@ func TestPushAPIEndToEnd(t *testing.T) {
 		t.Fatalf("re-subscribe must upsert, got %d rows", len(listResp.Data))
 	}
 
-	// Another user re-registering the same browser re-points the row.
+	// Another user re-registering the same browser must not steal the
+	// subscription: the endpoint stays with user-a and user-b gets 409.
 	status, body = do("POST", "/api/push/subscriptions", "user-b", subscribeBody)
-	if status != http.StatusOK {
-		t.Fatalf("re-point status = %d body = %s", status, body)
+	if status != http.StatusConflict {
+		t.Fatalf("endpoint takeover status = %d body = %s, want 409", status, body)
 	}
 	status, body = do("GET", "/api/push/subscriptions", "user-a", "")
+	if err := json.Unmarshal(body, &listResp); err != nil {
+		t.Fatalf("list is not JSON: %v (%s)", err, body)
+	}
+	if len(listResp.Data) != 1 || listResp.Data[0].Endpoint != endpointA {
+		t.Fatalf("user-a must keep the row after user-b's takeover attempt, got %s", body)
+	}
+	status, body = do("GET", "/api/push/subscriptions", "user-b", "")
 	if !strings.Contains(string(body), `"data":[]`) {
-		t.Fatalf("user-a must lose the row after user-b re-subscribes, got %s", body)
+		t.Fatalf("user-b must not own user-a's endpoint, got %s", body)
 	}
 
 	// Missing endpoint is rejected before touching the store.
@@ -214,12 +229,13 @@ func TestPushAPIEndToEnd(t *testing.T) {
 		}
 	}
 
-	// Unsubscribe removes the row.
-	status, body = do("DELETE", "/api/push/subscriptions", "user-b", `{"endpoint":"`+endpointA+`"}`)
+	// Unsubscribe removes the row (only for its owner: a foreign
+	// unsubscribe is a no-op, covered by the ownership check above).
+	status, body = do("DELETE", "/api/push/subscriptions", "user-a", `{"endpoint":"`+endpointA+`"}`)
 	if status != http.StatusOK {
 		t.Fatalf("unsubscribe status = %d body = %s", status, body)
 	}
-	status, body = do("GET", "/api/push/subscriptions", "user-b", "")
+	status, body = do("GET", "/api/push/subscriptions", "user-a", "")
 	if !strings.Contains(string(body), `"data":[]`) {
 		t.Fatalf("subscription must be gone after unsubscribe, got %s", body)
 	}

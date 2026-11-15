@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang-clean-architecture/internal/entity"
@@ -251,5 +252,43 @@ func TestNotificationContentWithoutClaim(t *testing.T) {
 	}
 	if _, ok := data["client_summary"]; ok {
 		t.Fatal("client_summary must be absent when there is no claim")
+	}
+}
+
+// Legacy accounts can hold more contacts than the creation-time cap, so the
+// dispatcher itself must never text more than maxEmergencyContactsPerUser.
+func TestAlertDispatcherCapsEmergencyContactSMS(t *testing.T) {
+	var mu sync.Mutex
+	var sends int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sends++
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"sid":"SM1"}`))
+	}))
+	defer srv.Close()
+
+	contacts := make([]model.EmergencyContactResponse, 25)
+	for i := range contacts {
+		contacts[i] = model.EmergencyContactResponse{
+			ContactName: "Contact",
+			PhoneNumber: "+6281234567890",
+		}
+	}
+	twilio := &TwilioNotifier{
+		Enabled: true, AccountSID: "AC1", AuthToken: "secret",
+		FromNumber: "+1555", BaseURL: srv.URL, HTTPClient: srv.Client(),
+	}
+	d := NewAlertDispatcher(noopLogger(), nil, nil, twilio, nil, nil,
+		&fakeDispatchContacts{contacts: contacts}, nil)
+
+	if err := d.Notify(context.Background(), nil, model.Alert{ID: "a1", SenderId: "sender", EmergencyType: "DANGER"}); err != nil {
+		t.Fatalf("Notify error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sends != maxEmergencyContactsPerUser {
+		t.Fatalf("SMS sent = %d, want %d", sends, maxEmergencyContactsPerUser)
 	}
 }
