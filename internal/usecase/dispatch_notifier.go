@@ -201,6 +201,14 @@ func (d *AlertDispatcher) notifyEmergencyContacts(ctx context.Context, alert mod
 		d.Log.Infof("[SOS] alert %s: no emergency contacts configured", alert.ID)
 		return nil
 	}
+	// Creation caps the list at maxEmergencyContactsPerUser, but rows
+	// stored before that rule can be longer: never text more than the
+	// limit, so a legacy account cannot become an SMS bomb.
+	if len(contacts) > maxEmergencyContactsPerUser {
+		d.Log.Warnf("[SOS] alert %s: %d emergency contacts, texting only the first %d",
+			alert.ID, len(contacts), maxEmergencyContactsPerUser)
+		contacts = contacts[:maxEmergencyContactsPerUser]
+	}
 	mapsLink := fmt.Sprintf("https://www.google.com/maps/search/?api=1&query=%f,%f",
 		alert.Location.Latitude, alert.Location.Longitude)
 	text := fmt.Sprintf("SOS ALERT (%s): %s Location: %s", alert.EmergencyType, body, mapsLink)

@@ -1,8 +1,9 @@
 package entity
 
 // PushSubscription is one browser Web Push subscription (MySQL
-// `push_subscriptions` table). Endpoint is unique: re-subscribing from
-// the same browser overwrites the previous row's user and keys.
+// `push_subscriptions` table). Endpoint is unique and owned by the user
+// that registered it: re-subscribing from the same browser refreshes that
+// row's keys, while another user cannot take it over.
 type PushSubscription struct {
 	ID        string `gorm:"column:id;primaryKey"`
 	UserID    string `gorm:"column:user_id"`

@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"golang-clean-architecture/internal/model"
@@ -17,6 +18,10 @@ func TestIsAllowedWebPushEndpoint(t *testing.T) {
 		"https://FCM.googleapis.com/fcm/send/abc":            true,
 		"https://wns2-par02p.notify.windows.com/w/?token=ab": true,
 		"https://evil.com/x":                                 false,
+		// Plaintext is refused even on an allowlisted host: the push
+		// service only speaks https, so http://... is a downgrade.
+		"http://fcm.googleapis.com/fcm/send/abc":              false,
+		"http://updates.push.services.mozilla.com/wpush/v2/1": false,
 		// Host look-alikes and IP literals an attacker would try.
 		"https://fcm.googleapis.com.evil.com/x":      false,
 		"https://fcm.googleapis.com:443@127.0.0.1/x": false,
@@ -44,10 +49,57 @@ func TestPushUseCaseRejectsForeignEndpoint(t *testing.T) {
 		t.Fatalf("Subscribe error = %v, want fiber.ErrBadRequest", err)
 	}
 
+	// http on an allowlisted host is refused too, so the endpoint can
+	// never be POSTed to in plaintext.
+	_, err = uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-a", Endpoint: "http://fcm.googleapis.com/fcm/send/sub-a", P256DH: "BNcR", Auth: "secret",
+	})
+	if err != fiber.ErrBadRequest {
+		t.Fatalf("http allowlisted-host Subscribe error = %v, want fiber.ErrBadRequest", err)
+	}
+
 	if _, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
 		UserID: "user-a", Endpoint: "https://fcm.googleapis.com/fcm/send/sub-a", P256DH: "BNcR", Auth: "secret",
 	}); err != nil {
 		t.Fatalf("allowlisted Subscribe error = %v, want nil", err)
+	}
+}
+
+// A browser subscription belongs to the user that registered it: another
+// user who learns the endpoint cannot take it over, while the owner can
+// refresh it.
+func TestPushUseCaseRejectsEndpointTakeover(t *testing.T) {
+	store := newFakePushStore()
+	uc := NewPushUseCase(nil, silentLogger(), validator.New(), store, "BO_KEY", true, nil)
+	const endpoint = "https://fcm.googleapis.com/fcm/send/shared-browser"
+
+	if _, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-a", Endpoint: endpoint, P256DH: "BNcR", Auth: "secret",
+	}); err != nil {
+		t.Fatalf("owner Subscribe error = %v", err)
+	}
+
+	_, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-b", Endpoint: endpoint, P256DH: "BOther", Auth: "other",
+	})
+	var fiberErr *fiber.Error
+	if !errors.As(err, &fiberErr) || fiberErr.Code != fiber.StatusConflict {
+		t.Fatalf("takeover error = %v, want a 409 fiber error", err)
+	}
+
+	// The owner still owns the row and can refresh its keys.
+	subs, err := uc.List(context.Background(), "user-b")
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("user-b subscriptions = %+v, err = %v, want none", subs, err)
+	}
+	if _, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-a", Endpoint: endpoint, P256DH: "BRotated", Auth: "rotated",
+	}); err != nil {
+		t.Fatalf("owner re-Subscribe error = %v", err)
+	}
+	subs, err = uc.List(context.Background(), "user-a")
+	if err != nil || len(subs) != 1 || subs[0].Endpoint != endpoint {
+		t.Fatalf("user-a subscriptions = %+v, err = %v", subs, err)
 	}
 }
 
