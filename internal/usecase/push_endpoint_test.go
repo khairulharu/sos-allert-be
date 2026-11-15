@@ -17,6 +17,10 @@ func TestIsAllowedWebPushEndpoint(t *testing.T) {
 		"https://FCM.googleapis.com/fcm/send/abc":            true,
 		"https://wns2-par02p.notify.windows.com/w/?token=ab": true,
 		"https://evil.com/x":                                 false,
+		// Plaintext is refused even on an allowlisted host: the push
+		// service only speaks https, so http://... is a downgrade.
+		"http://fcm.googleapis.com/fcm/send/abc":              false,
+		"http://updates.push.services.mozilla.com/wpush/v2/1": false,
 		// Host look-alikes and IP literals an attacker would try.
 		"https://fcm.googleapis.com.evil.com/x":      false,
 		"https://fcm.googleapis.com:443@127.0.0.1/x": false,
@@ -42,6 +46,15 @@ func TestPushUseCaseRejectsForeignEndpoint(t *testing.T) {
 	})
 	if err != fiber.ErrBadRequest {
 		t.Fatalf("Subscribe error = %v, want fiber.ErrBadRequest", err)
+	}
+
+	// http on an allowlisted host is refused too, so the endpoint can
+	// never be POSTed to in plaintext.
+	_, err = uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-a", Endpoint: "http://fcm.googleapis.com/fcm/send/sub-a", P256DH: "BNcR", Auth: "secret",
+	})
+	if err != fiber.ErrBadRequest {
+		t.Fatalf("http allowlisted-host Subscribe error = %v, want fiber.ErrBadRequest", err)
 	}
 
 	if _, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{

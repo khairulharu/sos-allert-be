@@ -121,12 +121,14 @@ func silentLogger() *logrus.Logger {
 	return log
 }
 
-// testPushService starts an httptest server that captures push requests
-// and answers with the given status (201 when zero).
+// testPushService starts an httptest TLS server that captures push
+// requests and answers with the given status (201 when zero). Real push
+// services are https-only and the allowlist now enforces the scheme, so
+// the fake must speak TLS too; callers pass srv.Client() as HTTPClient.
 func testPushService(t *testing.T, status int) (*httptest.Server, *fakePushService) {
 	t.Helper()
 	svc := &fakePushService{status: status}
-	srv := httptest.NewServer(svc)
+	srv := httptest.NewTLSServer(svc)
 	t.Cleanup(srv.Close)
 	return srv, svc
 }

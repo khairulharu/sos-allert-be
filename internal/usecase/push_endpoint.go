@@ -23,14 +23,17 @@ func WebPushHostsOr(allowed []string) []string {
 	return allowed
 }
 
-// IsAllowedWebPushEndpoint reports whether rawURL's host is allowlisted.
-// Entries starting with "." match a suffix, for push services that hand out
-// per-device subdomains. The scheme is not enforced here: a non-https URL
-// on an allowlisted host is refused by that push service, and the host check
-// is what stops the request from leaving for somewhere else.
+// IsAllowedWebPushEndpoint reports whether rawURL is an https URL on an
+// allowlisted host. Entries starting with "." match a suffix, for push
+// services that hand out per-device subdomains. The scheme is enforced
+// too: a push service only speaks https, so "http://fcm.googleapis.com/…"
+// is refused instead of being downgraded to a plaintext POST.
 func IsAllowedWebPushEndpoint(rawURL string, allowed []string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "https" {
 		return false
 	}
 	host := strings.ToLower(parsed.Hostname())
