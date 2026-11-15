@@ -772,6 +772,40 @@ func TestUploadMediaEscalationWidensFanout(t *testing.T) {
 	}
 }
 
+// The escalation event must be marked push-only: the worker dispatch path
+// would otherwise text the sender's emergency contacts a second time.
+func TestEscalationEventIsPushOnly(t *testing.T) {
+	uc, _, _ := audioEscalationSetup(t)
+	publisher := &fakePublisher{}
+	uc.Deps.Publisher = publisher
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	if _, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"panic.webm", "audio/webm", int64(len("voice-bytes")), strings.NewReader("voice-bytes")); err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+
+	if len(publisher.events) != 2 {
+		t.Fatalf("published events = %d, want the trigger plus the escalation", len(publisher.events))
+	}
+	if publisher.events[0].PushOnly {
+		t.Fatal("the first dispatch must stay a normal event (contacts still get the SMS)")
+	}
+	escalated := publisher.events[1]
+	if !escalated.PushOnly {
+		t.Fatal("the escalation event must be push-only, or the worker texts the contacts twice")
+	}
+	if escalated.EventType != "sos.dispatched" {
+		t.Fatalf("event type = %q, want the same topic event type", escalated.EventType)
+	}
+	if len(escalated.Recipients) != 2 {
+		t.Fatalf("escalation recipients = %v, want only the added responders", escalated.Recipients)
+	}
+}
+
 func TestUploadMediaNoEscalationWhenSeverityUnchanged(t *testing.T) {
 	uc, alertRepo, notifier := audioEscalationSetup(t)
 	// "orang sakit" classifies as MEDICAL 0.6 with no urgent keyword,
