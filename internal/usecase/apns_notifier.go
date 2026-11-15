@@ -52,10 +52,7 @@ func (n *APNsNotifier) baseURL() string {
 }
 
 func (n *APNsNotifier) client() *http.Client {
-	if n.HTTPClient != nil {
-		return n.HTTPClient
-	}
-	return http.DefaultClient
+	return providerClient(n.HTTPClient)
 }
 
 func (n *APNsNotifier) parseKey() (*ecdsa.PrivateKey, error) {

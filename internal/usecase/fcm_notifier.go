@@ -36,10 +36,7 @@ func (n *FCMNotifier) baseURL() string {
 }
 
 func (n *FCMNotifier) client() *http.Client {
-	if n.HTTPClient != nil {
-		return n.HTTPClient
-	}
-	return http.DefaultClient
+	return providerClient(n.HTTPClient)
 }
 
 type fcmMessage struct {
