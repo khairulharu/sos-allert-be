@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -386,5 +387,26 @@ func TestConsumerOptionsDefaults(t *testing.T) {
 	}
 	if got := noRetry.backoff(); got != 0 {
 		t.Fatalf("backoff = %v, want 0 when disabled", got)
+	}
+}
+
+// Kafka is optional (#42): a nil consumer group (unreachable broker at
+// startup) must make the topic be skipped instead of panicking on a nil
+// interface call or blocking the process.
+func TestConsumeTopicSkipsNilConsumerGroup(t *testing.T) {
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ConsumeTopic(context.Background(), nil, "users", log, func(*sarama.ConsumerMessage) error { return nil },
+			ConsumerOptions{})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ConsumeTopic with a nil consumer group did not return")
 	}
 }

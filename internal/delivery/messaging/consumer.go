@@ -260,7 +260,16 @@ func copyBytes(in []byte) []byte {
 // ConsumeTopic runs one topic consumer. Shutdown happens through ctx; a
 // claim that cannot commit (dead-letter write failed) is restarted by the
 // sarama consumer group, which replays from the last committed offset.
+//
+// A nil consumer group means Kafka was unavailable at startup (config
+// returns nil instead of killing the process). This topic is then skipped:
+// the call returns immediately so the caller's goroutine does not block and
+// every other consumer keeps running (#42).
 func ConsumeTopic(ctx context.Context, consumerGroup sarama.ConsumerGroup, topic string, log *logrus.Logger, handler ConsumerHandler, options ConsumerOptions) {
+	if consumerGroup == nil {
+		log.Errorf("No consumer group for topic %s (Kafka unavailable); topic is not consumed", topic)
+		return
+	}
 	consumerHandler := &ConsumerGroupHandler{
 		Handler: handler,
 		Log:     log,

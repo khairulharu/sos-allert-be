@@ -48,6 +48,10 @@
       "max_retries": 3,
       "retry_backoff_seconds": 1
     },
+    "connect": {
+      "max_attempts": 3,
+      "retry_backoff_seconds": 2
+    },
     "dlq": {
       "topic": "sos.dispatched.dlq"
     }
