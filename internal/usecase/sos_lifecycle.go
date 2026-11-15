@@ -449,6 +449,17 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 	if !alert.IsActive() {
 		return nil, model.ErrInvalidTransition
 	}
+	// One answer per responder (#42). The unique index is the real guard,
+	// but checking first keeps the common double tap out of the insert path
+	// and yields a deterministic 409 even if the driver reports affected
+	// rows differently.
+	alreadyAnswered, err := u.Deps.Alerts.IsResponder(ctx, u.DB, alertID, responderID)
+	if err != nil {
+		return nil, err
+	}
+	if alreadyAnswered {
+		return nil, model.ErrDuplicateResponse
+	}
 	victimLat, victimLng := alert.Latitude, alert.Longitude
 	if crumb, err := u.Deps.Alerts.LatestBreadcrumb(ctx, u.DB, alertID); err != nil {
 		return nil, err
