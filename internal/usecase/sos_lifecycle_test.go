@@ -1034,3 +1034,95 @@ func TestUploadMediaDeletesFileWhenInsertFails(t *testing.T) {
 		t.Fatalf("stored files = %v, want none left behind", store.files)
 	}
 }
+
+// A client timestamp far in the future would sort above every later
+// breadcrumb and pin latest_location to it forever.
+func TestAddBreadcrumbClampsFutureTimestamp(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+	lat, lng := -6.2092, 106.8462
+
+	future := time.Now().Add(6 * time.Hour).UnixMilli()
+	crumb, err := uc.AddBreadcrumb(context.Background(), "sender", alertID, &model.BreadcrumbRequest{
+		Latitude: &lat, Longitude: &lng, Timestamp: &future,
+	})
+	if err != nil {
+		t.Fatalf("future timestamp error = %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if crumb.RecordedAt > now+breadcrumbFutureSkewMs {
+		t.Fatalf("RecordedAt = %d, want it clamped to ~now (%d)", crumb.RecordedAt, now)
+	}
+
+	// A later heartbeat must become the latest location, not the clamp.
+	lat2, lng2 := -6.2100, 106.8470
+	later := now
+	if _, err := uc.AddBreadcrumb(context.Background(), "sender", alertID, &model.BreadcrumbRequest{
+		Latitude: &lat2, Longitude: &lng2, Timestamp: &later,
+	}); err != nil {
+		t.Fatalf("second breadcrumb error = %v", err)
+	}
+	latest, err := alertRepo.LatestBreadcrumb(context.Background(), nil, alertID)
+	if err != nil {
+		t.Fatalf("LatestBreadcrumb error = %v", err)
+	}
+	if latest == nil || latest.Latitude != lat2 {
+		t.Fatalf("latest breadcrumb = %+v, want the newer heartbeat", latest)
+	}
+}
+
+func TestAddBreadcrumbAcceptsStaleButValidTimestamp(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	lat, lng := -6.2092, 106.8462
+	stale := time.Now().Add(-5 * time.Minute).UnixMilli()
+
+	crumb, err := uc.AddBreadcrumb(context.Background(), "sender", created.Alert.ID, &model.BreadcrumbRequest{
+		Latitude: &lat, Longitude: &lng, Timestamp: &stale,
+	})
+	if err != nil {
+		t.Fatalf("stale timestamp error = %v", err)
+	}
+	if crumb.RecordedAt != stale {
+		t.Fatalf("RecordedAt = %d, want the client timestamp %d kept", crumb.RecordedAt, stale)
+	}
+	crumbs := alertRepo.breadcrumbs[created.Alert.ID]
+	if len(crumbs) != 1 || crumbs[0].RecordedAt != stale {
+		t.Fatalf("stored breadcrumbs = %+v, want the client timestamp", crumbs)
+	}
+
+	// Within the tolerated skew a slightly fast client clock is kept.
+	skewed := time.Now().Add(30 * time.Second).UnixMilli()
+	if _, err := uc.AddBreadcrumb(context.Background(), "sender", created.Alert.ID, &model.BreadcrumbRequest{
+		Latitude: &lat, Longitude: &lng, Timestamp: &skewed,
+	}); err != nil {
+		t.Fatalf("slightly future timestamp error = %v", err)
+	}
+}
+
+func TestAddBreadcrumbRejectsAbsurdlyOldTimestamp(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	lat, lng := -6.2092, 106.8462
+	for _, ts := range []int64{0, -1, time.Now().Add(-48 * time.Hour).UnixMilli()} {
+		value := ts
+		if _, err := uc.AddBreadcrumb(context.Background(), "sender", created.Alert.ID, &model.BreadcrumbRequest{
+			Latitude: &lat, Longitude: &lng, Timestamp: &value,
+		}); !errors.Is(err, fiber.ErrBadRequest) {
+			t.Fatalf("timestamp %d error = %v, want 400", ts, err)
+		}
+	}
+	if len(alertRepo.breadcrumbs[created.Alert.ID]) != 0 {
+		t.Fatal("no breadcrumb may be stored for a rejected timestamp")
+	}
+}
