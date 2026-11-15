@@ -371,6 +371,48 @@ Catatan tambahan:
 - `409` hanya muncul untuk retry milik user itu sendiri ketika trigger pertama
   masih berjalan (key sudah diklaim, hasil belum tersimpan).
 
+## Klaim idempotency dilepas saat trigger gagal (#36)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku.
+
+- Sebelumnya, trigger yang gagal (lokasi tidak ada, gagal tulis DB, dan dulu
+  juga gagal mencari penerima) meninggalkan klaim `pending` selama TTL 5
+  menit, sehingga retry dengan key yang sama dijawab `409` padahal belum ada
+  alert yang dibuat.
+- Sekarang klaim dilepas pada setiap kegagalan sebelum hasil tersimpan: retry
+  dengan `X-Idempotency-Key` yang sama setelah percobaan gagal akan diproses
+  normal dan mengembalikan `201` (bukan `409`).
+- Klaim hanya dilepas selama nilainya masih `pending` (compare-and-delete),
+  jadi hasil trigger yang sudah selesai tidak pernah terhapus dan tetap
+  di-replay seperti sebelumnya.
+- Klien tidak perlu mengubah apa pun: key yang sama tetap aman dipakai ulang
+  untuk retry setelah error jaringan/server.
+
+## Fan-out SOS fail-open setelah alert tersimpan (#37)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku, plus satu metrik baru.
+
+- Sebelumnya, kalau pencarian penerima gagal (`GEOSEARCH`/`users:last_seen`
+  error di Redis), `POST /api/sos` mengembalikan `5xx` **setelah** alert
+  tersimpan: tidak ada satu pun notifikasi (termasuk SMS kontak darurat), dan
+  alert tertinggal `TRIGGERED` selamanya.
+- Sekarang fan-out fail-open: alert tetap dibuat, dispatch tetap dijalankan
+  dengan daftar penerima kosong (jadi push tidak terkirim ke siapa pun, tetapi
+  SMS fallback ke emergency contacts tetap jalan), dan response tetap `201`
+  dengan `recipients_notified: 0`.
+- `5xx` hanya tersisa untuk kegagalan yang membuat alert sendiri tidak
+  tersimpan (atau lookup lokasi pengirim sebelum alert dibuat).
+- Klien tidak perlu retry saat melihat `201` dengan `recipients_notified: 0`:
+  alert sudah tercatat dan muncul di `GET /api/sos/active`; retry dengan
+  `X-Idempotency-Key` yang sama akan me-replay alert itu, bukan membuat
+  duplikat.
+- Metrik baru di `GET /metrics`: `sos_fanout_failures_total` (counter trigger
+  yang di-dispatch dengan fan-out kosong karena lookup penerima gagal). Metrik
+  lama `sos_dispatch_latency_ms`, `push_delivery_failures_total`,
+  `active_sos_count` tidak berubah.
+
 ## Hardening keamanan (#41)
 
 Enam temuan review, semuanya mengubah kontrak HTTP di beberapa titik. Ringkas:
@@ -448,6 +490,63 @@ Semua response `>= 500` sekarang `{"errors":"internal server error"}`; detail
 **status code tetap sama**, hanya body-nya generik. Jadi percabangan di
 frontend harus memakai status code, bukan isi `errors`. Pesan `4xx` tidak
 berubah, jadi pesan validasi tetap bisa ditampilkan.
+
+## `POST /api/sos/{alertId}/respond` dua kali → `409` (#42)
+
+> **Untuk agent frontend.** Ini perubahan kontrak: satu status code baru.
+
+- Sebelumnya setiap `respond` selalu menyisipkan baris baru, jadi double tap
+  atau retry setelah timeout bisa menyimpan responder yang sama dua kali dan
+  menggelembungkan `responders_en_route` / daftar `responders`.
+- Sekarang `alert_responses` punya unique index `(alert_id, responder_id)`.
+  Jawaban kedua dari responder yang sama tidak menulis baris baru dan
+  dijawab **`409`** dengan body
+  `{"errors":"responder has already responded to this alert"}`.
+- Respons `200` pertama tetap sama (`response_id`, `eta_seconds`,
+  `victim_distance_meters`). Klien tidak perlu mengubah apa pun untuk kasus
+  sukses; kalau menerima `409`, anggap "sudah tercatat" — jangan retry, dan
+  tampilkan status responder dari `GET /api/sos/{alertId}`.
+- Responder **berbeda** tidak terpengaruh: masing-masing tetap mendapat `200`
+  dan satu entri di `responders[]`.
+- `403` (bukan peserta, atau sender mencoba respond) dan `409` untuk alert
+  yang sudah `RESOLVED`/`CANCELLED` tidak berubah.
+
+## WebSocket tracking: batas koneksi + keepalive (#42)
+
+> **Untuk agent frontend.** Status code baru saat handshake dan close code baru.
+
+- `WS /ws/sos/{alertId}/track` sekarang punya batas koneksi bersamaan:
+  global (`sos.ws_max_connections`, default 500), per IP
+  (`sos.ws_max_per_ip`, default 10) dan per user (`sos.ws_max_per_user`,
+  default 3, dihitung setelah frame `auth` diverifikasi).
+- Kalau batas global/IP sudah penuh, **handshake ditolak** dengan `429` +
+  header `Retry-After: 5` (bukan upgrade lalu diputus). Frontend: jangan
+  retry loop; tampilkan "live tracking tidak tersedia" dan coba lagi setelah
+  `Retry-After`, atau fallback ke polling `GET /api/sos/{alertId}`.
+- Kalau batas per user penuh, socket **sempat terbuka** lalu langsung dikirim
+  frame `{"error":"too many live-tracking connections, retry shortly"}` dan
+  ditutup dengan close code `1013` (try again later) — `auth_ok` tidak pernah
+  dikirim. Frontend: tutup tab/socket lain dulu, jangan reconnect otomatis.
+- Keepalive: server mengirim ping tiap ~25 s dan memutus klien yang tidak
+  menjawab dalam ~60 s (browser menjawab otomatis; klien native harus membaca
+  frame ping). Setiap frame server punya write deadline 5 s, jadi klien yang
+  berhenti membaca akan diputus, bukan menggantung slot.
+- Tidak ada perubahan pada frame `auth`/`auth_ok`, `LOCATION_UPDATE`,
+  `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`.
+
+## `POST /api/sos` tanpa lokasi → `422` (#42)
+
+> **Untuk agent frontend.** Status code berubah dari `500` menjadi `422`.
+
+- Kalau body `POST /api/sos` tidak memuat `latitude`/`longitude` **dan** user
+  belum pernah mengirim heartbeat (`PUT /api/location`), server sekarang
+  menjawab **`422`** dengan
+  `{"errors":"location is required: send latitude and longitude in the SOS body or PUT /api/location first"}`.
+- Sebelumnya kondisi ini keluar sebagai `500` dengan body generik, jadi user
+  pertama kali tidak tahu apa yang harus diperbaiki.
+- Frontend: kirim koordinat di body SOS bila tersedia (paling aman), atau
+  pastikan `PUT /api/location` sudah sukses sebelum trigger; kalau menerima
+  `422`, tampilkan pesan lokasi dan coba lagi setelah lokasi tersedia.
 
 ## Yang belum dikerjakan
 

@@ -80,6 +80,36 @@ func (a *AlertRepository) ExpireOlderThan(ctx context.Context, db *gorm.DB, befo
 	return res.RowsAffected, nil
 }
 
+// ListDueDispatch returns the alerts whose grace period elapsed and whose
+// fan-out has not run yet, oldest due first. This is the durable outbox
+// scan behind TriggerSOSUseCase.RunDispatchLoop (#40): the due time lives
+// on the row, so a restart inside the grace window cannot lose the
+// dispatch the way the old in-process timer did.
+func (a *AlertRepository) ListDueDispatch(ctx context.Context, db *gorm.DB, dueBeforeMs int64, limit int) ([]*entity.Alert, error) {
+	var out []*entity.Alert
+	if err := db.WithContext(ctx).
+		Where("status = ? AND dispatch_due_at IS NOT NULL AND dispatched_at IS NULL AND dispatch_due_at <= ?",
+			entity.AlertStatusTriggered, dueBeforeMs).
+		Order("dispatch_due_at ASC").Limit(limit).Find(&out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MarkDispatched stamps an alert as fanned out. The `dispatched_at IS NULL`
+// predicate makes the update a one-way latch: a concurrent or repeated
+// claim loses, so a loop tick cannot mark somebody else's dispatch twice.
+// The caller treats false as "already done", not as an error.
+func (a *AlertRepository) MarkDispatched(ctx context.Context, db *gorm.DB, alertID string, atMs int64) (bool, error) {
+	res := db.WithContext(ctx).Model(&entity.Alert{}).
+		Where("id = ? AND dispatched_at IS NULL", alertID).
+		Updates(map[string]any{"dispatched_at": atMs})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected == 1, nil
+}
+
 // CountActive counts live incidents (TRIGGERED/ACKNOWLEDGED), the source
 // of truth for the active_sos_count gauge.
 func (a *AlertRepository) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {
@@ -120,9 +150,24 @@ func (a *AlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB, ale
 	return b, nil
 }
 
-// CreateResponse records a responder answer.
+// CreateResponse records a responder answer. The insert is idempotent: the
+// unique (alert_id, responder_id) index (20261116000000) turns a second
+// answer from the same responder into a no-op, reported as
+// model.ErrDuplicateResponse instead of a duplicate row or a 500 (#42).
 func (a *AlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
-	return db.WithContext(ctx).Create(r).Error
+	tx := db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "alert_id"}, {Name: "responder_id"}},
+		DoNothing: true,
+	}).Create(r)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	// MySQL's ON DUPLICATE KEY UPDATE reports 0 affected rows when the
+	// existing row is left untouched, which is exactly the duplicate case.
+	if tx.RowsAffected == 0 {
+		return model.ErrDuplicateResponse
+	}
+	return nil
 }
 
 // CountResponders counts distinct responders for an alert.

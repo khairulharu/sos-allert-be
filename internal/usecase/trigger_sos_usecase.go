@@ -20,6 +20,10 @@ import (
 
 const staleThreshold = 2 * 60 * 1000 // 2 minutes in milliseconds
 
+// idempotencyReleaseTimeout bounds the detached Release call that hands a
+// pending idempotency claim back after a failed trigger.
+const idempotencyReleaseTimeout = 2 * time.Second
+
 // LocationRepository is the subset of location storage used by TriggerSOS.
 // It is satisfied by *repository.LocationCacheRepository (Redis GEO).
 type LocationRepository interface {
@@ -42,6 +46,12 @@ type AlertStore interface {
 	CountActive(ctx context.Context, db *gorm.DB) (int64, error)
 	Transition(ctx context.Context, db *gorm.DB, id string, fromStatuses []string, updates map[string]any) (bool, error)
 	ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error)
+	// ListDueDispatch / MarkDispatched back the durable grace-period
+	// outbox (#40): ListDueDispatch returns the TRIGGERED alerts whose
+	// dispatch_due_at elapsed and were not dispatched yet; MarkDispatched
+	// latches dispatched_at so one alert is fanned out once per scan.
+	ListDueDispatch(ctx context.Context, db *gorm.DB, dueBeforeMs int64, limit int) ([]*entity.Alert, error)
+	MarkDispatched(ctx context.Context, db *gorm.DB, alertID string, atMs int64) (bool, error)
 	CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error
 	ListBreadcrumbs(ctx context.Context, db *gorm.DB, alertID string, limit int) ([]*entity.AlertBreadcrumb, error)
 	LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID string) (*entity.AlertBreadcrumb, error)
@@ -87,11 +97,14 @@ type RecipientNotifier interface {
 }
 
 // IdempotencyStore maps X-Idempotency-Key values to finished alerts.
+// Release hands back an unfinished claim (compare-and-delete on the
+// pending marker only) so a failed trigger does not block its own retry.
 // Satisfied by *repository.IdempotencyRepository.
 type IdempotencyStore interface {
 	Claim(ctx context.Context, key string) (bool, error)
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string) error
+	Release(ctx context.Context, key string) error
 }
 
 // RateLimiter is a per-user SOS trigger limiter.
@@ -209,6 +222,25 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		return nil, model.ErrInvalidSender
 	}
 
+	// Idempotency: replay a finished key instead of creating a duplicate.
+	// The key is namespaced per sender (#35) so the client-chosen value
+	// cannot collide with — or swallow — another user's trigger.
+	scopedKey := ""
+	if idempotencyKey != "" {
+		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
+	}
+	// The replay is checked BEFORE the limiter (#42): a client retrying a
+	// trigger it already got an answer for is not a new SOS, so burning
+	// its 3/hour quota meant the 4th retry was answered 429 instead of
+	// replaying the original 201. Only a genuinely new trigger counts.
+	if scopedKey != "" && u.Deps.Idempotency != nil {
+		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
+			return nil, err
+		} else if done {
+			return replay, nil
+		}
+	}
+
 	// Anti-abuse: fail open on limiter errors (a life-safety request
 	// must not be blocked by a Redis outage), fail closed on limit hit.
 	// `RateLimitDisabled` (sos.rate_limit_disabled) skips the check.
@@ -221,19 +253,17 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		}
 	}
 
-	// Idempotency: replay a finished key instead of creating a duplicate.
-	// The key is namespaced per sender (#35) so the client-chosen value
-	// cannot collide with — or swallow — another user's trigger.
-	scopedKey := ""
-	if idempotencyKey != "" {
-		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
-	}
+	// claimHeld tracks the pending claim this call owns: the alert does
+	// not exist yet, so every failure below must hand the claim back.
+	// Otherwise the retry of a failed trigger is answered 409 for the
+	// rest of the 5-minute TTL even though no alert was ever created
+	// (#36). Once the finished result is written with Set the flag is
+	// cleared, so a success never releases.
+	claimHeld := false
 	if scopedKey != "" && u.Deps.Idempotency != nil {
-		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
-			return nil, err
-		} else if done {
-			return replay, nil
-		}
+		// The replay above was a miss; the key may still have been
+		// finished by a concurrent retry, which Claim reports as !claimed
+		// and the second lookup resolves to a replay instead of a 409.
 		if claimed, err := u.Deps.Idempotency.Claim(ctx, scopedKey); err != nil {
 			u.Log.WithError(err).Warn("idempotency claim unavailable, proceeding")
 		} else if !claimed {
@@ -243,7 +273,25 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				return replay, nil
 			}
 			return nil, fiber.ErrConflict
+		} else {
+			claimHeld = true
 		}
+	}
+	if claimHeld {
+		// Fail-open: a Release error only warns, and the deferred call
+		// never replaces the error that aborted the trigger.
+		defer func() {
+			if !claimHeld {
+				return
+			}
+			// A cancelled or expired request context must not strand
+			// the claim, so release on a detached one.
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), idempotencyReleaseTimeout)
+			defer cancel()
+			if err := u.Deps.Idempotency.Release(releaseCtx, scopedKey); err != nil {
+				u.Log.WithError(err).Warn("could not release idempotency claim")
+			}
+		}()
 	}
 
 	latitude, longitude, err := u.resolveCoordinates(ctx, senderID, req)
@@ -313,14 +361,42 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	if triageInfo.Summary != "" {
 		alert.Summary = &triageInfo.Summary
 	}
+	if u.Deps.GracePeriod > 0 {
+		// Durable grace period (#40): persist the due time with the alert
+		// instead of scheduling an in-process time.AfterFunc. The web
+		// process has no graceful drain for a timer, so a restart/deploy
+		// inside the window used to leave the alert TRIGGERED and reached
+		// nobody. RunDispatchLoop reads this row back and fans out.
+		dueAt := alert.TriggeredAt + u.Deps.GracePeriod.Milliseconds()
+		alert.DispatchDueAt = &dueAt
+	}
 	if err := u.Deps.Alerts.Create(ctx, u.DB, alert); err != nil {
 		return nil, fmt.Errorf("save alert: %w", err)
 	}
 	u.Log.Infof("alert %s saved for sender %s at (%.6f, %.6f)", alert.ID, senderID, longitude, latitude)
 
+	// The fan-out is fail-open (#37): the alert row is already persisted, so
+	// a recipient lookup outage (Redis GEOSEARCH/HMGET) must not turn a
+	// life-safety trigger into a 500 that notifies nobody. Returning an
+	// error here used to skip the dispatch entirely — the sender's
+	// emergency contacts were never texted and the alert stayed TRIGGERED.
+	// Degrade to an empty fan-out instead; the dispatch below still runs,
+	// which is what carries the emergency-contact SMS fallback.
+	// fanoutDegraded marks a failed recipient lookup: the fan-out then has
+	// nobody to reach, so the emergency-contact fallback must not be
+	// skipped just because Kafka accepted the (empty) event.
+	fanoutDegraded := false
 	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude, radiusStart)
 	if err != nil {
-		return nil, err
+		u.Log.WithError(err).Errorf("alert %s: recipient lookup failed, dispatching without nearby responders", alert.ID)
+		if u.Deps.Metrics != nil {
+			u.Deps.Metrics.IncFanoutFailures()
+		}
+		fanoutDegraded = true
+		recipients = []string{}
+		// No radius was actually searched; report the widest configured
+		// one instead of a misleading 0.
+		radius = u.widestRadius()
 	}
 	if err := u.Deps.Alerts.CreateRecipients(ctx, u.DB, alert.ID, recipients, alert.TriggeredAt); err != nil {
 		u.Log.WithError(err).Warn("could not record alert recipients")
@@ -346,6 +422,11 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 
 	if scopedKey != "" && u.Deps.Idempotency != nil {
 		value := alert.ID + "|" + strconv.Itoa(len(recipients))
+		// The alert is recorded and the result is being written: from
+		// here on the key belongs to a finished trigger and must not be
+		// released, even when the Set itself fails (a release would let
+		// a retry duplicate the alert).
+		claimHeld = false
 		if err := u.Deps.Idempotency.Set(ctx, scopedKey, value); err != nil {
 			u.Log.WithError(err).Warn("could not store idempotency result")
 		}
@@ -362,64 +443,82 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 
 	dispatch := func(dispatchCtx context.Context) {
-		// The latency metric must describe the notification send, not the
-		// request: when the grace period is configured the dispatch runs
-		// seconds later, and measuring from request start always reported
-		// the grace period itself.
-		sendStartedAt := time.Now()
-		if u.Deps.Publisher != nil {
-			event := model.SOSEvent{
-				EventType:      "sos.dispatched",
-				AlertID:        alert.ID,
-				SenderID:       senderID,
-				Latitude:       latitude,
-				Longitude:      longitude,
-				EmergencyType:  emergencyType,
-				Status:         alert.Status,
-				Recipients:     recipients,
-				TriggeredAt:    alert.TriggeredAt,
-				Severity:       triageInfo.Severity,
-				Summary:        triageInfo.Summary,
-				ClientSeverity: req.ClientSeverity,
-				ClientSummary:  req.ClientSummary,
-			}
-			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
-				u.recordDispatch(sendStartedAt)
-				return
-			}
-			u.Log.Warn("Kafka publish failed, falling back to direct notify")
-			sendStartedAt = time.Now()
+		event := model.SOSEvent{
+			EventType:      "sos.dispatched",
+			AlertID:        alert.ID,
+			SenderID:       senderID,
+			Latitude:       latitude,
+			Longitude:      longitude,
+			EmergencyType:  emergencyType,
+			Status:         alert.Status,
+			Recipients:     recipients,
+			TriggeredAt:    alert.TriggeredAt,
+			Severity:       triageInfo.Severity,
+			Summary:        triageInfo.Summary,
+			ClientSeverity: req.ClientSeverity,
+			ClientSummary:  req.ClientSummary,
 		}
-		if u.Deps.Notifier != nil {
-			if err := u.Deps.Notifier.Notify(dispatchCtx, recipients, alertModel); err != nil {
-				u.Log.WithError(err).Error("failed to notify recipients")
-			}
-		}
-		u.recordDispatch(sendStartedAt)
+		u.sendFanout(dispatchCtx, event, recipients, alertModel, fanoutDegraded)
 	}
 
 	if u.Deps.GracePeriod > 0 {
-		// The grace period lets the sender cancel a false alarm before
-		// anyone is notified. The scheduled dispatch re-checks the
-		// status so a cancelled alert is never fanned out.
-		time.AfterFunc(u.Deps.GracePeriod, func() {
-			dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if current, err := u.Deps.Alerts.GetByID(dctx, u.DB, alert.ID); err == nil {
-				if current.Status != entity.AlertStatusTriggered {
-					u.Log.Infof("alert %s is %s, skipping grace-period dispatch", alert.ID, current.Status)
-					return
-				}
-			} else {
-				u.Log.WithError(err).Warnf("could not re-check alert %s before dispatch", alert.ID)
-			}
-			dispatch(dctx)
-		})
+		// Nothing is dispatched here: the durable outbox row written with
+		// the alert (dispatch_due_at) is picked up by RunDispatchLoop when
+		// it comes due — or right after a restart inside the window, which
+		// is the bug this fixes (#40). The grace period still lets the
+		// sender cancel a false alarm before anyone is notified, and the
+		// loop re-checks the status so a cancelled alert is never fanned
+		// out.
+		u.Log.Infof("alert %s: fan-out scheduled at %d (%s grace period)",
+			alert.ID, *alert.DispatchDueAt, u.Deps.GracePeriod)
 	} else {
 		dispatch(ctx)
 	}
 
 	return result, nil
+}
+
+// sendFanout publishes or directly notifies one alert fan-out and records
+// the dispatch metric. The inline trigger path and the durable outbox loop
+// share it so both degrade identically.
+//
+// The latency is measured from just before the publish/notify call, not
+// from the request: the outbox runs after the grace period, and measuring
+// from the trigger would always report the grace period itself (#43).
+//
+// An empty recipient list is expected after a failed lookup (#37): the
+// dispatcher then skips push and still runs the emergency-contact SMS
+// fallback. A published event normally replaces the direct notify, but
+// after a degraded fan-out the local dispatcher still runs so the contacts
+// are reached even if the worker has no responder to notify. Because the
+// worker DOES resolve contacts (#38), that event is marked push-only before
+// it is published: otherwise the same incident texts the sender's emergency
+// contacts twice (once locally, once from the worker). The event carries no
+// recipient anyway, so no responder push is lost.
+func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent, recipients []string, alert model.Alert, degraded bool) {
+	if degraded {
+		event.PushOnly = true
+	}
+	sentAt := time.Now()
+	published := false
+	if u.Deps.Publisher != nil {
+		if err := u.Deps.Publisher.Send(ctx, event); err == nil {
+			published = true
+		} else {
+			u.Log.Warn("Kafka publish failed, falling back to direct notify")
+			sentAt = time.Now()
+		}
+	}
+	if published && !degraded {
+		u.recordDispatch(sentAt)
+		return
+	}
+	if u.Deps.Notifier != nil {
+		if err := u.Deps.Notifier.Notify(ctx, recipients, alert); err != nil {
+			u.Log.WithError(err).Error("failed to notify recipients")
+		}
+	}
+	u.recordDispatch(sentAt)
 }
 
 // recordDispatch reports the notification-send latency; sentAt is taken
@@ -509,9 +608,19 @@ func (u *TriggerSOSUseCase) resolveCoordinates(ctx context.Context, senderID str
 		}
 		return *req.Latitude, *req.Longitude, nil
 	}
+	if u.Deps.Location == nil {
+		// No location store wired: treat it like a missing heartbeat so the
+		// caller gets the documented 422 instead of a panic.
+		return 0, 0, fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound)
+	}
 	sender, err := u.Deps.Location.Get(ctx, senderID)
 	if err != nil {
+		// The sentinel is wrapped with %w, so mapSOSError can still answer
+		// 422 instead of a 500 (#42).
 		return 0, 0, fmt.Errorf("get sender location: %w", err)
+	}
+	if sender == nil {
+		return 0, 0, fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound)
 	}
 	return sender.Latitude, sender.Longitude, nil
 }
@@ -545,6 +654,16 @@ func (u *TriggerSOSUseCase) radiusStartIndex(severity float64) int {
 	return idx
 }
 
+// widestRadius is the outermost configured fan-out radius. It is the
+// honest fallback when the recipient lookup failed and nothing was
+// actually searched.
+func (u *TriggerSOSUseCase) widestRadius() float64 {
+	if len(u.Deps.Radii) == 0 {
+		return 0
+	}
+	return u.Deps.Radii[len(u.Deps.Radii)-1]
+}
+
 // findRecipients runs adaptive-radius GeoSearch: start at the radius
 // selected by startIndex (0 = 1 km; an AI severity may start wider) and
 // expand upward until at least MinRecipients fresh users are found,
@@ -567,13 +686,13 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 		maxCandidates = u.Deps.MaxRecipients
 	}
 	var recipients []string
-	usedRadius := u.Deps.Radii[len(u.Deps.Radii)-1]
+	usedRadius := u.widestRadius()
 	for _, radius := range u.Deps.Radii[startIndex:] {
 		usedRadius = radius
 		// +1 so the sender (excluded below) cannot eat a candidate slot.
 		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius, maxCandidates+1)
 		if err != nil {
-			return nil, 0, fmt.Errorf("search nearby users: %w", err)
+			return nil, usedRadius, fmt.Errorf("search nearby users: %w", err)
 		}
 		seen := make(map[string]struct{}, len(nearby))
 		candidates := make([]string, 0, len(nearby))

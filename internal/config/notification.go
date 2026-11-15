@@ -99,6 +99,20 @@ type SOSConfig struct {
 	AdaptiveRadiiM    []float64
 	MinRecipients     int
 	ExpireAfter       time.Duration
+	// DispatchPoll is how often the durable grace-period outbox is
+	// scanned (sos.dispatch_poll_seconds, clamped to >= 100 ms).
+	DispatchPoll time.Duration
+	// HousekeepingInterval is how often stale alerts are expired and old
+	// breadcrumb trails purged (sos.housekeeping_interval_seconds,
+	// default 60 s, clamped to >= 1 s).
+	HousekeepingInterval time.Duration
+	// WSMaxConnections / WSMaxPerIP / WSMaxPerUser bound the concurrent
+	// WebSocket tracking sockets (sos.ws_max_connections, sos.ws_max_per_ip,
+	// sos.ws_max_per_user); non-positive values keep the documented
+	// defaults in delivery/http.
+	WSMaxConnections int
+	WSMaxPerIP       int
+	WSMaxPerUser     int
 }
 
 // NewSOSConfig reads the `sos` section, falling back to README defaults.
@@ -121,7 +135,34 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 	if maxRecipients <= 0 {
 		maxRecipients = 50
 	}
+	// The durable grace-period outbox is scanned in the web process; 1 s
+	// keeps the extra dispatch latency well inside the notification budget
+	// without polling MySQL in a tight loop. Anything below 100 ms is
+	// clamped so a misconfiguration cannot hammer the database.
+	poll := v.GetFloat64("sos.dispatch_poll_seconds")
+	if poll <= 0 {
+		poll = 1
+	}
+	dispatchPoll := time.Duration(poll * float64(time.Second))
+	if dispatchPoll < minSOSDispatchPollInterval {
+		dispatchPoll = minSOSDispatchPollInterval
+	}
+	// Housekeeping (alert expiry + breadcrumb purge) is a cheap pair of
+	// indexed statements, so a minute is frequent enough to keep the active
+	// set honest without polling MySQL in a tight loop. Anything below one
+	// second is clamped for the same reason.
+	housekeeping := v.GetFloat64("sos.housekeeping_interval_seconds")
+	if housekeeping <= 0 {
+		housekeeping = 60
+	}
+	housekeepingInterval := time.Duration(housekeeping * float64(time.Second))
+	if housekeepingInterval < minSOSHousekeepingInterval {
+		housekeepingInterval = minSOSHousekeepingInterval
+	}
 	return &SOSConfig{
+		WSMaxConnections:         v.GetInt("sos.ws_max_connections"),
+		WSMaxPerIP:               v.GetInt("sos.ws_max_per_ip"),
+		WSMaxPerUser:             v.GetInt("sos.ws_max_per_user"),
 		GracePeriod:              time.Duration(grace) * time.Second,
 		RateLimitPerHour:         limit,
 		RateLimitWindow:          time.Hour,
@@ -131,8 +172,16 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 		AdaptiveRadiiM:           []float64{1000, 2000, 5000},
 		MinRecipients:            3,
 		ExpireAfter:              24 * time.Hour,
+		DispatchPoll:             dispatchPoll,
+		HousekeepingInterval:     housekeepingInterval,
 	}
 }
+
+// minSOSDispatchPollInterval floors sos.dispatch_poll_seconds.
+const minSOSDispatchPollInterval = 100 * time.Millisecond
+
+// minSOSHousekeepingInterval floors sos.housekeeping_interval_seconds.
+const minSOSHousekeepingInterval = time.Second
 
 // StorageConfig selects the incident-media storage backend.
 type StorageConfig struct {

@@ -1965,7 +1965,7 @@
         "tags": [
           "Observability"
         ],
-        "description": "Prometheus metrics in text exposition format. Includes `sos_dispatch_latency_ms`, `push_delivery_failures_total`, and `active_sos_count`. Only registered when `metrics.token` is configured; send `Authorization: <token>` (`Bearer <token>` also accepted).",
+        "description": "Prometheus metrics in text exposition format. Includes `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, and `active_sos_count`. Only registered when `metrics.token` is configured; send `Authorization: <token>` (`Bearer <token>` also accepted).",
         "responses": {
           "200": {
             "description": "Prometheus text format.",

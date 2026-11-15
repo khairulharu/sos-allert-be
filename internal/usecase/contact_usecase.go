@@ -64,10 +64,7 @@ func (c *ContactUseCase) Create(ctx context.Context, request *model.CreateContac
 
 	if c.ContactProducer != nil {
 		event := converter.ContactToEvent(contact)
-		if err := c.ContactProducer.Send(event); err != nil {
-			c.Log.WithError(err).Error("error publishing contact created event")
-			return nil, fiber.ErrInternalServerError
-		}
+		publishAfterCommit(c.Log, "contact created", func() error { return c.ContactProducer.Send(event) })
 		c.Log.Info("Published contact created event")
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping contact created event")
@@ -108,10 +105,7 @@ func (c *ContactUseCase) Update(ctx context.Context, request *model.UpdateContac
 
 	if c.ContactProducer != nil {
 		event := converter.ContactToEvent(contact)
-		if err := c.ContactProducer.Send(event); err != nil {
-			c.Log.WithError(err).Error("error publishing contact updated event")
-			return nil, fiber.ErrInternalServerError
-		}
+		publishAfterCommit(c.Log, "contact updated", func() error { return c.ContactProducer.Send(event) })
 		c.Log.Info("Published contact updated event")
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping contact updated event")

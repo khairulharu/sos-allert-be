@@ -55,6 +55,26 @@ func (r *IdempotencyRepository) Set(ctx context.Context, key, alertID string) er
 	return nil
 }
 
+// idempotencyReleaseScript is a compare-and-delete: it only removes the key
+// while it still holds the pending marker, so a failed trigger can hand its
+// claim back without ever discarding another request's finished result.
+var idempotencyReleaseScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+`)
+
+// Release drops a pending claim left behind by a failed trigger. It is a
+// no-op when the key is absent or already bound to a finished alert.
+func (r *IdempotencyRepository) Release(ctx context.Context, key string) error {
+	if err := idempotencyReleaseScript.Run(ctx, r.Client,
+		[]string{idempotencyKeyPrefix + key}, idempotencyPending).Err(); err != nil {
+		return fmt.Errorf("redis idempotency release: %w", err)
+	}
+	return nil
+}
+
 // RateLimitRepository implements a Redis sliding-window limiter:
 // max `limit` SOS triggers per `window` per user.
 type RateLimitRepository struct {

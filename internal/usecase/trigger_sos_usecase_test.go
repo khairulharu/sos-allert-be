@@ -38,6 +38,9 @@ type fakeLocationRepository struct {
 	// lastSeenMs keyed by userId; zero value means "not found" → returns error
 	lastSeenMs map[string]int64
 
+	// lastSeenBatchErr makes GetLastSeenBatch fail (freshness unknown).
+	lastSeenBatchErr error
+
 	gotSenderID    string
 	gotLongitude   float64
 	gotLatitude    float64
@@ -119,6 +122,9 @@ func (f *fakeLocationRepository) GetLastSeen(ctx context.Context, userId string)
 
 func (f *fakeLocationRepository) GetLastSeenBatch(ctx context.Context, userIds []string) (map[string]int64, error) {
 	f.lastSeenBatchCalls++
+	if f.lastSeenBatchErr != nil {
+		return nil, f.lastSeenBatchErr
+	}
 	if len(userIds) > f.lastSeenBatchMax {
 		f.lastSeenBatchMax = len(userIds)
 	}
@@ -153,6 +159,24 @@ type fakeAlertRepository struct {
 	// batch call counters guard against per-row queries in history.
 	countRespondersBatchCalls   int
 	latestBreadcrumbsBatchCalls int
+
+	// Durable outbox (#40) knobs: dueListErr fails the due scan,
+	// recipientsErr fails the fan-out recipient lookup, afterListDue runs
+	// once a scan list was built (simulates a cancel racing the scan).
+	dueListErr     error
+	recipientsErr  error
+	markDispatchFn func(alertID string, atMs int64) (bool, error)
+	afterListDue   func()
+
+	// Housekeeping knobs (#42): expiry/purge call counters and results.
+	expireCalls    int
+	expireBeforeMs int64
+	expired        int64
+	expireErr      error
+	purgeCalls     int
+	purgeBeforeMs  int64
+	purged         int64
+	purgeErr       error
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -240,7 +264,13 @@ func (f *fakeAlertRepository) Transition(ctx context.Context, db *gorm.DB, id st
 }
 
 func (f *fakeAlertRepository) ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error) {
-	return 0, nil
+	f.ensure()
+	f.expireCalls++
+	f.expireBeforeMs = beforeMs
+	if f.expireErr != nil {
+		return 0, f.expireErr
+	}
+	return f.expired, nil
 }
 
 func (f *fakeAlertRepository) CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error {
@@ -265,6 +295,13 @@ func (f *fakeAlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB,
 
 func (f *fakeAlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
 	f.ensure()
+	// Mirror the unique (alert_id, responder_id) index: a repeat answer is
+	// a no-op reported as ErrDuplicateResponse.
+	for _, existing := range f.responses[r.AlertID] {
+		if existing.ResponderID == r.ResponderID {
+			return model.ErrDuplicateResponse
+		}
+	}
 	f.responses[r.AlertID] = append(f.responses[r.AlertID], r)
 	return nil
 }
@@ -349,7 +386,52 @@ func (f *fakeAlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB,
 
 func (f *fakeAlertRepository) ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error) {
 	f.ensure()
+	if f.recipientsErr != nil {
+		return nil, f.recipientsErr
+	}
 	return append([]string(nil), f.recipients[alertID]...), nil
+}
+
+// ListDueDispatch mirrors the SQL due scan: TRIGGERED, due, not dispatched.
+func (f *fakeAlertRepository) ListDueDispatch(ctx context.Context, db *gorm.DB, dueBeforeMs int64, limit int) ([]*entity.Alert, error) {
+	f.ensure()
+	if f.dueListErr != nil {
+		return nil, f.dueListErr
+	}
+	var out []*entity.Alert
+	for _, a := range f.alerts {
+		if a.Status != entity.AlertStatusTriggered || a.DispatchDueAt == nil || a.DispatchedAt != nil {
+			continue
+		}
+		if *a.DispatchDueAt > dueBeforeMs {
+			continue
+		}
+		cp := *a
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return *out[i].DispatchDueAt < *out[j].DispatchDueAt })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	if f.afterListDue != nil {
+		f.afterListDue()
+	}
+	return out, nil
+}
+
+// MarkDispatched mirrors the conditional update: only the first call wins.
+func (f *fakeAlertRepository) MarkDispatched(ctx context.Context, db *gorm.DB, alertID string, atMs int64) (bool, error) {
+	f.ensure()
+	if f.markDispatchFn != nil {
+		return f.markDispatchFn(alertID, atMs)
+	}
+	a, ok := f.alerts[alertID]
+	if !ok || a.DispatchedAt != nil {
+		return false, nil
+	}
+	ts := atMs
+	a.DispatchedAt = &ts
+	return true, nil
 }
 
 func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error) {
@@ -370,7 +452,12 @@ func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID
 }
 
 func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
-	return 0, nil
+	f.purgeCalls++
+	f.purgeBeforeMs = beforeMs
+	if f.purgeErr != nil {
+		return 0, f.purgeErr
+	}
+	return f.purged, nil
 }
 
 func (f *fakeAlertRepository) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {
@@ -546,22 +633,35 @@ type fakeNotifier struct {
 	lastAlert      model.Alert
 	notifyErr      error
 	notifyCalled   bool
+	notifyCalls    int
+
+	// notifiedCh, when set, is closed after the first Notify call so the
+	// grace-period tests can wait for the deferred dispatch without
+	// polling (or racing on) the fields above.
+	notifiedCh chan struct{}
+	notifyOnce sync.Once
 
 	recipientNotifyCalled bool
+	recipientNotifyCalls  int
 	recipientSets         [][]string
 	escalatedAlert        model.Alert
 }
 
 func (f *fakeNotifier) Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error {
 	f.notifyCalled = true
+	f.notifyCalls++
 	f.lastRecipients = recipientIDs
 	f.lastAlert = alert
+	if f.notifiedCh != nil {
+		f.notifyOnce.Do(func() { close(f.notifiedCh) })
+	}
 	return f.notifyErr
 }
 
 // NotifyRecipients records the push-only escalation fan-out.
 func (f *fakeNotifier) NotifyRecipients(ctx context.Context, recipientIDs []string, alert model.Alert) error {
 	f.recipientNotifyCalled = true
+	f.recipientNotifyCalls++
 	f.recipientSets = append(f.recipientSets, append([]string(nil), recipientIDs...))
 	f.escalatedAlert = alert
 	return f.notifyErr
@@ -735,26 +835,8 @@ func TestTriggerSOSUseCaseExecuteGetError(t *testing.T) {
 	}
 }
 
-func TestTriggerSOSUseCaseExecuteGeoSearchError(t *testing.T) {
-	repoErr := errors.New("redis unavailable")
-	locRepo := &fakeLocationRepository{
-		sender:    &entity.LocationCache{UserId: "sender", Longitude: 108.8272, Latitude: -6.1754},
-		nearbyErr: repoErr,
-	}
-	alertRepo := &fakeAlertRepository{}
-	notifier := &fakeNotifier{}
-	useCase := newUseCase(locRepo, alertRepo, notifier)
-
-	result, err := useCase.Execute(context.Background(), "sender")
-
-	if !errors.Is(err, repoErr) {
-		t.Fatalf("Execute() error = %v, want %v", err, repoErr)
-	}
-	if result != nil {
-		t.Errorf("Execute() result = %v, want nil", result)
-	}
-}
-
+// Alert persistence is the only 5xx-worthy failure: no alert means nothing
+// to dispatch, so the notifier must not run (#37).
 func TestTriggerSOSUseCaseExecuteAlertSaveError(t *testing.T) {
 	saveErr := errors.New("db write failed")
 	locRepo := &fakeLocationRepository{
@@ -771,6 +853,12 @@ func TestTriggerSOSUseCaseExecuteAlertSaveError(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("Execute() result = %v, want nil", result)
+	}
+	if !alertRepo.createCalled {
+		t.Error("AlertRepository.Create() was not attempted")
+	}
+	if notifier.notifyCalled {
+		t.Error("Notifier.Notify() must not run when the alert could not be persisted")
 	}
 	if locRepo.geoSearchCalls != 0 {
 		t.Errorf("GeoSearch() called %d times, want 0 after save failure", locRepo.geoSearchCalls)
@@ -873,6 +961,7 @@ func (m *dispatchLatencyMetrics) ObserveDispatchDuration(ms float64) {
 }
 
 func (m *dispatchLatencyMetrics) IncPushFailures()   {}
+func (m *dispatchLatencyMetrics) IncFanoutFailures() {}
 func (m *dispatchLatencyMetrics) SetActiveSOS(int64) {}
 
 func (m *dispatchLatencyMetrics) count() int {
@@ -890,20 +979,21 @@ func (m *dispatchLatencyMetrics) first() (float64, bool) {
 	return m.samples[0], true
 }
 
-// With a grace period the dispatch runs seconds after the request; the
-// latency metric must describe the notification send, not the countdown.
+// With a grace period the dispatch runs seconds after the request (now via
+// the durable outbox, #40); the latency metric must describe the
+// notification send, not the countdown.
 func TestDispatchLatencyExcludesGracePeriod(t *testing.T) {
 	uc, _, _, _ := triggerSetup(t)
 	met := &dispatchLatencyMetrics{}
 	uc.Deps.Metrics = met
-	uc.Deps.GracePeriod = 300 * time.Millisecond
+	uc.Deps.GracePeriod = 100 * time.Millisecond
 
 	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, ""); err != nil {
 		t.Fatalf("ExecuteWithRequest error = %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for met.count() == 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	if _, err := uc.DispatchDueAlerts(context.Background()); err != nil {
+		t.Fatalf("DispatchDueAlerts error = %v", err)
 	}
 	sample, ok := met.first()
 	if !ok {

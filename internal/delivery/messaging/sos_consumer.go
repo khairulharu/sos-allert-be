@@ -12,20 +12,36 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// SosConsumeTimeout bounds the notification work for one message: a provider
+// that accepts the connection and then stalls must not pin the partition (or
+// the shutdown path) forever (#42). ConsumerGroupHandler retries/dead-letters
+// the message when the deadline hits, exactly like any other delivery error.
+const SosConsumeTimeout = 10 * time.Second
+
 // SOSConsumer handles sos.dispatched events in the worker: it fans the
 // notification out asynchronously, decoupled from the HTTP trigger.
 // Events marked push_only (post-trigger escalation) skip the
-// emergency-contact SMS fallback. A delivery failure returns an error so
-// the consumer group does not mark the message (redelivery);
-// poison-message/DLQ handling is a follow-up noted in the README.
+// emergency-contact SMS fallback. A delivery failure returns an error;
+// ConsumerGroupHandler then retries the same message in place and, when
+// it keeps failing, republishes it to the dead-letter topic before the
+// offset moves, so one flaky gateway never loses the alert.
 type SOSConsumer struct {
 	Log      *logrus.Logger
 	Notifier usecase.Notifier
+	// Timeout bounds one message (default SosConsumeTimeout).
+	Timeout time.Duration
 }
 
 // NewSOSConsumer builds the handler.
 func NewSOSConsumer(log *logrus.Logger, notifier usecase.Notifier) *SOSConsumer {
-	return &SOSConsumer{Log: log, Notifier: notifier}
+	return &SOSConsumer{Log: log, Notifier: notifier, Timeout: SosConsumeTimeout}
+}
+
+func (c *SOSConsumer) timeout() time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
+	}
+	return SosConsumeTimeout
 }
 
 // Consume processes one Kafka message.
@@ -50,7 +66,10 @@ func (c *SOSConsumer) Consume(message *sarama.ConsumerMessage) error {
 			Longitude: event.Longitude,
 		},
 	}
-	ctx := context.Background()
+	// Bound the delivery so a hung push/SMS provider cannot block the
+	// partition (and therefore the consumer-group shutdown) indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout())
+	defer cancel()
 	if event.PushOnly {
 		// Escalation event: it carries only the responders added by a
 		// wider radius, so the emergency-contact SMS fallback must not run

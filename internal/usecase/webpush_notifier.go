@@ -54,10 +54,7 @@ type webPushPayload struct {
 }
 
 func (n *WebPushNotifier) client() *http.Client {
-	if n.HTTPClient != nil {
-		return n.HTTPClient
-	}
-	return http.DefaultClient
+	return providerClient(n.HTTPClient)
 }
 
 // discardLogger discards every record. SendToUser can run in the dispatcher

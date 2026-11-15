@@ -8,11 +8,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
@@ -342,5 +344,57 @@ func TestSOSConsumerEscalationSkipsContactSMS(t *testing.T) {
 	}
 	if apnsHits != 1 {
 		t.Fatalf("APNs deliveries = %d, want 1 (paths %v)", apnsHits, gateway.captured())
+	}
+}
+
+// hungNotifier blocks until the consumer's per-message deadline, standing in
+// for a push/SMS provider that accepted the connection and stopped answering.
+type hungNotifier struct {
+	deadlineSeen bool
+}
+
+func (h *hungNotifier) Notify(ctx context.Context, recipientIDs []string, alert model.Alert) error {
+	<-ctx.Done()
+	h.deadlineSeen = errors.Is(ctx.Err(), context.DeadlineExceeded)
+	return ctx.Err()
+}
+
+// One message must not block the partition forever: Consume runs the delivery
+// under its own deadline and reports the failure so the consumer group can
+// retry or dead-letter it (#42).
+func TestSOSConsumerBoundsOneMessage(t *testing.T) {
+	notifier := &hungNotifier{}
+	consumer := NewSOSConsumer(logrus.New(), notifier)
+	consumer.Timeout = 20 * time.Millisecond
+
+	event := model.SOSEvent{
+		EventType:   "sos.dispatched",
+		AlertID:     "a1",
+		SenderID:    "sender",
+		Status:      "TRIGGERED",
+		Recipients:  []string{"user-b"},
+		TriggeredAt: 1700000000000,
+	}
+	start := time.Now()
+	err := consumer.Consume(&sarama.ConsumerMessage{Value: marshalEvent(t, event)})
+	if err == nil {
+		t.Fatal("Consume = nil, want the deadline to surface as a delivery error")
+	}
+	if !notifier.deadlineSeen {
+		t.Fatal("notifier context was not cancelled with a deadline")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Consume took %v, want it bounded by the per-message timeout", elapsed)
+	}
+}
+
+// A zero Timeout keeps the documented default bound.
+func TestSOSConsumerDefaultTimeout(t *testing.T) {
+	consumer := &SOSConsumer{}
+	if got := consumer.timeout(); got != SosConsumeTimeout {
+		t.Fatalf("timeout = %v, want %v", got, SosConsumeTimeout)
+	}
+	if SosConsumeTimeout <= 0 || SosConsumeTimeout > time.Minute {
+		t.Fatalf("SosConsumeTimeout = %v, want a sane per-message bound", SosConsumeTimeout)
 	}
 }

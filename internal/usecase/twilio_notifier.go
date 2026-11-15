@@ -29,10 +29,7 @@ func (n *TwilioNotifier) baseURL() string {
 }
 
 func (n *TwilioNotifier) client() *http.Client {
-	if n.HTTPClient != nil {
-		return n.HTTPClient
-	}
-	return http.DefaultClient
+	return providerClient(n.HTTPClient)
 }
 
 // SendSMS sends one SMS. `to` must be in E.164 format.

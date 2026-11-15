@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"golang-clean-architecture/internal/model"
@@ -71,5 +72,39 @@ func TestMapSOSErrorAlertNotFoundIsNotFound(t *testing.T) {
 	var fiberErr *fiber.Error
 	if !errors.As(mapped, &fiberErr) || fiberErr.Code != fiber.StatusNotFound {
 		t.Fatalf("mapSOSError(ErrAlertNotFound) = %v, want 404", mapped)
+	}
+}
+
+// A repeated responder answer is a client conflict (409) with a usable
+// message, never an opaque 500 (#42).
+func TestMapSOSErrorDuplicateResponseIsConflict(t *testing.T) {
+	mapped := mapSOSError(fmt.Errorf("respond failed: %w", model.ErrDuplicateResponse))
+
+	var fiberErr *fiber.Error
+	if !errors.As(mapped, &fiberErr) {
+		t.Fatalf("mapSOSError(ErrDuplicateResponse) = %v, want a *fiber.Error", mapped)
+	}
+	if fiberErr.Code != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409", fiberErr.Code)
+	}
+	if fiberErr.Message != "responder has already responded to this alert" {
+		t.Fatalf("message = %q, want the duplicate-responder message", fiberErr.Message)
+	}
+}
+
+// A trigger without body coordinates and without a stored heartbeat is a
+// client-side fix (422 with the hint), never an opaque 500 (#42).
+func TestMapSOSErrorMissingLocationIsUnprocessable(t *testing.T) {
+	mapped := mapSOSError(fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound))
+
+	var fiberErr *fiber.Error
+	if !errors.As(mapped, &fiberErr) {
+		t.Fatalf("mapSOSError(ErrUserLocationNotFound) = %v, want a *fiber.Error", mapped)
+	}
+	if fiberErr.Code != fiber.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", fiberErr.Code)
+	}
+	if !strings.Contains(fiberErr.Message, "latitude") || !strings.Contains(fiberErr.Message, "/api/location") {
+		t.Fatalf("message = %q, want the send-coordinates hint", fiberErr.Message)
 	}
 }

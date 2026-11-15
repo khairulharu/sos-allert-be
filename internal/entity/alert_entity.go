@@ -35,6 +35,13 @@ type Alert struct {
 	CancellationReason *string  `gorm:"column:cancellation_reason"`
 	ResolvedAt         *int64   `gorm:"column:resolved_at"`
 	CancelledAt        *int64   `gorm:"column:cancelled_at"`
+	// DispatchDueAt is the durable grace-period outbox marker: the fan-out
+	// is due at this millisecond timestamp. Nil means the alert was
+	// dispatched inline (no grace period), so it never enters the scan.
+	DispatchDueAt *int64 `gorm:"column:dispatch_due_at"`
+	// DispatchedAt is stamped once the fan-out for DispatchDueAt ran. Not
+	// nil (or a NULL DispatchDueAt) keeps the alert out of the due scan.
+	DispatchedAt *int64 `gorm:"column:dispatched_at"`
 }
 
 func (a *Alert) TableName() string {

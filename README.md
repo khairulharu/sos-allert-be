@@ -48,7 +48,7 @@ When a user in distress triggers an emergency SOS:
 | **Multi-Channel Dispatch** | Composite `AlertDispatcher` | ✅ Done | - | FCM/APNs/Twilio when configured; log-only fallback when a channel has no credentials. |
 | | APNs Critical Alerts & FCM v1 | 🟡 In Progress | **P0** | Apple Critical Alerts (bypasses iOS Silent/DND) + Android High-Priority FCM with custom siren sound channel. |
 | | Emergency Contacts SMS/Call Fallback | 🟡 In Progress | **P0** | Integration with Twilio/AWS SNS/Infobip: SMS + automated voice call with Google Maps link to verified contacts. |
-| | Kafka Asynchronous Notification Worker | ✅ Done | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with DLQ and exponential backoff. |
+| | Kafka Asynchronous Notification Worker | ✅ Done | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with retry + dead-letter topic (DLQ). |
 | | PSAP / 911 / E911 Integration | 🔵 Planned | **P2** | RapidSOS / Noonlight integration to push location directly to 911 CAD (Computer Aided Dispatch). |
 | **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | ✅ Done | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
 | | Breadcrumb History (`alert_breadcrumbs`) | ✅ Done | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
@@ -60,7 +60,7 @@ When a user in distress triggers an emergency SOS:
 | **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
 | **Anti-Abuse & Rate Limiting** | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. Wajib set `web.proxy_header` kalau deploy di belakang proxy/tunnel (§9), kalau tidak limit per-IP jadi satu bucket global untuk semua user. |
 | | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
-| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`. Route hanya didaftarkan bila `metrics.token` diisi dan scrape wajib mengirim `Authorization: <token>`. |
+| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, `active_sos_count`. Route hanya didaftarkan bila `metrics.token` diisi dan scrape wajib mengirim `Authorization: <token>`. |
 
 ---
 
@@ -117,7 +117,7 @@ sequenceDiagram
 | `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
 | `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
 | `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50. `users:last_seen` dibaca satu `HMGET` per request (bukan `HGET` per kandidat) |
-| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit per jam default 3 → `sos.rate_limit_per_hour`, matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi |
+| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit per jam default 3 → `sos.rate_limit_per_hour`, matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi. Fan-out **fail-open**: alert sudah tersimpan sebelum pencarian penerima, jadi error Redis GEO/HMGET tetap `201` dengan `recipients_notified: 0` (dispatch + SMS kontak darurat tetap jalan), bukan 5xx |
 | `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
 | `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
 | `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
@@ -135,7 +135,7 @@ sequenceDiagram
 | `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` saat `webpush.enabled: false` atau key kosong |
 | `GET/POST` | `/api/push/subscriptions` | ✅ | Daftar / simpan langganan Web Push browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → re-subscribe = upsert |
 | `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan milik user (body `{"endpoint": "..."}`); endpoint tak dikenal tetap `200` |
-| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `active_sos_count`). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>` (`401` tanpa token, `404` bila token kosong) |
+| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, `active_sos_count`). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>` (`401` tanpa token, `404` bila token kosong) |
 | `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
 | `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
 
@@ -173,6 +173,13 @@ Response 201 Created:
   }
 }
 ```
+
+> **Fail-open fan-out.** Alert disimpan *sebelum* pencarian penerima. Kalau
+> `GEOSEARCH`/`users:last_seen` (Redis) gagal, request tetap `201` dengan
+> `recipients_notified: 0`: alert tetap `TRIGGERED`, dispatch (push + SMS
+> kontak darurat Tier-1) tetap dijalankan dengan daftar penerima kosong, dan
+> kegagalan dihitung di `sos_fanout_failures_total`. `5xx` hanya untuk
+> kegagalan yang membuat alert sendiri tidak tersimpan.
 
 ```http
 POST /api/sos/:alertId/cancel
@@ -582,6 +589,30 @@ CREATE TABLE emergency_contacts (
   duluan, binary lama gagal saat auth). Rollback: `migrate down` dulu, baru
   deploy binary lama; token tetap tidak bisa dipulihkan.
 
+### Migrasi grace period outbox (`20261115000000_alert_dispatch_outbox.*.sql`)
+
+- Menambah `alerts.dispatch_due_at BIGINT NULL` dan `alerts.dispatched_at
+  BIGINT NULL`, plus index `(status, dispatch_due_at, dispatched_at)` untuk
+  scan due.
+- Latar belakang: fan-out setelah grace period dulu dijadwalkan dengan
+  `time.AfterFunc` di proses web. Restart/deploy/OOM di dalam window 10 detik
+  membuat alert tetap `TRIGGERED` (penerima sudah tercatat di
+  `alert_recipients`) tapi **tidak pernah dikirim ke siapa pun**.
+- Sekarang `dispatch_due_at` (= `triggered_at` + grace) disimpan bersama alert
+  saat `Create`, dan `TriggerSOSUseCase.RunDispatchLoop` (proses web saja)
+  memindai baris yang sudah due setiap `sos.dispatch_poll_seconds` (default 1,
+  minimal 0.1 detik): re-check status masih `TRIGGERED`, muat penerima dari
+  `alert_recipients`, dispatch seperti jalur trigger (Kafka kalau aktif, kalau
+  tidak `Notifier`), lalu `MarkDispatched` (`UPDATE … WHERE dispatched_at IS
+  NULL`). Alert yang di-cancel/resolve dilewati dan tetap ditandai.
+- Semantik **at-least-once**: crash setelah kirim tapi sebelum menandai akan
+  mengirim ulang. Duplikat notifikasi masih bisa diterima; SOS yang hilang
+  tidak. `sos.grace_period_seconds = 0` tetap dispatch inline dan tidak menulis
+  `dispatch_due_at`.
+- Catatan: perluasan fan-out pasca-audio (`escalateFanout`) masih menunggu sisa
+  grace period lewat timer in-process; alert yang di-cancel tetap tidak
+  menyebar karena status di-recheck.
+
 Untuk environment lain, jalankan `migrate up` (termasuk migrasi sesi di atas).
 
 ---
@@ -699,6 +730,44 @@ berubah; keduanya jalan berdampingan dan masing-masing gagal-terbuka.
   web push (`push_subscriptions`) tetap terkirim dari worker. Web process tidak
   ikut mengirim setelah publish sukses, jadi tidak ada notifikasi ganda.
 
+### Retry & Dead-Letter Topic Kafka
+
+Consumer worker tidak lagi melewati pesan yang gagal: offset hanya di-commit
+setelah pesan berhasil diproses **atau** sudah aman di DLQ.
+
+```json
+"kafka": {
+  "consumer": {
+    "max_retries": 3,
+    "retry_backoff_seconds": 1
+  },
+  "dlq": {
+    "topic": "sos.dispatched.dlq"
+  }
+}
+```
+
+- `kafka.consumer.max_retries` (default `3`) = jumlah retry pesan yang sama
+  setelah percobaan pertama, dengan jeda `kafka.consumer.retry_backoff_seconds`
+  (default `1` detik, linear) sebelum tiap retry. Nilai `0`/tidak diisi =
+  default; nilai negatif mematikan retry sehingga pesan gagal langsung ke DLQ.
+  Retry pertama sudah menangani gangguan sesaat khas gateway (FCM 5xx, timeout
+  Twilio) tanpa kehilangan notifikasi.
+- `kafka.dlq.topic` (default `sos.dispatched.dlq`) menerima payload **asli
+  byte-for-byte** (key asli ikut dipertahankan) setelah semua retry habis,
+  ditambah header: `dlq.source.topic`, `dlq.source.partition`,
+  `dlq.source.offset`, dan `dlq.error` (error terakhir). Header asli pesan ikut
+  disalin, jadi trace/tenant id tidak hilang. Setelah publish DLQ sukses baru
+  offset di-commit.
+- Kalau publish ke DLQ gagal (broker mati), offset **tidak** di-commit dan
+  claim dihentikan, sehingga consumer group me-replay pesan itu dari offset
+  terakhir yang ter-commit. Kalau `kafka.producer.enabled: false` atau
+  `kafka.dlq.topic` dikosongkan, pesan dicatat di log sebagai dropped setelah
+  retry (tidak panic, tidak menggantung partisi).
+- Topik `users`/`contacts`/`addresses` ikut me-retry tapi tanpa DLQ (mirror
+  best-effort). DLQ belum punya replay otomatis: untuk memproses ulang, isi
+  ulang `sos.dispatched` dari record `sos.dispatched.dlq` secara manual.
+
 ### Menjalankan Database Migration
 ```bash
 # Menggunakan migrate CLI
@@ -717,6 +786,14 @@ go run cmd/worker/main.go
 # 3. Build & Vet
 go build ./... && go vet ./...
 ```
+
+`cmd/web` menangani `SIGINT`/`SIGTERM`: listener berhenti menerima koneksi
+baru, request yang sedang jalan diberi waktu sampai 10 detik
+(`app.ShutdownWithTimeout`), dan context root dibatalkan sehingga loop
+background (gauge `active_sos_count` dan scan grace-period outbox) ikut
+berhenti. Fan-out yang belum jatuh tempo tetap aman karena due time-nya sudah
+tersimpan di tabel `alerts`; proses berikutnya yang mengirimkannya (§6).
+Ctrl-C kedua langsung mematikan proses tanpa menunggu drain.
 
 ---
 
@@ -782,8 +859,17 @@ Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
 - **Media S3/GCS**: upload tersimpan lokal (`storage.local_dir`);
   backend S3 belum di-wire.
 - **OpenTelemetry**: hanya metrik Prometheus manual; tracing OTEL
-  belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) belum di-wire;
-  pesan gagal di-redelivery oleh consumer group.
+  belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) sekarang
+  di-wire: consumer worker me-retry pesan yang gagal di offset yang sama
+  (`kafka.consumer.max_retries`, default 3, backoff
+  `kafka.consumer.retry_backoff_seconds`, default 1 s), lalu
+  mem-publish payload aslinya ke `kafka.dlq.topic` beserta header
+  `dlq.source.topic/partition/offset` + `dlq.error` sebelum offset
+  di-commit. Kalau publish DLQ sendiri gagal, offset **tidak** di-commit
+  supaya pesan di-redeliver; kalau producer Kafka dimatikan atau topik DLQ
+  dikosongkan, pesan dicatat di log lalu di-drop setelah retry. Topik
+  `users`/`contacts`/`addresses` hanya me-retry (tanpa DLQ). `DLQ` belum
+  punya consumer/replay tool otomatis, jadi replay masih manual.
 
 Jalankan semua migrasi (`migrate up`; versi terakhir `20261109000000_push_subscriptions`)
 sebelum memakai endpoint baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
@@ -815,7 +901,9 @@ go build ./... && go vet ./...
 Coverage utama yang diuji:
 - trigger SOS, idempotency, rate limit, adaptive radius, dan error persistence;
 - lifecycle alert, PIN, responder/ETA, breadcrumbs, media, dan akses peserta;
-- AI triage, dispatch FCM/APNs/Twilio melalui `httptest`, consumer Kafka;
+- AI triage, dispatch FCM/APNs/Twilio melalui `httptest`, consumer Kafka
+  (retry pesan yang sama, DLQ dengan payload + header asli, offset tetap
+  uncommitted kalau DLQ gagal);
 - HTTP SOS end-to-end dengan in-memory stores, WebSocket hub, metrics;
 - state machine entity alert (`IsActive` dan `CanTransitionTo`);
 - helper geospatial distance dan repository lokasi Redis live.

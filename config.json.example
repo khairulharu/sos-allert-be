@@ -43,14 +43,30 @@
     },
     "producer": {
       "enabled": false
+    },
+    "consumer": {
+      "max_retries": 3,
+      "retry_backoff_seconds": 1
+    },
+    "connect": {
+      "max_attempts": 3,
+      "retry_backoff_seconds": 2
+    },
+    "dlq": {
+      "topic": "sos.dispatched.dlq"
     }
   },
   "sos": {
     "grace_period_seconds": 10,
+    "dispatch_poll_seconds": 1,
+    "housekeeping_interval_seconds": 60,
     "rate_limit_per_hour": 3,
     "classify_rate_limit_per_hour": 10,
     "rate_limit_disabled": false,
-    "max_recipients": 50
+    "max_recipients": 50,
+    "ws_max_connections": 500,
+    "ws_max_per_ip": 10,
+    "ws_max_per_user": 3
   },
   "auth": {
     "rate_limit_per_minute": 5,
