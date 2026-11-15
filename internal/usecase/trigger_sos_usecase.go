@@ -664,6 +664,9 @@ func (u *TriggerSOSUseCase) escalateFanout(ctx context.Context, alert *entity.Al
 				TriggeredAt:   alert.TriggeredAt,
 				Severity:      info.Severity,
 				Summary:       info.Summary,
+				// Push-only: the consumer must not text the sender's
+				// emergency contacts a second time.
+				PushOnly: true,
 			}
 			if err := u.Deps.Publisher.Send(nctx, event); err == nil {
 				return

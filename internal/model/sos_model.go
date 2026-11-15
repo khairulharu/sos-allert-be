@@ -318,4 +318,10 @@ type SOSEvent struct {
 	// in the notification and never used for the fan-out decision.
 	ClientSeverity *float64 `json:"client_severity,omitempty"`
 	ClientSummary  string   `json:"client_summary,omitempty"`
+	// PushOnly marks a post-trigger escalation: the event carries only the
+	// responders added by the wider radius, so the consumer must not run
+	// the emergency-contact SMS fallback again (the first fan-out already
+	// texted them). Absent in the JSON means a normal dispatch, which keeps
+	// old producers/consumers compatible.
+	PushOnly bool `json:"push_only,omitempty"`
 }

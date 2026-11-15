@@ -4,6 +4,7 @@ import (
 	"context"
 	"golang-clean-architecture/internal/config"
 	"golang-clean-architecture/internal/delivery/messaging"
+	"golang-clean-architecture/internal/repository"
 	"golang-clean-architecture/internal/usecase"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -19,12 +21,17 @@ func main() {
 	logger := config.NewLogger(viperConfig)
 	logger.Info("Starting worker service")
 
+	// MySQL is read-only for the worker: it resolves push tokens and the
+	// sender's emergency contacts during fan-out. Startup hard-fails when
+	// the database is unreachable, like cmd/web.
+	db := config.NewDatabase(viperConfig, logger)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go RunUserConsumer(logger, viperConfig, ctx)
 	go RunContactConsumer(logger, viperConfig, ctx)
 	go RunAddressConsumer(logger, viperConfig, ctx)
-	go RunSOSConsumer(logger, viperConfig, ctx)
+	go RunSOSConsumer(logger, viperConfig, db, ctx)
 
 	terminateSignals := make(chan os.Signal, 1)
 	signal.Notify(terminateSignals, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
@@ -63,18 +70,35 @@ func RunUserConsumer(logger *logrus.Logger, viperConfig *viper.Viper, ctx contex
 	messaging.ConsumeTopic(ctx, userConsumerGroup, "users", logger, userHandler.Consume)
 }
 
-// RunSOSConsumer fans SOS events out asynchronously. The worker has no
-// database, so dispatch uses FCM topics (no token lookup) and Twilio
-// from config only; without credentials it logs, like the web path.
-func RunSOSConsumer(logger *logrus.Logger, viperConfig *viper.Viper, ctx context.Context) {
+// RunSOSConsumer fans SOS events out asynchronously. The worker uses the
+// same MySQL connection as cmd/web to load each recipient's FCM/APNs
+// token and the sender's emergency contacts (the SMS fallback), so the
+// Kafka path delivers exactly what the direct path does. FCM/APNs/Twilio
+// credentials still come from config; every channel stays config-gated.
+func RunSOSConsumer(logger *logrus.Logger, viperConfig *viper.Viper, db *gorm.DB, ctx context.Context) {
 	logger.Info("setup sos consumer")
 	notificationConfig := config.NewNotificationConfig(viperConfig, logger)
+	webPushConfig := config.NewWebPushConfig(viperConfig)
 	dispatcher := usecase.NewAlertDispatcher(logger,
 		&usecase.FCMNotifier{Enabled: notificationConfig.FCMEnabled, ProjectID: notificationConfig.FCMProjectID, AccessToken: notificationConfig.FCMAccessToken},
 		&usecase.APNsNotifier{Enabled: notificationConfig.APNsEnabled, KeyID: notificationConfig.APNsKeyID, TeamID: notificationConfig.APNsTeamID, BundleID: notificationConfig.APNsBundleID, PrivateKeyPEM: notificationConfig.APNsPrivateKey, Production: notificationConfig.APNsProduction},
 		&usecase.TwilioNotifier{Enabled: notificationConfig.TwilioEnabled, AccountSID: notificationConfig.TwilioSID, AuthToken: notificationConfig.TwilioToken, FromNumber: notificationConfig.TwilioFrom},
-		// web push needs the subscription table; the worker has no DB.
-		nil, nil, nil, nil)
+		// Browser web push reads push_subscriptions from the same DB, so the
+		// worker delivers it too; without VAPID keys it degrades to log-only
+		// like the HTTP path.
+		&usecase.WebPushNotifier{
+			Enabled:         webPushConfig.Enabled,
+			VAPIDPublicKey:  webPushConfig.VAPIDPublicKey,
+			VAPIDPrivateKey: webPushConfig.VAPIDPrivateKey,
+			Subscriber:      webPushConfig.Subscriber,
+			TTLSeconds:      webPushConfig.TTLSeconds,
+			Subs:            repository.NewPushSubscriptionRepository(db, logger),
+			Log:             logger,
+			AllowedHosts:    webPushConfig.AllowedHosts,
+		},
+		repository.NewUserReaderRepository(db, logger),
+		&repository.DispatchContactRepository{DB: db, Repo: repository.NewEmergencyContactRepository(logger)},
+		nil)
 	sosConsumerGroup := config.NewKafkaConsumerGroup(viperConfig, logger)
 	sosHandler := messaging.NewSOSConsumer(logger, dispatcher)
 	messaging.ConsumeTopic(ctx, sosConsumerGroup, "sos.dispatched", logger, sosHandler.Consume)
