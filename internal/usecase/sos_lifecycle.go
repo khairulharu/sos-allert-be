@@ -516,7 +516,7 @@ func (u *TriggerSOSUseCase) ListBreadcrumbs(ctx context.Context, requesterID, al
 			return nil, err
 		}
 		if !isResponder {
-			return nil, model.ErrNotAlertParticipant
+			return nil, model.ErrAlertNotFound
 		}
 	}
 	crumbs, err := u.Deps.Alerts.ListBreadcrumbs(ctx, u.DB, alertID, 1000)
@@ -975,7 +975,9 @@ func (u *TriggerSOSUseCase) PurgeOldBreadcrumbs(ctx context.Context) (int64, err
 }
 
 // AuthorizeTracking reports whether a user may subscribe to an
-// incident's live stream (sender or responder only).
+// incident's live stream (sender or responder only). Everyone else gets
+// ErrAlertNotFound, exactly like an unknown id: the tracking and media
+// read paths must not confirm which alert ids exist.
 func (u *TriggerSOSUseCase) AuthorizeTracking(ctx context.Context, userID, alertID string) error {
 	alert, err := u.Deps.Alerts.GetByID(ctx, u.DB, alertID)
 	if err != nil {
@@ -989,7 +991,7 @@ func (u *TriggerSOSUseCase) AuthorizeTracking(ctx context.Context, userID, alert
 		return err
 	}
 	if !isResponder {
-		return model.ErrNotAlertParticipant
+		return model.ErrAlertNotFound
 	}
 	return nil
 }

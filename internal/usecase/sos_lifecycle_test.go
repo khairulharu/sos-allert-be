@@ -474,8 +474,8 @@ func TestMediaUploadListAndDownload(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].ID != up.ID {
 		t.Fatalf("list = %+v, err = %v", list, err)
 	}
-	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-outside", alertID, up.ID); !errors.Is(err, model.ErrNotAlertParticipant) {
-		t.Fatalf("outsider open error = %v, want ErrNotAlertParticipant", err)
+	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-outside", alertID, up.ID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("outsider open error = %v, want ErrAlertNotFound (same as an unknown id)", err)
 	}
 	lat, lng := -6.21, 106.85
 	if _, err := uc.Respond(context.Background(), "user-b", alertID, &model.RespondSOSRequest{
@@ -494,6 +494,38 @@ func TestMediaUploadListAndDownload(t *testing.T) {
 	}
 	if _, _, err := uc.OpenAlertMedia(context.Background(), "user-b", alertID, "missing"); !errors.Is(err, model.ErrMediaNotFound) {
 		t.Fatalf("missing media error = %v, want ErrMediaNotFound", err)
+	}
+}
+
+// The read-only tracking paths (breadcrumbs, live stream auth) must answer
+// like an unknown id for a non-participant, so they cannot be used to probe
+// which alert ids exist.
+func TestReadPathsHideForeignAlerts(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+
+	if _, err := uc.ListBreadcrumbs(context.Background(), "stranger", alertID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("stranger breadcrumbs error = %v, want ErrAlertNotFound", err)
+	}
+	if _, err := uc.ListBreadcrumbs(context.Background(), "stranger", "no-such-alert"); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("unknown-id breadcrumbs error = %v, want ErrAlertNotFound", err)
+	}
+	if err := uc.AuthorizeTracking(context.Background(), "stranger", alertID); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("stranger tracking auth error = %v, want ErrAlertNotFound", err)
+	}
+	if err := uc.AuthorizeTracking(context.Background(), "stranger", "no-such-alert"); !errors.Is(err, model.ErrAlertNotFound) {
+		t.Fatalf("unknown-id tracking auth error = %v, want ErrAlertNotFound", err)
+	}
+	// The participant happy paths are unchanged.
+	if err := uc.AuthorizeTracking(context.Background(), "sender", alertID); err != nil {
+		t.Fatalf("sender tracking auth error = %v, want nil", err)
+	}
+	if _, err := uc.ListBreadcrumbs(context.Background(), "sender", alertID); err != nil {
+		t.Fatalf("sender breadcrumbs error = %v, want nil", err)
 	}
 }
 
