@@ -31,10 +31,9 @@ const (
 // suffix. Per-topic groups keep a rebalance (or a stalled consumer) on one
 // topic from disturbing the other three (#42).
 var kafkaGroupSuffixes = map[string]string{
-	"users":          "-users",
-	"contacts":       "-contacts",
-	"addresses":      "-addresses",
-	"sos.dispatched": "-sos",
+	"users":     "-users",
+	"contacts":  "-contacts",
+	"addresses": "-addresses",
 }
 
 // KafkaGroupID derives the consumer-group id of one topic from the
@@ -45,6 +44,14 @@ func KafkaGroupID(base, topic string) string {
 	base = strings.TrimSpace(base)
 	if base == "" {
 		base = DefaultKafkaGroupID
+	}
+	// The SOS consumer keeps the legacy base group id on purpose: a new
+	// group would re-read sos.dispatched from kafka.auto.offset.reset, and
+	// replaying historical events would re-notify old alerts. The three
+	// other topics get their own group, so every topic still has a distinct
+	// group and a rebalance cannot disturb the others.
+	if topic == "sos.dispatched" {
+		return base
 	}
 	if suffix, ok := kafkaGroupSuffixes[topic]; ok {
 		return base + suffix

@@ -84,7 +84,7 @@ func TestKafkaGroupIDPerTopic(t *testing.T) {
 		"users":          "sos-allert-users",
 		"contacts":       "sos-allert-contacts",
 		"addresses":      "sos-allert-addresses",
-		"sos.dispatched": "sos-allert-sos",
+		"sos.dispatched": "sos-allert",
 	}
 	seen := map[string]string{}
 	for topic, want := range cases {
