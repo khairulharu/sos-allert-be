@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	"golang-clean-architecture/internal/entity"
+	"golang-clean-architecture/internal/model"
 
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -20,13 +22,51 @@ func NewPushSubscriptionRepository(db *gorm.DB, log *logrus.Logger) *PushSubscri
 	return &PushSubscriptionRepository{DB: db, Log: log}
 }
 
-// Upsert stores a subscription, re-pointing an existing endpoint (same
-// browser, possibly a different user) instead of duplicating it.
+// Upsert stores a subscription. An endpoint belongs to the browser that
+// created it: re-subscribing the same endpoint refreshes that user's keys,
+// while another user trying to claim it gets model.ErrPushEndpointOwned
+// instead of taking it over. The ownership check and the write happen in
+// one transaction with the endpoint row locked, so two racing subscribes
+// cannot both win.
 func (r *PushSubscriptionRepository) Upsert(ctx context.Context, sub *entity.PushSubscription) error {
-	return r.DB.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "endpoint"}},
-		DoUpdates: clause.AssignmentColumns([]string{"user_id", "p256dh", "auth", "user_agent", "updated_at"}),
-	}).Create(sub).Error
+	return r.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing entity.PushSubscription
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("endpoint = ?", sub.Endpoint).First(&existing).Error
+		switch {
+		case err == nil:
+			if existing.UserID != sub.UserID {
+				return model.ErrPushEndpointOwned
+			}
+			// Same browser, same user: refresh the keys in place and
+			// report the row that actually exists.
+			sub.ID = existing.ID
+			return tx.Model(&entity.PushSubscription{}).
+				Where("id = ?", existing.ID).
+				Updates(map[string]any{
+					"p256dh":     sub.P256DH,
+					"auth":       sub.Auth,
+					"user_agent": sub.UserAgent,
+					"updated_at": sub.UpdatedAt,
+				}).Error
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			if createErr := tx.Create(sub).Error; createErr != nil {
+				// Lost a race with a concurrent subscribe for the same
+				// endpoint: answer with the winner's owner.
+				var owner entity.PushSubscription
+				if findErr := tx.Where("endpoint = ?", sub.Endpoint).First(&owner).Error; findErr == nil {
+					if owner.UserID != sub.UserID {
+						return model.ErrPushEndpointOwned
+					}
+					return nil
+				}
+				return createErr
+			}
+			return nil
+		default:
+			return err
+		}
+	})
 }
 
 func (r *PushSubscriptionRepository) ListByUserID(ctx context.Context, userID string) ([]*entity.PushSubscription, error) {
