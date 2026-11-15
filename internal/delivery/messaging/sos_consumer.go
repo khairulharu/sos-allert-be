@@ -15,9 +15,10 @@ import (
 // SOSConsumer handles sos.dispatched events in the worker: it fans the
 // notification out asynchronously, decoupled from the HTTP trigger.
 // Events marked push_only (post-trigger escalation) skip the
-// emergency-contact SMS fallback. A delivery failure returns an error so
-// the consumer group does not mark the message (redelivery);
-// poison-message/DLQ handling is a follow-up noted in the README.
+// emergency-contact SMS fallback. A delivery failure returns an error;
+// ConsumerGroupHandler then retries the same message in place and, when
+// it keeps failing, republishes it to the dead-letter topic before the
+// offset moves, so one flaky gateway never loses the alert.
 type SOSConsumer struct {
 	Log      *logrus.Logger
 	Notifier usecase.Notifier
