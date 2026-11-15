@@ -408,7 +408,8 @@ Backend memperlebar sendiri jangkauannya:
 - Notifikasi ini tetap menunggu grace period (`TRIGGERED` + 10 detik) dan
   re-check status, jadi alert yang di-cancel di countdown tidak menyebar.
 - Kalau dispatch lewat Kafka, event `sos.dispatched` kedua dikirim dengan daftar
-  penerima tambahan saja.
+  penerima tambahan saja **plus `push_only: true`**, jadi worker hanya mengirim
+  push ke penerima baru dan tidak mengulang SMS ke kontak darurat pengirim.
 - Response upload menandai perluasan: `escalated: true`, `recipients_added: N`.
 - Kontak darurat pengirim **tidak** di-SMS dua kali (kanal push-only).
 
@@ -679,7 +680,10 @@ berubah; keduanya jalan berdampingan dan masing-masing gagal-terbuka.
 - `enabled: false` atau key kosong → kanal dianggap tidak terkonfigurasi (`ErrPushNotConfigured`); dispatcher hanya menulis log dan SOS tetap sukses.
 - Alur: user menekan toggle **Push notifications** di Profile (butuh gesture untuk prompt izin) → browser `PushManager.subscribe()` → `POST /api/push/subscriptions` → saat SOS fan-out, `AlertDispatcher` mengenkripsi payload (RFC 8291) dan mengirim per langganan. Endpoint yang dijawab `404`/`410` oleh push service langsung dihapus dari `push_subscriptions`.
 - Butuh secure context: `https://` atau `localhost` (alamat LAN `http://` tidak bisa).
-- Kalau `kafka.producer.enabled: true`, dispatch pindah ke worker dan worker tidak punya akses database, sehingga web push tidak terkirim — jalankan web push dengan producer Kafka `false`.
+- Kalau `kafka.producer.enabled: true`, dispatch pindah ke worker; worker membuka
+  MySQL yang sama, jadi FCM token, APNs critical alert, SMS kontak darurat, dan
+  web push (`push_subscriptions`) tetap terkirim dari worker. Web process tidak
+  ikut mengirim setelah publish sukses, jadi tidak ada notifikasi ganda.
 
 ### Menjalankan Database Migration
 ```bash
@@ -693,6 +697,7 @@ migrate -path db/migrations -database "mysql://user:pass@tcp(host:port)/dbname" 
 go run cmd/web/main.go
 
 # 2. Jalankan Worker Kafka (jika Kafka enabled)
+#    Worker butuh MySQL yang sama (token push + kontak darurat) dan Kafka.
 go run cmd/worker/main.go
 
 # 3. Build & Vet
