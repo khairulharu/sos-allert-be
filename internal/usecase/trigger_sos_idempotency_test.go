@@ -217,23 +217,42 @@ func TestTriggerSOSIdempotencyReleasedWhenAlertCreateFails(t *testing.T) {
 	}
 }
 
-// The recipient fan-out error path happens after the claim too, so it must
-// release as well; otherwise the sender cannot retry for five minutes.
-func TestTriggerSOSIdempotencyReleasedWhenFanoutFails(t *testing.T) {
-	uc, locRepo, _, _ := triggerSetup(t)
+// The recipient fan-out failure happens after the alert is persisted, so with
+// the fail-open fan-out (#37) the trigger finishes: the key keeps the alert
+// instead of being released, and the retry replays it rather than duplicating
+// a trigger that already recorded an alert.
+func TestTriggerSOSIdempotencyFanoutFailureStillFinishes(t *testing.T) {
+	uc, locRepo, alertRepo, notifier := triggerSetup(t)
 	idem := &fakeIdempotency{}
 	uc.Deps.Idempotency = idem
 
-	geoErr := errors.New("redis geo down")
-	locRepo.nearbyErr = geoErr
-	if _, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "fanout-key"); !errors.Is(err, geoErr) {
-		t.Fatalf("trigger error = %v, want %v", err, geoErr)
+	locRepo.nearbyErr = errors.New("redis geo down")
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "fanout-key")
+	if err != nil {
+		t.Fatalf("fan-out failure must fail open, got %v", err)
 	}
-	if idem.releases != 1 {
-		t.Fatalf("Release calls = %d, want 1 after a fan-out failure", idem.releases)
+	if idem.releases != 0 {
+		t.Fatalf("Release calls = %d, want 0 (the alert was persisted)", idem.releases)
 	}
-	if _, held := idem.values["sender:fanout-key"]; held {
-		t.Fatalf("pending claim still held after the fan-out failure: %v", idem.values)
+	if stored := idem.values["sender:fanout-key"]; stored == "" || stored == "pending" {
+		t.Fatalf("stored idempotency value = %q, want the finished result", stored)
+	}
+	if !notifier.notifyCalled {
+		t.Fatal("the trigger must still dispatch after a failed lookup")
+	}
+	if len(alertRepo.alerts) != 1 {
+		t.Fatalf("alerts created = %d, want 1", len(alertRepo.alerts))
+	}
+
+	replay, err := uc.ExecuteWithRequest(context.Background(), "sender", bodyCoordinates(), "fanout-key")
+	if err != nil {
+		t.Fatalf("replay error = %v", err)
+	}
+	if replay.Alert.ID != result.Alert.ID {
+		t.Fatalf("replay alert id = %s, want %s", replay.Alert.ID, result.Alert.ID)
+	}
+	if len(alertRepo.alerts) != 1 {
+		t.Fatalf("alerts created = %d, want 1 after the replay", len(alertRepo.alerts))
 	}
 }
 

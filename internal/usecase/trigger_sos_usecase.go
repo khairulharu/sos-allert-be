@@ -349,9 +349,28 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 	u.Log.Infof("alert %s saved for sender %s at (%.6f, %.6f)", alert.ID, senderID, longitude, latitude)
 
+	// The fan-out is fail-open (#37): the alert row is already persisted, so
+	// a recipient lookup outage (Redis GEOSEARCH/HMGET) must not turn a
+	// life-safety trigger into a 500 that notifies nobody. Returning an
+	// error here used to skip the dispatch entirely — the sender's
+	// emergency contacts were never texted and the alert stayed TRIGGERED.
+	// Degrade to an empty fan-out instead; the dispatch below still runs,
+	// which is what carries the emergency-contact SMS fallback.
+	// fanoutDegraded marks a failed recipient lookup: the fan-out then has
+	// nobody to reach, so the emergency-contact fallback must not be
+	// skipped just because Kafka accepted the (empty) event.
+	fanoutDegraded := false
 	recipients, radius, err := u.findRecipients(ctx, senderID, longitude, latitude, radiusStart)
 	if err != nil {
-		return nil, err
+		u.Log.WithError(err).Errorf("alert %s: recipient lookup failed, dispatching without nearby responders", alert.ID)
+		if u.Deps.Metrics != nil {
+			u.Deps.Metrics.IncFanoutFailures()
+		}
+		fanoutDegraded = true
+		recipients = []string{}
+		// No radius was actually searched; report the widest configured
+		// one instead of a misleading 0.
+		radius = u.widestRadius()
 	}
 	if err := u.Deps.Alerts.CreateRecipients(ctx, u.DB, alert.ID, recipients, alert.TriggeredAt); err != nil {
 		u.Log.WithError(err).Warn("could not record alert recipients")
@@ -398,6 +417,10 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 
 	dispatch := func(dispatchCtx context.Context) {
+		// An empty recipient list is expected after a failed lookup (#37):
+		// the dispatcher then skips push and still runs the
+		// emergency-contact SMS fallback.
+		published := false
 		if u.Deps.Publisher != nil {
 			event := model.SOSEvent{
 				EventType:      "sos.dispatched",
@@ -415,10 +438,18 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				ClientSummary:  req.ClientSummary,
 			}
 			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
-				u.recordDispatch(startedAt)
-				return
+				published = true
+			} else {
+				u.Log.Warn("Kafka publish failed, falling back to direct notify")
 			}
-			u.Log.Warn("Kafka publish failed, falling back to direct notify")
+		}
+		// A published event normally replaces the direct notify. After a
+		// degraded fan-out the worker has no responder to reach and no
+		// contact resolver, so the local dispatcher still runs to keep the
+		// emergency-contact SMS fallback (#37).
+		if published && !fanoutDegraded {
+			u.recordDispatch(startedAt)
+			return
 		}
 		if u.Deps.Notifier != nil {
 			if err := u.Deps.Notifier.Notify(dispatchCtx, recipients, alertModel); err != nil {
@@ -573,6 +604,16 @@ func (u *TriggerSOSUseCase) radiusStartIndex(severity float64) int {
 	return idx
 }
 
+// widestRadius is the outermost configured fan-out radius. It is the
+// honest fallback when the recipient lookup failed and nothing was
+// actually searched.
+func (u *TriggerSOSUseCase) widestRadius() float64 {
+	if len(u.Deps.Radii) == 0 {
+		return 0
+	}
+	return u.Deps.Radii[len(u.Deps.Radii)-1]
+}
+
 // findRecipients runs adaptive-radius GeoSearch: start at the radius
 // selected by startIndex (0 = 1 km; an AI severity may start wider) and
 // expand upward until at least MinRecipients fresh users are found,
@@ -586,12 +627,12 @@ func (u *TriggerSOSUseCase) findRecipients(ctx context.Context, senderID string,
 	}
 	now := time.Now().UnixMilli()
 	var recipients []string
-	usedRadius := u.Deps.Radii[len(u.Deps.Radii)-1]
+	usedRadius := u.widestRadius()
 	for _, radius := range u.Deps.Radii[startIndex:] {
 		usedRadius = radius
 		nearby, err := u.Deps.Location.GeoSearch(ctx, longitude, latitude, radius)
 		if err != nil {
-			return nil, 0, fmt.Errorf("search nearby users: %w", err)
+			return nil, usedRadius, fmt.Errorf("search nearby users: %w", err)
 		}
 		seen := make(map[string]struct{}, len(nearby))
 		candidates := make([]string, 0, len(nearby))
