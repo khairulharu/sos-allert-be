@@ -222,6 +222,25 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		return nil, model.ErrInvalidSender
 	}
 
+	// Idempotency: replay a finished key instead of creating a duplicate.
+	// The key is namespaced per sender (#35) so the client-chosen value
+	// cannot collide with — or swallow — another user's trigger.
+	scopedKey := ""
+	if idempotencyKey != "" {
+		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
+	}
+	// The replay is checked BEFORE the limiter (#42): a client retrying a
+	// trigger it already got an answer for is not a new SOS, so burning
+	// its 3/hour quota meant the 4th retry was answered 429 instead of
+	// replaying the original 201. Only a genuinely new trigger counts.
+	if scopedKey != "" && u.Deps.Idempotency != nil {
+		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
+			return nil, err
+		} else if done {
+			return replay, nil
+		}
+	}
+
 	// Anti-abuse: fail open on limiter errors (a life-safety request
 	// must not be blocked by a Redis outage), fail closed on limit hit.
 	// `RateLimitDisabled` (sos.rate_limit_disabled) skips the check.
@@ -234,13 +253,6 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		}
 	}
 
-	// Idempotency: replay a finished key instead of creating a duplicate.
-	// The key is namespaced per sender (#35) so the client-chosen value
-	// cannot collide with — or swallow — another user's trigger.
-	scopedKey := ""
-	if idempotencyKey != "" {
-		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
-	}
 	// claimHeld tracks the pending claim this call owns: the alert does
 	// not exist yet, so every failure below must hand the claim back.
 	// Otherwise the retry of a failed trigger is answered 409 for the
@@ -249,11 +261,9 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	// cleared, so a success never releases.
 	claimHeld := false
 	if scopedKey != "" && u.Deps.Idempotency != nil {
-		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
-			return nil, err
-		} else if done {
-			return replay, nil
-		}
+		// The replay above was a miss; the key may still have been
+		// finished by a concurrent retry, which Claim reports as !claimed
+		// and the second lookup resolves to a replay instead of a 409.
 		if claimed, err := u.Deps.Idempotency.Claim(ctx, scopedKey); err != nil {
 			u.Log.WithError(err).Warn("idempotency claim unavailable, proceeding")
 		} else if !claimed {
