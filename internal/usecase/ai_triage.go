@@ -62,19 +62,31 @@ func NewAITriageChain(log *logrus.Logger, engines ...EmergencyTriage) *AITriage 
 	return &AITriage{Log: log, Chain: chain}
 }
 
-// Triage walks the chain and returns the first successful result. It
-// always fails open: when every engine errors (or the chain is empty)
+// Triage walks the chain and returns the first usable result. "Usable"
+// means no error AND a signal: a zero result (EmergencyType == "") is not
+// an answer, so the next classifier is tried instead of stopping the walk
+// with no classification at all (#42). Offline is normally last, so a
+// no-signal description still ends as a zero result.
+//
+// It always fails open: when every engine errors (or the chain is empty)
 // the result is zero and the error is nil, so a life-safety alert still
 // goes out with the request/default classification.
 func (t *AITriage) Triage(ctx context.Context, in TriageInput) (TriageResult, error) {
 	for i, engine := range t.Chain {
 		res, err := engine.Triage(ctx, in)
-		if err == nil {
-			return res, nil
+		if err != nil {
+			if t.Log != nil {
+				t.Log.WithError(err).Warnf("AI triage stage %d/%d failed, trying the next classifier", i+1, len(t.Chain))
+			}
+			continue
 		}
-		if t.Log != nil {
-			t.Log.WithError(err).Warnf("AI triage stage %d/%d failed, trying the next classifier", i+1, len(t.Chain))
+		if res.EmergencyType == "" {
+			if t.Log != nil {
+				t.Log.Debugf("AI triage stage %d/%d returned no signal, trying the next classifier", i+1, len(t.Chain))
+			}
+			continue
 		}
+		return res, nil
 	}
 	return TriageResult{}, nil
 }
