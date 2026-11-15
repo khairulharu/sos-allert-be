@@ -20,6 +20,10 @@ import (
 
 const staleThreshold = 2 * 60 * 1000 // 2 minutes in milliseconds
 
+// idempotencyReleaseTimeout bounds the detached Release call that hands a
+// pending idempotency claim back after a failed trigger.
+const idempotencyReleaseTimeout = 2 * time.Second
+
 // LocationRepository is the subset of location storage used by TriggerSOS.
 // It is satisfied by *repository.LocationCacheRepository (Redis GEO).
 type LocationRepository interface {
@@ -85,11 +89,14 @@ type RecipientNotifier interface {
 }
 
 // IdempotencyStore maps X-Idempotency-Key values to finished alerts.
+// Release hands back an unfinished claim (compare-and-delete on the
+// pending marker only) so a failed trigger does not block its own retry.
 // Satisfied by *repository.IdempotencyRepository.
 type IdempotencyStore interface {
 	Claim(ctx context.Context, key string) (bool, error)
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key, value string) error
+	Release(ctx context.Context, key string) error
 }
 
 // RateLimiter is a per-user SOS trigger limiter.
@@ -227,6 +234,13 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	if idempotencyKey != "" {
 		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
 	}
+	// claimHeld tracks the pending claim this call owns: the alert does
+	// not exist yet, so every failure below must hand the claim back.
+	// Otherwise the retry of a failed trigger is answered 409 for the
+	// rest of the 5-minute TTL even though no alert was ever created
+	// (#36). Once the finished result is written with Set the flag is
+	// cleared, so a success never releases.
+	claimHeld := false
 	if scopedKey != "" && u.Deps.Idempotency != nil {
 		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
 			return nil, err
@@ -242,7 +256,25 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 				return replay, nil
 			}
 			return nil, fiber.ErrConflict
+		} else {
+			claimHeld = true
 		}
+	}
+	if claimHeld {
+		// Fail-open: a Release error only warns, and the deferred call
+		// never replaces the error that aborted the trigger.
+		defer func() {
+			if !claimHeld {
+				return
+			}
+			// A cancelled or expired request context must not strand
+			// the claim, so release on a detached one.
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), idempotencyReleaseTimeout)
+			defer cancel()
+			if err := u.Deps.Idempotency.Release(releaseCtx, scopedKey); err != nil {
+				u.Log.WithError(err).Warn("could not release idempotency claim")
+			}
+		}()
 	}
 
 	latitude, longitude, err := u.resolveCoordinates(ctx, senderID, req)
@@ -345,6 +377,11 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 
 	if scopedKey != "" && u.Deps.Idempotency != nil {
 		value := alert.ID + "|" + strconv.Itoa(len(recipients))
+		// The alert is recorded and the result is being written: from
+		// here on the key belongs to a finished trigger and must not be
+		// released, even when the Set itself fails (a release would let
+		// a retry duplicate the alert).
+		claimHeld = false
 		if err := u.Deps.Idempotency.Set(ctx, scopedKey, value); err != nil {
 			u.Log.WithError(err).Warn("could not store idempotency result")
 		}
