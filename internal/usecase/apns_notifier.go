@@ -15,13 +15,25 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
+
+// apnsProviderTokenTTL is how long a minted APNs provider token is reused.
+// Apple rejects tokens younger than 20 minutes and answers
+// 403 TooManyProviderTokenUpdates when a key mints several in a short window,
+// which is what happened when BuildJWT ran per device in one fan-out (#42).
+// Refreshing at 50 minutes stays inside the 1 hour exp while leaving margin
+// for clock skew.
+const apnsProviderTokenTTL = 50 * time.Minute
 
 // APNsNotifier sends Apple Push Notification service alerts, including
 // Critical Alerts that bypass Silent/DND (interruption-level: critical).
 // It is config-gated: without key id, team id, bundle id and a .p8
 // private key it reports ErrPushNotConfigured.
+//
+// The provider JWT is cached behind a mutex, so use a single instance per
+// credentials set and do not copy it after first use.
 type APNsNotifier struct {
 	Enabled       bool
 	KeyID         string
@@ -32,6 +44,10 @@ type APNsNotifier struct {
 	BaseURL       string
 	HTTPClient    *http.Client
 	Now           func() time.Time
+
+	mu          sync.Mutex
+	cachedToken string
+	cachedAt    time.Time
 }
 
 func (n *APNsNotifier) now() time.Time {
@@ -97,6 +113,28 @@ func (n *APNsNotifier) BuildJWT() (string, error) {
 	return signingInput + "." + enc.EncodeToString(sig), nil
 }
 
+// providerToken returns the cached ES256 provider token, minting a new one
+// only when the cache is empty or older than apnsProviderTokenTTL. Several
+// recipients in one fan-out therefore share one token instead of minting a
+// JWT per device (Apple answers 403 TooManyProviderTokenUpdates for that).
+func (n *APNsNotifier) providerToken() (string, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	now := n.now()
+	if n.cachedToken != "" {
+		if age := now.Sub(n.cachedAt); age >= 0 && age < apnsProviderTokenTTL {
+			return n.cachedToken, nil
+		}
+	}
+	token, err := n.BuildJWT()
+	if err != nil {
+		return "", err
+	}
+	n.cachedToken = token
+	n.cachedAt = now
+	return token, nil
+}
+
 type apnsPayload struct {
 	APS struct {
 		Alert struct {
@@ -123,7 +161,7 @@ func (n *APNsNotifier) Send(ctx context.Context, deviceToken, title, body, alert
 	if deviceToken == "" {
 		return ErrPushNotConfigured
 	}
-	token, err := n.BuildJWT()
+	token, err := n.providerToken()
 	if err != nil {
 		return fmt.Errorf("apns jwt: %w", err)
 	}
