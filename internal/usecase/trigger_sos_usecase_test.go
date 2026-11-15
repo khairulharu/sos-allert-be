@@ -131,6 +131,8 @@ type fakeAlertRepository struct {
 	triageSummary  string
 	triageErr      error
 
+	createMediaErr error
+
 	// batch call counters guard against per-row queries in history.
 	countRespondersBatchCalls   int
 	latestBreadcrumbsBatchCalls int
@@ -275,6 +277,9 @@ func (f *fakeAlertRepository) IsResponder(ctx context.Context, db *gorm.DB, aler
 }
 
 func (f *fakeAlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
+	if f.createMediaErr != nil {
+		return f.createMediaErr
+	}
 	f.ensure()
 	f.media[m.AlertID] = append(f.media[m.AlertID], m)
 	return nil

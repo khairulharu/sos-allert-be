@@ -538,10 +538,15 @@ func TestEmergencyContactCRUD(t *testing.T) {
 }
 
 type fakeMediaStorage struct {
-	files map[string][]byte
+	files   map[string][]byte
+	deleted []string
+	saveErr error
 }
 
 func (f *fakeMediaStorage) Save(ctx context.Context, filename string, r io.Reader) (string, error) {
+	if f.saveErr != nil {
+		return "", f.saveErr
+	}
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return "", err
@@ -560,6 +565,12 @@ func (f *fakeMediaStorage) Open(ctx context.Context, path string) (io.ReadCloser
 		return nil, errors.New("media file not found")
 	}
 	return io.NopCloser(bytes.NewReader(b)), nil
+}
+
+func (f *fakeMediaStorage) Delete(ctx context.Context, path string) error {
+	f.deleted = append(f.deleted, path)
+	delete(f.files, path)
+	return nil
 }
 
 func TestAcknowledgeRejectsOutsider(t *testing.T) {
@@ -933,5 +944,93 @@ func TestRunActiveSOSGaugeRecomputesFromStore(t *testing.T) {
 	}
 	if got := met.value(); got != 2 {
 		t.Fatalf("active_sos_count = %d, want 2", got)
+	}
+}
+
+// A multipart filename is client-controlled: path separators must not
+// reach the storage layer and an over-long name must not fail the
+// VARCHAR(255) insert (which surfaced as a 500).
+func TestUploadMediaSanitizesFilename(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+
+	up, err := uc.UploadMedia(context.Background(), "sender", alertID,
+		"../../etc/passwd\x00.wav", "audio/wav", 4, strings.NewReader("data"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.Filename != "passwd.wav" {
+		t.Fatalf("stored filename = %q, want passwd.wav", up.Filename)
+	}
+
+	longName := strings.Repeat("a", 300) + ".m4a"
+	up, err = uc.UploadMedia(context.Background(), "sender", alertID,
+		longName, "audio/mp4", 4, strings.NewReader("data"))
+	if err != nil {
+		t.Fatalf("UploadMedia with a long name error = %v", err)
+	}
+	runes := []rune(up.Filename)
+	if len(runes) != maxMediaFilenameRunes {
+		t.Fatalf("stored filename has %d runes, want %d", len(runes), maxMediaFilenameRunes)
+	}
+	if !strings.HasSuffix(up.Filename, ".m4a") {
+		t.Fatalf("stored filename = %q, want the extension kept", up.Filename)
+	}
+	if got := len(alertRepo.media[alertID]); got != 2 {
+		t.Fatalf("stored media rows = %d, want 2", got)
+	}
+}
+
+func TestUploadMediaRejectsUnusableFilename(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+
+	for _, name := range []string{"", "   ", "/", "..", "\x00"} {
+		_, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+			name, "audio/wav", 4, strings.NewReader("data"))
+		if !errors.Is(err, fiber.ErrBadRequest) {
+			t.Fatalf("filename %q error = %v, want 400", name, err)
+		}
+	}
+	if len(store.files) != 0 {
+		t.Fatalf("nothing may be written for an invalid filename: %v", store.files)
+	}
+	if len(alertRepo.media[created.Alert.ID]) != 0 {
+		t.Fatal("no media row may be created for an invalid filename")
+	}
+}
+
+// The bytes are written before the row; a failed insert must not leave
+// an orphan file on disk.
+func TestUploadMediaDeletesFileWhenInsertFails(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	store := &fakeMediaStorage{}
+	uc.Deps.MediaStore = store
+	alertRepo.createMediaErr = errors.New("insert failed")
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+
+	if _, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"panic.m4a", "audio/mp4", 5, strings.NewReader("voice")); err == nil {
+		t.Fatal("a failed media insert must be reported")
+	}
+	if len(store.deleted) != 1 {
+		t.Fatalf("deleted = %v, want the written file removed", store.deleted)
+	}
+	if len(store.files) != 0 {
+		t.Fatalf("stored files = %v, want none left behind", store.files)
 	}
 }
