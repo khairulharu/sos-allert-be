@@ -167,6 +167,16 @@ type fakeAlertRepository struct {
 	recipientsErr  error
 	markDispatchFn func(alertID string, atMs int64) (bool, error)
 	afterListDue   func()
+
+	// Housekeeping knobs (#42): expiry/purge call counters and results.
+	expireCalls    int
+	expireBeforeMs int64
+	expired        int64
+	expireErr      error
+	purgeCalls     int
+	purgeBeforeMs  int64
+	purged         int64
+	purgeErr       error
 }
 
 func (f *fakeAlertRepository) ensure() {
@@ -254,7 +264,13 @@ func (f *fakeAlertRepository) Transition(ctx context.Context, db *gorm.DB, id st
 }
 
 func (f *fakeAlertRepository) ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error) {
-	return 0, nil
+	f.ensure()
+	f.expireCalls++
+	f.expireBeforeMs = beforeMs
+	if f.expireErr != nil {
+		return 0, f.expireErr
+	}
+	return f.expired, nil
 }
 
 func (f *fakeAlertRepository) CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error {
@@ -436,7 +452,12 @@ func (f *fakeAlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID
 }
 
 func (f *fakeAlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
-	return 0, nil
+	f.purgeCalls++
+	f.purgeBeforeMs = beforeMs
+	if f.purgeErr != nil {
+		return 0, f.purgeErr
+	}
+	return f.purged, nil
 }
 
 func (f *fakeAlertRepository) CountActive(ctx context.Context, db *gorm.DB) (int64, error) {

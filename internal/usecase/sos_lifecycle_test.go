@@ -1093,6 +1093,7 @@ func TestClassifyAudioErrorsAndEmpty(t *testing.T) {
 type gaugeMetrics struct {
 	mu     sync.Mutex
 	active int64
+	calls  int
 }
 
 func (g *gaugeMetrics) ObserveDispatchDuration(float64) {}
@@ -1102,6 +1103,7 @@ func (g *gaugeMetrics) IncFanoutFailures()              {}
 func (g *gaugeMetrics) SetActiveSOS(n int64) {
 	g.mu.Lock()
 	g.active = n
+	g.calls++
 	g.mu.Unlock()
 }
 
@@ -1109,6 +1111,13 @@ func (g *gaugeMetrics) value() int64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.active
+}
+
+// callCount reports how many times the gauge was refreshed.
+func (g *gaugeMetrics) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
 }
 
 func TestRunActiveSOSGaugeRecomputesFromStore(t *testing.T) {

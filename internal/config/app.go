@@ -228,6 +228,12 @@ func Bootstrap(config *BootstrapConfig) {
 	// dispatcher or database wiring.
 	go triggerSOSUseCase.RunDispatchLoop(rootCtx, sosConfig.DispatchPoll)
 
+	// Housekeeping (#42): expire TRIGGERED alerts past sos.expire_after (24 h)
+	// and purge breadcrumb trails older than 30 days. Without this loop the
+	// stale alerts stayed in the active set forever and alert_breadcrumbs
+	// grew without bound.
+	go triggerSOSUseCase.RunHousekeeping(rootCtx, sosConfig.HousekeepingInterval)
+
 	// setup controller
 	userController := http.NewUserController(userUseCase, config.Log)
 	contactController := http.NewContactController(contactUseCase, config.Log)

@@ -1048,12 +1048,7 @@ func (u *TriggerSOSUseCase) RunActiveSOSGauge(ctx context.Context, interval time
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		n, err := u.Deps.Alerts.CountActive(ctx, u.DB)
-		if err != nil {
-			u.Log.WithError(err).Warn("active_sos_count refresh failed")
-		} else if u.Deps.Metrics != nil {
-			u.Deps.Metrics.SetActiveSOS(n)
-		}
+		u.refreshActiveSOS(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -1063,12 +1058,14 @@ func (u *TriggerSOSUseCase) RunActiveSOSGauge(ctx context.Context, interval time
 }
 
 // ExpireOldAlerts moves TRIGGERED alerts older than ExpireAfter to EXPIRED.
+// Called by RunHousekeeping, which is the only caller.
 func (u *TriggerSOSUseCase) ExpireOldAlerts(ctx context.Context) (int64, error) {
 	before := time.Now().Add(-u.Deps.ExpireAfter).UnixMilli()
 	return u.Deps.Alerts.ExpireOlderThan(ctx, u.DB, before, time.Now().UnixMilli())
 }
 
 // PurgeOldBreadcrumbs deletes trails older than 30 days for terminal alerts.
+// Called by RunHousekeeping.
 func (u *TriggerSOSUseCase) PurgeOldBreadcrumbs(ctx context.Context) (int64, error) {
 	before := time.Now().AddDate(0, 0, -30).UnixMilli()
 	return u.Deps.Alerts.PurgeBreadcrumbs(ctx, u.DB, before)

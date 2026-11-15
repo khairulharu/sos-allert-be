@@ -65,3 +65,23 @@ func TestNewSOSConfigDispatchPoll(t *testing.T) {
 		t.Fatalf("DispatchPoll = %v, want the 100ms floor", got)
 	}
 }
+
+// Housekeeping (#42) defaults to once a minute and is clamped to one second
+// so a misconfiguration cannot expire/purge in a tight loop.
+func TestNewSOSConfigHousekeepingInterval(t *testing.T) {
+	if got := NewSOSConfig(viper.New()).HousekeepingInterval; got != time.Minute {
+		t.Fatalf("HousekeepingInterval = %v, want the 60s default", got)
+	}
+
+	v := viper.New()
+	v.Set("sos.housekeeping_interval_seconds", 300)
+	if got := NewSOSConfig(v).HousekeepingInterval; got != 5*time.Minute {
+		t.Fatalf("HousekeepingInterval = %v, want 5m", got)
+	}
+
+	v = viper.New()
+	v.Set("sos.housekeeping_interval_seconds", 0.01)
+	if got := NewSOSConfig(v).HousekeepingInterval; got != time.Second {
+		t.Fatalf("HousekeepingInterval = %v, want the 1s floor", got)
+	}
+}
