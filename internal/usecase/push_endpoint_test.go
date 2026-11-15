@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"golang-clean-architecture/internal/model"
@@ -61,6 +62,44 @@ func TestPushUseCaseRejectsForeignEndpoint(t *testing.T) {
 		UserID: "user-a", Endpoint: "https://fcm.googleapis.com/fcm/send/sub-a", P256DH: "BNcR", Auth: "secret",
 	}); err != nil {
 		t.Fatalf("allowlisted Subscribe error = %v, want nil", err)
+	}
+}
+
+// A browser subscription belongs to the user that registered it: another
+// user who learns the endpoint cannot take it over, while the owner can
+// refresh it.
+func TestPushUseCaseRejectsEndpointTakeover(t *testing.T) {
+	store := newFakePushStore()
+	uc := NewPushUseCase(nil, silentLogger(), validator.New(), store, "BO_KEY", true, nil)
+	const endpoint = "https://fcm.googleapis.com/fcm/send/shared-browser"
+
+	if _, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-a", Endpoint: endpoint, P256DH: "BNcR", Auth: "secret",
+	}); err != nil {
+		t.Fatalf("owner Subscribe error = %v", err)
+	}
+
+	_, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-b", Endpoint: endpoint, P256DH: "BOther", Auth: "other",
+	})
+	var fiberErr *fiber.Error
+	if !errors.As(err, &fiberErr) || fiberErr.Code != fiber.StatusConflict {
+		t.Fatalf("takeover error = %v, want a 409 fiber error", err)
+	}
+
+	// The owner still owns the row and can refresh its keys.
+	subs, err := uc.List(context.Background(), "user-b")
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("user-b subscriptions = %+v, err = %v, want none", subs, err)
+	}
+	if _, err := uc.Subscribe(context.Background(), &model.PushSubscribeRequest{
+		UserID: "user-a", Endpoint: endpoint, P256DH: "BRotated", Auth: "rotated",
+	}); err != nil {
+		t.Fatalf("owner re-Subscribe error = %v", err)
+	}
+	subs, err = uc.List(context.Background(), "user-a")
+	if err != nil || len(subs) != 1 || subs[0].Endpoint != endpoint {
+		t.Fatalf("user-a subscriptions = %+v, err = %v", subs, err)
 	}
 }
 
