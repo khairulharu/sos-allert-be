@@ -707,6 +707,17 @@ func TestSOSHistoryAndSummaryAPI(t *testing.T) {
 		history.Paging.TotalItem != 2 || history.Paging.TotalPage != 1 {
 		t.Fatalf("paging = %+v", history.Paging)
 	}
+
+	// A page that would overflow the OFFSET must be a 4xx, never a silent
+	// page-1 answer.
+	for _, path := range []string{
+		"/api/sos/history?role=sent&page=9223372036854775807",
+		"/api/sos/history?role=sent&page=100001",
+	} {
+		if status, body := do(path, "sender"); status != http.StatusBadRequest {
+			t.Fatalf("%s status = %d body = %s, want 400", path, status, body)
+		}
+	}
 	if len(history.Data) != 2 || history.Data[0].AlertID != "a-active" || history.Data[1].AlertID != "a-resolved" {
 		t.Fatalf("history data = %+v", history.Data)
 	}
