@@ -73,3 +73,20 @@ func TestMapSOSErrorAlertNotFoundIsNotFound(t *testing.T) {
 		t.Fatalf("mapSOSError(ErrAlertNotFound) = %v, want 404", mapped)
 	}
 }
+
+// A repeated responder answer is a client conflict (409) with a usable
+// message, never an opaque 500 (#42).
+func TestMapSOSErrorDuplicateResponseIsConflict(t *testing.T) {
+	mapped := mapSOSError(fmt.Errorf("respond failed: %w", model.ErrDuplicateResponse))
+
+	var fiberErr *fiber.Error
+	if !errors.As(mapped, &fiberErr) {
+		t.Fatalf("mapSOSError(ErrDuplicateResponse) = %v, want a *fiber.Error", mapped)
+	}
+	if fiberErr.Code != fiber.StatusConflict {
+		t.Fatalf("status = %d, want 409", fiberErr.Code)
+	}
+	if fiberErr.Message != "responder has already responded to this alert" {
+		t.Fatalf("message = %q, want the duplicate-responder message", fiberErr.Message)
+	}
+}

@@ -110,6 +110,13 @@ func (s *memAlerts) LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID s
 
 func (s *memAlerts) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
 	s.init()
+	// Mirror the unique (alert_id, responder_id) index: a repeat answer is
+	// a no-op reported as ErrDuplicateResponse.
+	for _, existing := range s.responses[r.AlertID] {
+		if existing.ResponderID == r.ResponderID {
+			return model.ErrDuplicateResponse
+		}
+	}
 	s.responses[r.AlertID] = append(s.responses[r.AlertID], r)
 	return nil
 }
@@ -623,6 +630,34 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	}
 	if r := forResponder.Data.Responders[0]; r.UserID != "user-b" || r.DistanceMeters <= 0 || r.ETASeconds <= 0 {
 		t.Fatalf("responder entry = %+v", r)
+	}
+
+	// A repeated answer (double tap / retried POST) is a 409, not a second
+	// responder row (#42).
+	dupReq := httptest.NewRequest("POST", "/api/sos/"+alertID+"/respond",
+		strings.NewReader(`{"responder_latitude":-6.2100,"responder_longitude":106.8470}`))
+	dupReq.Header.Set("Content-Type", "application/json")
+	dupReq.Header.Set("X-Test-User", "user-b")
+	dupResp, err := app.Test(dupReq, -1)
+	if err != nil {
+		t.Fatalf("duplicate respond: %v", err)
+	}
+	dupBody, _ := io.ReadAll(dupResp.Body)
+	dupResp.Body.Close()
+	if dupResp.StatusCode != http.StatusConflict {
+		t.Fatalf("duplicate respond status = %d body = %s, want 409", dupResp.StatusCode, dupBody)
+	}
+	if !strings.Contains(string(dupBody), "already responded") {
+		t.Fatalf("duplicate respond body = %s, want the duplicate-responder message", dupBody)
+	}
+	resp, body = do("GET", "/api/sos/"+alertID, "sender", "")
+	var afterDup model.WebResponse[*model.AlertDetailResponse]
+	if err := json.Unmarshal(body, &afterDup); err != nil {
+		t.Fatalf("detail decode: %v (%s)", err, body)
+	}
+	if afterDup.Data.RespondersEnRoute != 1 || len(afterDup.Data.Responders) != 1 {
+		t.Fatalf("responders after duplicate = %d/%+v, want exactly 1",
+			afterDup.Data.RespondersEnRoute, afterDup.Data.Responders)
 	}
 
 	// After a real responder answered, the stranger still gets 404.

@@ -150,9 +150,24 @@ func (a *AlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB, ale
 	return b, nil
 }
 
-// CreateResponse records a responder answer.
+// CreateResponse records a responder answer. The insert is idempotent: the
+// unique (alert_id, responder_id) index (20261116000000) turns a second
+// answer from the same responder into a no-op, reported as
+// model.ErrDuplicateResponse instead of a duplicate row or a 500 (#42).
 func (a *AlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
-	return db.WithContext(ctx).Create(r).Error
+	tx := db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "alert_id"}, {Name: "responder_id"}},
+		DoNothing: true,
+	}).Create(r)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	// MySQL's ON DUPLICATE KEY UPDATE reports 0 affected rows when the
+	// existing row is left untouched, which is exactly the duplicate case.
+	if tx.RowsAffected == 0 {
+		return model.ErrDuplicateResponse
+	}
+	return nil
 }
 
 // CountResponders counts distinct responders for an alert.

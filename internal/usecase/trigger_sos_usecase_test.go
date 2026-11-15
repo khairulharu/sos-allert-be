@@ -279,6 +279,13 @@ func (f *fakeAlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB,
 
 func (f *fakeAlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error {
 	f.ensure()
+	// Mirror the unique (alert_id, responder_id) index: a repeat answer is
+	// a no-op reported as ErrDuplicateResponse.
+	for _, existing := range f.responses[r.AlertID] {
+		if existing.ResponderID == r.ResponderID {
+			return model.ErrDuplicateResponse
+		}
+	}
 	f.responses[r.AlertID] = append(f.responses[r.AlertID], r)
 	return nil
 }

@@ -491,6 +491,26 @@ Semua response `>= 500` sekarang `{"errors":"internal server error"}`; detail
 frontend harus memakai status code, bukan isi `errors`. Pesan `4xx` tidak
 berubah, jadi pesan validasi tetap bisa ditampilkan.
 
+## `POST /api/sos/{alertId}/respond` dua kali → `409` (#42)
+
+> **Untuk agent frontend.** Ini perubahan kontrak: satu status code baru.
+
+- Sebelumnya setiap `respond` selalu menyisipkan baris baru, jadi double tap
+  atau retry setelah timeout bisa menyimpan responder yang sama dua kali dan
+  menggelembungkan `responders_en_route` / daftar `responders`.
+- Sekarang `alert_responses` punya unique index `(alert_id, responder_id)`.
+  Jawaban kedua dari responder yang sama tidak menulis baris baru dan
+  dijawab **`409`** dengan body
+  `{"errors":"responder has already responded to this alert"}`.
+- Respons `200` pertama tetap sama (`response_id`, `eta_seconds`,
+  `victim_distance_meters`). Klien tidak perlu mengubah apa pun untuk kasus
+  sukses; kalau menerima `409`, anggap "sudah tercatat" — jangan retry, dan
+  tampilkan status responder dari `GET /api/sos/{alertId}`.
+- Responder **berbeda** tidak terpengaruh: masing-masing tetap mendapat `200`
+  dan satu entri di `responders[]`.
+- `403` (bukan peserta, atau sender mencoba respond) dan `409` untuk alert
+  yang sudah `RESOLVED`/`CANCELLED` tidak berubah.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

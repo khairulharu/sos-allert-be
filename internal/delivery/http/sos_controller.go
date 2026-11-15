@@ -36,6 +36,11 @@ func mapSOSError(err error) error {
 		return fiber.ErrNotFound
 	case errors.Is(err, model.ErrInvalidTransition):
 		return fiber.ErrConflict
+	case errors.Is(err, model.ErrDuplicateResponse):
+		// The responder already answered this alert: the insert is
+		// idempotent server-side, so a repeat is a conflict with a message
+		// instead of a duplicate row (or a 500).
+		return fiber.NewError(fiber.StatusConflict, model.ErrDuplicateResponse.Error())
 	case errors.Is(err, model.ErrInvalidPIN):
 		// A wrong safe PIN is an authorization failure, not a session
 		// failure: 401 stays reserved for an expired/unknown token so

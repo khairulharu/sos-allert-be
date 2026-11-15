@@ -467,6 +467,9 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 		RespondedAt:        time.Now().UnixMilli(),
 	}
 	if err := u.Deps.Alerts.CreateResponse(ctx, u.DB, response); err != nil {
+		// A responder answering twice is a client conflict, not a server
+		// error: the repository collapses the duplicate insert and reports
+		// model.ErrDuplicateResponse (#42).
 		return nil, err
 	}
 	if alert.Status == entity.AlertStatusTriggered {

@@ -1312,3 +1312,62 @@ func TestAddBreadcrumbRejectsAbsurdlyOldTimestamp(t *testing.T) {
 		t.Fatal("no breadcrumb may be stored for a rejected timestamp")
 	}
 }
+
+// A responder answering twice (double tap, retried request) must not store a
+// second alert_responses row, must not broadcast a second RESPONDER_ADDED and
+// must be reported as a conflict instead of a duplicate or a 500 (#42).
+func TestRespondIsIdempotentForTheSameResponder(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	uc.Deps.Users = &fakeUserReader{users: map[string]*entity.User{
+		"sender": {ID: "sender", Name: "Jane Doe"},
+		"user-b": {ID: "user-b", Name: "Budi"},
+	}}
+	hub := &fakeHub{}
+	uc.Deps.Hub = hub
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	alertID := created.Alert.ID
+
+	lat, lng := -6.21, 106.85
+	first, err := uc.Respond(context.Background(), "user-b", alertID, &model.RespondSOSRequest{
+		ResponderLatitude: &lat, ResponderLongitude: &lng,
+	})
+	if err != nil {
+		t.Fatalf("first respond error = %v", err)
+	}
+	_, err = uc.Respond(context.Background(), "user-b", alertID, &model.RespondSOSRequest{
+		ResponderLatitude: &lat, ResponderLongitude: &lng,
+	})
+	if !errors.Is(err, model.ErrDuplicateResponse) {
+		t.Fatalf("second respond error = %v, want ErrDuplicateResponse", err)
+	}
+
+	if got := len(alertRepo.responses[alertID]); got != 1 {
+		t.Fatalf("stored responses = %d, want 1", got)
+	}
+	if count, err := alertRepo.CountResponders(context.Background(), nil, alertID); err != nil || count != 1 {
+		t.Fatalf("CountResponders = %d, %v, want 1", count, err)
+	}
+	var added int
+	for _, payload := range hub.published[alertID] {
+		var msg model.ResponderAddedMessage
+		if json.Unmarshal(payload, &msg) == nil && msg.Type == "RESPONDER_ADDED" {
+			added++
+		}
+	}
+	if added != 1 {
+		t.Fatalf("RESPONDER_ADDED frames = %d, want exactly 1", added)
+	}
+	detail, err := uc.GetAlert(context.Background(), "sender", alertID)
+	if err != nil {
+		t.Fatalf("detail error = %v", err)
+	}
+	if detail.RespondersEnRoute != 1 {
+		t.Fatalf("responders_en_route = %d, want 1", detail.RespondersEnRoute)
+	}
+	if first.ResponseID == "" {
+		t.Fatal("first response id is empty")
+	}
+}
