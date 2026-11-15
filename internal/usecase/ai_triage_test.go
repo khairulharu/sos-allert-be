@@ -62,6 +62,12 @@ func TestOfflineClassifier(t *testing.T) {
 		{name: "meeting time is not an attack", desc: "besok rapat pukul 10 pagi", wantSeverity: 0},
 		{name: "fruit is not arson", desc: "saya makan grape dan apel", wantSeverity: 0},
 		{name: "power outage is not a fire", desc: "mati lampu di rumah", wantSeverity: 0},
+		// One-letter suffixes only apply to long roots: "card" must not
+		// resolve to the accident keyword "car".
+		{name: "sim card is not an accident", desc: "beli SIM card baru", wantSeverity: 0},
+		{name: "atm card is not an accident", desc: "ATM card saya tertelan", wantSeverity: 0},
+		// Valid suffixes on long keywords keep working.
+		{name: "plural long keyword still matches", desc: "fires near the market", wantType: entity.EmergencyTypeDanger, wantSeverity: 0.6, wantSummary: true},
 	}
 
 	c := NewOfflineClassifier()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang-clean-architecture/internal/entity"
 )
@@ -354,6 +355,12 @@ var wordSuffixes = []string{
 	"s", "es", "ed", "ing", "er", "ers", "d",
 }
 
+// minKeywordLenForShortSuffix guards the one-letter suffixes ("d", "i",
+// "s"): appending them to a short root turns unrelated everyday words
+// into matches ("car"+"d" = "card", "fire"+"d" = "fired"). Short roots
+// only match verbatim.
+const minKeywordLenForShortSuffix = 4
+
 func tokenMatches(textToken, keywordToken string) bool {
 	if matchesWithSuffix(textToken, keywordToken) {
 		return true
@@ -371,9 +378,15 @@ func matchesWithSuffix(textToken, keywordToken string) bool {
 	}
 	rest := textToken[len(keywordToken):]
 	for _, suffix := range wordSuffixes {
-		if rest == suffix {
-			return true
+		if rest != suffix {
+			continue
 		}
+		// Length is compared on runes so a short multi-byte keyword is
+		// not treated as long.
+		if len(suffix) == 1 && utf8.RuneCountInString(keywordToken) < minKeywordLenForShortSuffix {
+			continue
+		}
+		return true
 	}
 	return false
 }
