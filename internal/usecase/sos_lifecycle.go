@@ -487,6 +487,17 @@ func (u *TriggerSOSUseCase) Respond(ctx context.Context, responderID, alertID st
 	}, nil
 }
 
+// Breadcrumb timestamps are client-supplied and ordering-sensitive:
+// LatestBreadcrumb sorts recorded_at DESC, so a far-future timestamp
+// would pin latest_location to that point forever.
+const (
+	// breadcrumbFutureSkewMs is the clock skew tolerated before a
+	// client timestamp is clamped to now.
+	breadcrumbFutureSkewMs = 60 * 1000
+	// breadcrumbMaxAgeMs is how old a client timestamp may be.
+	breadcrumbMaxAgeMs = 24 * 60 * 60 * 1000
+)
+
 // AddBreadcrumb stores one live-tracking point, refreshes Redis GEO,
 // and broadcasts it to WebSocket subscribers of the incident.
 func (u *TriggerSOSUseCase) AddBreadcrumb(ctx context.Context, senderID, alertID string, req *model.BreadcrumbRequest) (*model.BreadcrumbResponse, error) {
@@ -506,9 +517,22 @@ func (u *TriggerSOSUseCase) AddBreadcrumb(ctx context.Context, senderID, alertID
 	if !alert.IsActive() {
 		return nil, model.ErrInvalidTransition
 	}
-	recordedAt := time.Now().UnixMilli()
+	now := time.Now().UnixMilli()
+	recordedAt := now
 	if req.Timestamp != nil {
-		recordedAt = *req.Timestamp
+		ts := *req.Timestamp
+		switch {
+		case ts <= 0 || ts < now-breadcrumbMaxAgeMs:
+			// Absurdly old (or negative) timestamps cannot belong to
+			// this incident.
+			return nil, fiber.ErrBadRequest
+		case ts > now+breadcrumbFutureSkewMs:
+			// A future point would sort above every later breadcrumb
+			// and freeze latest_location; clamp it to now.
+			recordedAt = now
+		default:
+			recordedAt = ts
+		}
 	}
 	crumb := &entity.AlertBreadcrumb{
 		AlertID:           alertID,
