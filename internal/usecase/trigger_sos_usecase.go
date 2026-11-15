@@ -221,16 +221,22 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 
 	// Idempotency: replay a finished key instead of creating a duplicate.
-	if idempotencyKey != "" && u.Deps.Idempotency != nil {
-		if replay, done, err := u.replayIfExists(ctx, idempotencyKey); err != nil {
+	// The key is namespaced per sender (#35) so the client-chosen value
+	// cannot collide with — or swallow — another user's trigger.
+	scopedKey := ""
+	if idempotencyKey != "" {
+		scopedKey = sosIdempotencyKey(senderID, idempotencyKey)
+	}
+	if scopedKey != "" && u.Deps.Idempotency != nil {
+		if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
 			return nil, err
 		} else if done {
 			return replay, nil
 		}
-		if claimed, err := u.Deps.Idempotency.Claim(ctx, idempotencyKey); err != nil {
+		if claimed, err := u.Deps.Idempotency.Claim(ctx, scopedKey); err != nil {
 			u.Log.WithError(err).Warn("idempotency claim unavailable, proceeding")
 		} else if !claimed {
-			if replay, done, err := u.replayIfExists(ctx, idempotencyKey); err != nil {
+			if replay, done, err := u.replayIfExists(ctx, senderID, scopedKey); err != nil {
 				return nil, err
 			} else if done {
 				return replay, nil
@@ -337,9 +343,9 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		},
 	}
 
-	if idempotencyKey != "" && u.Deps.Idempotency != nil {
+	if scopedKey != "" && u.Deps.Idempotency != nil {
 		value := alert.ID + "|" + strconv.Itoa(len(recipients))
-		if err := u.Deps.Idempotency.Set(ctx, idempotencyKey, value); err != nil {
+		if err := u.Deps.Idempotency.Set(ctx, scopedKey, value); err != nil {
 			u.Log.WithError(err).Warn("could not store idempotency result")
 		}
 	}
@@ -415,9 +421,21 @@ func (u *TriggerSOSUseCase) recordDispatch(startedAt time.Time) {
 	}
 }
 
+// sosIdempotencyKey namespaces the client-supplied X-Idempotency-Key with
+// the sender id before it reaches Redis, so the same key from two different
+// users can never resolve to the same stored result (#35). The Redis prefix
+// itself is unchanged; an empty sender id (not reachable here, it is
+// validated above) keeps the bare key.
+func sosIdempotencyKey(senderID, key string) string {
+	if senderID == "" {
+		return key
+	}
+	return senderID + ":" + key
+}
+
 // replayIfExists returns a previously created result for an idempotency
 // key, or done=false when the key has no finished result yet.
-func (u *TriggerSOSUseCase) replayIfExists(ctx context.Context, key string) (*model.TriggerSOSResult, bool, error) {
+func (u *TriggerSOSUseCase) replayIfExists(ctx context.Context, senderID, key string) (*model.TriggerSOSResult, bool, error) {
 	value, err := u.Deps.Idempotency.Get(ctx, key)
 	if err != nil {
 		u.Log.WithError(err).Warn("idempotency lookup unavailable, proceeding")
@@ -430,6 +448,13 @@ func (u *TriggerSOSUseCase) replayIfExists(ctx context.Context, key string) (*mo
 	alert, err := u.Deps.Alerts.GetByID(ctx, u.DB, parts[0])
 	if err != nil {
 		return nil, false, fmt.Errorf("load replayed alert: %w", err)
+	}
+	// Defense in depth: a stored value must only ever replay the caller's
+	// own alert. A foreign id means the store is (or was) shared across
+	// users, so treat it as a miss instead of leaking someone else's SOS.
+	if senderID != "" && alert.SenderID != senderID {
+		u.Log.Warnf("idempotency key %q resolved to an alert of another sender, ignoring replay", key)
+		return nil, false, nil
 	}
 	count := 0
 	if len(parts) == 2 {

@@ -355,6 +355,22 @@ Catatan tambahan:
   `application/octet-stream`. Blob dari `fetch` tetap bisa diputar, tapi kalau
   kode memeriksa `blob.type`, siapkan fallback.
 
+## `X-Idempotency-Key` di-scope per user (#35)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku.
+
+- Redis key sekarang `idempotency:sos:<user_id>:<key>`. `Retry` dari user yang
+  sama dengan key yang sama tetap `201` replay alert yang sama (TTL 5 menit
+  seperti sebelumnya).
+- User **berbeda** dengan key yang sama tidak lagi saling menimpa: masing-masing
+  dapat alert sendiri. Klien tidak boleh mengandalkan key global untuk dedup
+  lintas akun/device — kirim key yang unik per percobaan trigger (mis. UUID).
+- Server juga memverifikasi `alert.sender_id` saat replay; id alert milik user
+  lain tidak pernah dikembalikan.
+- `409` hanya muncul untuk retry milik user itu sendiri ketika trigger pertama
+  masih berjalan (key sudah diklaim, hasil belum tersimpan).
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai
