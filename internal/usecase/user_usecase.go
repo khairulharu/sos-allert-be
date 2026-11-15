@@ -122,10 +122,7 @@ func (c *UserUseCase) Create(ctx context.Context, request *model.RegisterUserReq
 	if c.UserProducer != nil {
 		event := converter.UserToEvent(user)
 		c.Log.Info("Publishing user created event")
-		if err = c.UserProducer.Send(event); err != nil {
-			c.Log.Warnf("Failed publish user created event : %+v", err)
-			return nil, fiber.ErrInternalServerError
-		}
+		publishAfterCommit(c.Log, "user created", func() error { return c.UserProducer.Send(event) })
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping user created event")
 	}
@@ -161,10 +158,9 @@ func (c *UserUseCase) Login(ctx context.Context, request *model.LoginUserRequest
 	if c.UserProducer != nil {
 		event := converter.UserToEvent(user)
 		c.Log.Info("Publishing user login event")
-		if err := c.UserProducer.Send(event); err != nil {
-			c.Log.Warnf("Failed publish user login event : %+v", err)
-			return nil, fiber.ErrInternalServerError
-		}
+		// The session is already stored: a Kafka hiccup must not turn a
+		// successful login into a 500.
+		publishAfterCommit(c.Log, "user login", func() error { return c.UserProducer.Send(event) })
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping user login event")
 	}
@@ -217,10 +213,9 @@ func (c *UserUseCase) Logout(ctx context.Context, request *model.LogoutUserReque
 		} else {
 			event := converter.UserToEvent(user)
 			c.Log.Info("Publishing user logout event")
-			if err := c.UserProducer.Send(event); err != nil {
-				c.Log.Warnf("Failed publish user logout event : %+v", err)
-				return false, fiber.ErrInternalServerError
-			}
+			// The session is already gone: reporting a failed logout here
+			// used to make the client keep a token that no longer works.
+			publishAfterCommit(c.Log, "user logout", func() error { return c.UserProducer.Send(event) })
 		}
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping user logout event")
@@ -289,10 +284,7 @@ func (c *UserUseCase) Update(ctx context.Context, request *model.UpdateUserReque
 	if c.UserProducer != nil {
 		event := converter.UserToEvent(user)
 		c.Log.Info("Publishing user updated event")
-		if err := c.UserProducer.Send(event); err != nil {
-			c.Log.Warnf("Failed publish user updated event : %+v", err)
-			return nil, fiber.ErrInternalServerError
-		}
+		publishAfterCommit(c.Log, "user updated", func() error { return c.UserProducer.Send(event) })
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping user updated event")
 	}

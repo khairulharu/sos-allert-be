@@ -74,10 +74,7 @@ func (c *AddressUseCase) Create(ctx context.Context, request *model.CreateAddres
 
 	if c.AddressProducer != nil {
 		event := converter.AddressToEvent(address)
-		if err := c.AddressProducer.Send(event); err != nil {
-			c.Log.WithError(err).Error("failed to publish address created event")
-			return nil, fiber.ErrInternalServerError
-		}
+		publishAfterCommit(c.Log, "address created", func() error { return c.AddressProducer.Send(event) })
 		c.Log.Info("Published address created event")
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping address created event")
@@ -125,10 +122,7 @@ func (c *AddressUseCase) Update(ctx context.Context, request *model.UpdateAddres
 
 	if c.AddressProducer != nil {
 		event := converter.AddressToEvent(address)
-		if err := c.AddressProducer.Send(event); err != nil {
-			c.Log.WithError(err).Error("failed to publish address updated event")
-			return nil, fiber.ErrInternalServerError
-		}
+		publishAfterCommit(c.Log, "address updated", func() error { return c.AddressProducer.Send(event) })
 		c.Log.Info("Published address updated event")
 	} else {
 		c.Log.Info("Kafka producer is disabled, skipping address updated event")
