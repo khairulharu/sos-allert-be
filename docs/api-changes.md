@@ -376,8 +376,8 @@ Catatan tambahan:
 > **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
 > catatan perilaku.
 
-- Sebelumnya, trigger yang gagal (lokasi tidak ada, `GEOSEARCH` error, gagal
-  tulis DB, gagal cari penerima) meninggalkan klaim `pending` selama TTL 5
+- Sebelumnya, trigger yang gagal (lokasi tidak ada, gagal tulis DB, dan dulu
+  juga gagal mencari penerima) meninggalkan klaim `pending` selama TTL 5
   menit, sehingga retry dengan key yang sama dijawab `409` padahal belum ada
   alert yang dibuat.
 - Sekarang klaim dilepas pada setiap kegagalan sebelum hasil tersimpan: retry
@@ -388,6 +388,30 @@ Catatan tambahan:
   di-replay seperti sebelumnya.
 - Klien tidak perlu mengubah apa pun: key yang sama tetap aman dipakai ulang
   untuk retry setelah error jaringan/server.
+
+## Fan-out SOS fail-open setelah alert tersimpan (#37)
+
+> **Untuk agent frontend.** Tidak ada perubahan bentuk request/response; ini
+> catatan perilaku, plus satu metrik baru.
+
+- Sebelumnya, kalau pencarian penerima gagal (`GEOSEARCH`/`users:last_seen`
+  error di Redis), `POST /api/sos` mengembalikan `5xx` **setelah** alert
+  tersimpan: tidak ada satu pun notifikasi (termasuk SMS kontak darurat), dan
+  alert tertinggal `TRIGGERED` selamanya.
+- Sekarang fan-out fail-open: alert tetap dibuat, dispatch tetap dijalankan
+  dengan daftar penerima kosong (jadi push tidak terkirim ke siapa pun, tetapi
+  SMS fallback ke emergency contacts tetap jalan), dan response tetap `201`
+  dengan `recipients_notified: 0`.
+- `5xx` hanya tersisa untuk kegagalan yang membuat alert sendiri tidak
+  tersimpan (atau lookup lokasi pengirim sebelum alert dibuat).
+- Klien tidak perlu retry saat melihat `201` dengan `recipients_notified: 0`:
+  alert sudah tercatat dan muncul di `GET /api/sos/active`; retry dengan
+  `X-Idempotency-Key` yang sama akan me-replay alert itu, bukan membuat
+  duplikat.
+- Metrik baru di `GET /metrics`: `sos_fanout_failures_total` (counter trigger
+  yang di-dispatch dengan fan-out kosong karena lookup penerima gagal). Metrik
+  lama `sos_dispatch_latency_ms`, `push_delivery_failures_total`,
+  `active_sos_count` tidak berubah.
 
 ## Yang belum dikerjakan
 
