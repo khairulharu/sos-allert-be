@@ -44,6 +44,10 @@ func mapSOSError(err error) error {
 	case errors.Is(err, model.ErrPINNotConfigured),
 		errors.Is(err, model.ErrStorageNotConfigured):
 		return fiber.NewError(fiber.StatusPreconditionFailed, err.Error())
+	case errors.Is(err, model.ErrInvalidPhoneNumber),
+		errors.Is(err, model.ErrTooManyEmergencyContacts),
+		errors.Is(err, model.ErrDuplicateEmergencyContact):
+		return fiber.NewError(fiber.StatusUnprocessableEntity, err.Error())
 	case errors.Is(err, model.ErrRateLimited):
 		return fiber.NewError(fiber.StatusTooManyRequests, err.Error())
 	case errors.Is(err, model.ErrNotAlertOwner),
