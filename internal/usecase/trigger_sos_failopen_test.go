@@ -167,11 +167,10 @@ func TestTriggerSOSGeoSearchErrorStillReachesContactsWithKafka(t *testing.T) {
 }
 
 // The deferred (grace-period) dispatch must still run after a failed lookup:
-// the closure re-checks the alert status and then notifies with the empty
-// recipient list.
+// the durable outbox reloads the alert, finds no recorded recipient and
+// notifies with the empty list so the contact fallback still runs (#37/#40).
 func TestTriggerSOSGracePeriodDispatchWithEmptyFanout(t *testing.T) {
-	uc, locRepo, _, notifier := triggerSetup(t)
-	notifier.notifiedCh = make(chan struct{})
+	uc, locRepo, alertRepo, notifier := triggerSetup(t)
 	locRepo.nearbyErr = errors.New("redis GEOSEARCH unavailable")
 	uc.Deps.GracePeriod = 20 * time.Millisecond
 
@@ -179,18 +178,17 @@ func TestTriggerSOSGracePeriodDispatchWithEmptyFanout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("trigger error = %v", err)
 	}
-	// Read only the channel here: touching the notifier fields while the
-	// grace-period goroutine may be writing them would race.
-	select {
-	case <-notifier.notifiedCh:
-		t.Fatal("dispatch must wait for the grace period")
-	default:
+	if notifier.notifyCalls != 0 {
+		t.Fatalf("Notify calls = %d, want 0 before the grace period elapses", notifier.notifyCalls)
 	}
 
-	select {
-	case <-notifier.notifiedCh:
-	case <-time.After(3 * time.Second):
-		t.Fatal("grace-period dispatch never ran with an empty recipient list")
+	// Rewind the recorded due time instead of sleeping: the scan only
+	// compares dispatch_due_at with the current clock.
+	past := time.Now().Add(-time.Second).UnixMilli()
+	alertRepo.alerts[result.Alert.ID].DispatchDueAt = &past
+
+	if n, err := uc.DispatchDueAlerts(context.Background()); err != nil || n != 1 {
+		t.Fatalf("DispatchDueAlerts = %d, %v; want 1 dispatched", n, err)
 	}
 	if notifier.notifyCalls != 1 {
 		t.Fatalf("Notify calls = %d, want exactly 1", notifier.notifyCalls)

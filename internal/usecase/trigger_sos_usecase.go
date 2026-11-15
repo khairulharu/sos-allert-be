@@ -44,6 +44,12 @@ type AlertStore interface {
 	CountActive(ctx context.Context, db *gorm.DB) (int64, error)
 	Transition(ctx context.Context, db *gorm.DB, id string, fromStatuses []string, updates map[string]any) (bool, error)
 	ExpireOlderThan(ctx context.Context, db *gorm.DB, beforeMs int64, expiredAtMs int64) (int64, error)
+	// ListDueDispatch / MarkDispatched back the durable grace-period
+	// outbox (#40): ListDueDispatch returns the TRIGGERED alerts whose
+	// dispatch_due_at elapsed and were not dispatched yet; MarkDispatched
+	// latches dispatched_at so one alert is fanned out once per scan.
+	ListDueDispatch(ctx context.Context, db *gorm.DB, dueBeforeMs int64, limit int) ([]*entity.Alert, error)
+	MarkDispatched(ctx context.Context, db *gorm.DB, alertID string, atMs int64) (bool, error)
 	CreateBreadcrumb(ctx context.Context, db *gorm.DB, b *entity.AlertBreadcrumb) error
 	ListBreadcrumbs(ctx context.Context, db *gorm.DB, alertID string, limit int) ([]*entity.AlertBreadcrumb, error)
 	LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID string) (*entity.AlertBreadcrumb, error)
@@ -344,6 +350,15 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	if triageInfo.Summary != "" {
 		alert.Summary = &triageInfo.Summary
 	}
+	if u.Deps.GracePeriod > 0 {
+		// Durable grace period (#40): persist the due time with the alert
+		// instead of scheduling an in-process time.AfterFunc. The web
+		// process has no graceful drain for a timer, so a restart/deploy
+		// inside the window used to leave the alert TRIGGERED and reached
+		// nobody. RunDispatchLoop reads this row back and fans out.
+		dueAt := alert.TriggeredAt + u.Deps.GracePeriod.Milliseconds()
+		alert.DispatchDueAt = &dueAt
+	}
 	if err := u.Deps.Alerts.Create(ctx, u.DB, alert); err != nil {
 		return nil, fmt.Errorf("save alert: %w", err)
 	}
@@ -417,70 +432,69 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 	}
 
 	dispatch := func(dispatchCtx context.Context) {
-		// An empty recipient list is expected after a failed lookup (#37):
-		// the dispatcher then skips push and still runs the
-		// emergency-contact SMS fallback.
-		published := false
-		if u.Deps.Publisher != nil {
-			event := model.SOSEvent{
-				EventType:      "sos.dispatched",
-				AlertID:        alert.ID,
-				SenderID:       senderID,
-				Latitude:       latitude,
-				Longitude:      longitude,
-				EmergencyType:  emergencyType,
-				Status:         alert.Status,
-				Recipients:     recipients,
-				TriggeredAt:    alert.TriggeredAt,
-				Severity:       triageInfo.Severity,
-				Summary:        triageInfo.Summary,
-				ClientSeverity: req.ClientSeverity,
-				ClientSummary:  req.ClientSummary,
-			}
-			if err := u.Deps.Publisher.Send(dispatchCtx, event); err == nil {
-				published = true
-			} else {
-				u.Log.Warn("Kafka publish failed, falling back to direct notify")
-			}
+		event := model.SOSEvent{
+			EventType:      "sos.dispatched",
+			AlertID:        alert.ID,
+			SenderID:       senderID,
+			Latitude:       latitude,
+			Longitude:      longitude,
+			EmergencyType:  emergencyType,
+			Status:         alert.Status,
+			Recipients:     recipients,
+			TriggeredAt:    alert.TriggeredAt,
+			Severity:       triageInfo.Severity,
+			Summary:        triageInfo.Summary,
+			ClientSeverity: req.ClientSeverity,
+			ClientSummary:  req.ClientSummary,
 		}
-		// A published event normally replaces the direct notify. After a
-		// degraded fan-out the worker has no responder to reach and no
-		// contact resolver, so the local dispatcher still runs to keep the
-		// emergency-contact SMS fallback (#37).
-		if published && !fanoutDegraded {
-			u.recordDispatch(startedAt)
-			return
-		}
-		if u.Deps.Notifier != nil {
-			if err := u.Deps.Notifier.Notify(dispatchCtx, recipients, alertModel); err != nil {
-				u.Log.WithError(err).Error("failed to notify recipients")
-			}
-		}
-		u.recordDispatch(startedAt)
+		u.sendFanout(dispatchCtx, event, recipients, alertModel, fanoutDegraded, startedAt)
 	}
 
 	if u.Deps.GracePeriod > 0 {
-		// The grace period lets the sender cancel a false alarm before
-		// anyone is notified. The scheduled dispatch re-checks the
-		// status so a cancelled alert is never fanned out.
-		time.AfterFunc(u.Deps.GracePeriod, func() {
-			dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if current, err := u.Deps.Alerts.GetByID(dctx, u.DB, alert.ID); err == nil {
-				if current.Status != entity.AlertStatusTriggered {
-					u.Log.Infof("alert %s is %s, skipping grace-period dispatch", alert.ID, current.Status)
-					return
-				}
-			} else {
-				u.Log.WithError(err).Warnf("could not re-check alert %s before dispatch", alert.ID)
-			}
-			dispatch(dctx)
-		})
+		// Nothing is dispatched here: the durable outbox row written with
+		// the alert (dispatch_due_at) is picked up by RunDispatchLoop when
+		// it comes due — or right after a restart inside the window, which
+		// is the bug this fixes (#40). The grace period still lets the
+		// sender cancel a false alarm before anyone is notified, and the
+		// loop re-checks the status so a cancelled alert is never fanned
+		// out.
+		u.Log.Infof("alert %s: fan-out scheduled at %d (%s grace period)",
+			alert.ID, *alert.DispatchDueAt, u.Deps.GracePeriod)
 	} else {
 		dispatch(ctx)
 	}
 
 	return result, nil
+}
+
+// sendFanout publishes or directly notifies one alert fan-out and records
+// the dispatch metric. The inline trigger path and the durable outbox loop
+// share it so both degrade identically.
+//
+// An empty recipient list is expected after a failed lookup (#37): the
+// dispatcher then skips push and still runs the emergency-contact SMS
+// fallback. A published event normally replaces the direct notify, but
+// after a degraded fan-out the worker has no responder to reach and no
+// contact resolver, so the local dispatcher still runs.
+func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent, recipients []string, alert model.Alert, degraded bool, startedAt time.Time) {
+	published := false
+	if u.Deps.Publisher != nil {
+		if err := u.Deps.Publisher.Send(ctx, event); err == nil {
+			published = true
+		} else {
+			u.Log.Warn("Kafka publish failed, falling back to direct notify")
+		}
+	}
+	if published && !degraded {
+		u.recordDispatch(startedAt)
+		return
+	}
+	if u.Deps.Notifier != nil {
+		if err := u.Deps.Notifier.Notify(ctx, recipients, alert); err != nil {
+			u.Log.WithError(err).Error("failed to notify recipients")
+		}
+	}
+	u.recordDispatch(startedAt)
 }
 
 func (u *TriggerSOSUseCase) recordDispatch(startedAt time.Time) {
