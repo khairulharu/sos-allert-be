@@ -55,6 +55,21 @@ func (n *WebPushNotifier) client() *http.Client {
 	return http.DefaultClient
 }
 
+// discardLogger discards every record. SendToUser can run in the dispatcher
+// timer goroutine, where a nil Log dereference would panic the process.
+var discardLogger = func() *logrus.Logger {
+	log := logrus.New()
+	log.SetOutput(io.Discard)
+	return log
+}()
+
+func (n *WebPushNotifier) log() *logrus.Logger {
+	if n.Log != nil {
+		return n.Log
+	}
+	return discardLogger
+}
+
 // buildPayload renders the JSON body sent to the push service. `data`
 // carries the same keys as the FCM payload plus `url` (the SPA root;
 // the app surfaces the incident through its existing inbox poll).
@@ -79,7 +94,7 @@ func (n *WebPushNotifier) SendToUser(ctx context.Context, userID, title, body st
 		return fmt.Errorf("list push subscriptions for %s: %w", userID, err)
 	}
 	if len(subs) == 0 {
-		n.Log.Infof("[SOS] user %s has no browser push subscription", userID)
+		n.log().Infof("[SOS] user %s has no browser push subscription", userID)
 		return nil
 	}
 	payload, err := n.buildPayload(title, body, data)
@@ -97,11 +112,9 @@ func (n *WebPushNotifier) SendToUser(ctx context.Context, userID, title, body st
 	var firstErr error
 	for _, sub := range subs {
 		if !IsAllowedWebPushEndpoint(sub.Endpoint, WebPushHostsOr(n.AllowedHosts)) {
-			if n.Log != nil {
-				n.Log.Warnf("dropping push subscription with a non-allowlisted endpoint for user %s", userID)
-			}
-			if err := n.Subs.DeleteByEndpoint(ctx, sub.Endpoint); err != nil && n.Log != nil {
-				n.Log.WithError(err).Warn("could not delete non-allowlisted push subscription")
+			n.log().Warnf("dropping push subscription with a non-allowlisted endpoint for user %s", userID)
+			if err := n.Subs.DeleteByEndpoint(ctx, sub.Endpoint); err != nil {
+				n.log().WithError(err).Warn("could not delete non-allowlisted push subscription")
 			}
 			continue
 		}
@@ -117,16 +130,16 @@ func (n *WebPushNotifier) SendToUser(ctx context.Context, userID, title, body st
 			if firstErr == nil {
 				firstErr = err
 			}
-			n.Log.WithError(err).Warnf("web push send failed for user %s", userID)
+			n.log().WithError(err).Warnf("web push send failed for user %s", userID)
 			continue
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
-			n.Log.Infof("web push endpoint gone for user %s, deleting subscription", userID)
-			if err := n.Subs.DeleteByEndpoint(ctx, sub.Endpoint); err != nil && n.Log != nil {
-				n.Log.WithError(err).Warn("could not delete stale push subscription")
+			n.log().Infof("web push endpoint gone for user %s, deleting subscription", userID)
+			if err := n.Subs.DeleteByEndpoint(ctx, sub.Endpoint); err != nil {
+				n.log().WithError(err).Warn("could not delete stale push subscription")
 			}
 		case resp.StatusCode >= 400:
 			if firstErr == nil {
