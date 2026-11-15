@@ -44,3 +44,24 @@ func TestNewSOSConfigClassifyLimitDefaultsOn(t *testing.T) {
 		t.Fatalf("ClassifyRateLimitPerHour = %d, want 4", got)
 	}
 }
+
+// The durable grace-period outbox scan interval (#40) defaults to 1 s and
+// is clamped so a misconfiguration cannot poll MySQL in a tight loop.
+func TestNewSOSConfigDispatchPoll(t *testing.T) {
+	cfg := NewSOSConfig(viper.New())
+	if cfg.DispatchPoll != time.Second {
+		t.Fatalf("DispatchPoll = %v, want the 1s default", cfg.DispatchPoll)
+	}
+
+	v := viper.New()
+	v.Set("sos.dispatch_poll_seconds", 2)
+	if got := NewSOSConfig(v).DispatchPoll; got != 2*time.Second {
+		t.Fatalf("DispatchPoll = %v, want 2s", got)
+	}
+
+	v = viper.New()
+	v.Set("sos.dispatch_poll_seconds", 0.01)
+	if got := NewSOSConfig(v).DispatchPoll; got != 100*time.Millisecond {
+		t.Fatalf("DispatchPoll = %v, want the 100ms floor", got)
+	}
+}
