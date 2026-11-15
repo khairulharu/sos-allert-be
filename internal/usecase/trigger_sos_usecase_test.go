@@ -621,6 +621,7 @@ type fakeNotifier struct {
 	notifyOnce sync.Once
 
 	recipientNotifyCalled bool
+	recipientNotifyCalls  int
 	recipientSets         [][]string
 	escalatedAlert        model.Alert
 }
@@ -639,6 +640,7 @@ func (f *fakeNotifier) Notify(ctx context.Context, recipientIDs []string, alert 
 // NotifyRecipients records the push-only escalation fan-out.
 func (f *fakeNotifier) NotifyRecipients(ctx context.Context, recipientIDs []string, alert model.Alert) error {
 	f.recipientNotifyCalled = true
+	f.recipientNotifyCalls++
 	f.recipientSets = append(f.recipientSets, append([]string(nil), recipientIDs...))
 	f.escalatedAlert = alert
 	return f.notifyErr

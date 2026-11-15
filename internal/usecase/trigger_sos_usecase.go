@@ -490,8 +490,15 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 // dispatcher then skips push and still runs the emergency-contact SMS
 // fallback. A published event normally replaces the direct notify, but
 // after a degraded fan-out the local dispatcher still runs so the contacts
-// are reached even if the worker has no responder to notify.
+// are reached even if the worker has no responder to notify. Because the
+// worker DOES resolve contacts (#38), that event is marked push-only before
+// it is published: otherwise the same incident texts the sender's emergency
+// contacts twice (once locally, once from the worker). The event carries no
+// recipient anyway, so no responder push is lost.
 func (u *TriggerSOSUseCase) sendFanout(ctx context.Context, event model.SOSEvent, recipients []string, alert model.Alert, degraded bool) {
+	if degraded {
+		event.PushOnly = true
+	}
 	sentAt := time.Now()
 	published := false
 	if u.Deps.Publisher != nil {
