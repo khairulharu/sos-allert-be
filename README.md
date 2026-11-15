@@ -633,6 +633,20 @@ cp config.json.example config.json   # lalu isi kredensial asli
 setiap kali menambah setelan, supaya deploy dari nol tidak kehilangan
 konfigurasi.
 
+`database.pool.idle` / `max` / `lifetime` (detik) diisi default 10 / 100 / 300
+kalau tidak ada di config. Kalau di-set `0`, backend menulis warning dan
+memakai default itu, karena `0` berarti "koneksi terbuka tanpa batas" dan
+"koneksi tidak pernah didaur ulang" di `database/sql`.
+
+### Catatan: TLS belum diimplementasikan
+
+`ca.pem` ikut di-.gitignore dan disebut di catatan deploy, tetapi **kode belum
+memakai TLS**: DSN MySQL di `internal/config/gorm.go` tidak punya parameter
+`tls`, dan `redis.NewClient` di `internal/config/redis.go` tidak menyetel
+`TLSConfig`. Jangan menganggap koneksi DB/Redis terenkripsi oleh aplikasi;
+kalau butuh, terminasi di provider (mis. Aiven) atau di proxy/tunnel.
+Menambahkan opsi TLS ke kedua klien adalah pekerjaan terpisah.
+
 ### WAJIB: `web.proxy_header` di belakang proxy / tunnel
 
 Kalau semua trafik masuk lewat proxy (Cloudflare Tunnel, nginx, Traefik, load
