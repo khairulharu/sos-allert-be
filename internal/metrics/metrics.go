@@ -17,13 +17,14 @@ import (
 // SDK + exporter decision and credentials, and is documented in README
 // section 2 as a follow-up.
 type Metrics struct {
-	mu            sync.Mutex
-	buckets       []float64
-	bucketCounts  []uint64
-	dispatchCount uint64
-	dispatchSumMs float64
-	pushFailures  uint64
-	activeSOS     int64
+	mu             sync.Mutex
+	buckets        []float64
+	bucketCounts   []uint64
+	dispatchCount  uint64
+	dispatchSumMs  float64
+	pushFailures   uint64
+	fanoutFailures uint64
+	activeSOS      int64
 }
 
 var latencyBuckets = []float64{50, 100, 150, 200, 500, 1000, 2000}
@@ -49,6 +50,12 @@ func (m *Metrics) ObserveDispatchDuration(ms float64) {
 // IncPushFailures records a failed push/SMS delivery attempt.
 func (m *Metrics) IncPushFailures() {
 	atomic.AddUint64(&m.pushFailures, 1)
+}
+
+// IncFanoutFailures records a trigger whose recipient lookup failed and was
+// dispatched with an empty fan-out (#37).
+func (m *Metrics) IncFanoutFailures() {
+	atomic.AddUint64(&m.fanoutFailures, 1)
 }
 
 // SetActiveSOS sets the active-incident gauge.
@@ -78,6 +85,7 @@ func (m *Metrics) Render() string {
 	count, sum, buckets := m.dispatchCount, m.dispatchSumMs, append([]uint64(nil), m.bucketCounts...)
 	m.mu.Unlock()
 	failures := atomic.LoadUint64(&m.pushFailures)
+	fanoutFailures := atomic.LoadUint64(&m.fanoutFailures)
 	active := atomic.LoadInt64(&m.activeSOS)
 
 	var b strings.Builder
@@ -97,6 +105,9 @@ func (m *Metrics) Render() string {
 	b.WriteString("# HELP push_delivery_failures_total Failed push/SMS delivery attempts.\n")
 	b.WriteString("# TYPE push_delivery_failures_total counter\n")
 	fmt.Fprintf(&b, "push_delivery_failures_total %d\n", failures)
+	b.WriteString("# HELP sos_fanout_failures_total Triggers dispatched with an empty fan-out because the recipient lookup failed.\n")
+	b.WriteString("# TYPE sos_fanout_failures_total counter\n")
+	fmt.Fprintf(&b, "sos_fanout_failures_total %d\n", fanoutFailures)
 	b.WriteString("# HELP active_sos_count Currently active SOS incidents.\n")
 	b.WriteString("# TYPE active_sos_count gauge\n")
 	fmt.Fprintf(&b, "active_sos_count %d\n", active)

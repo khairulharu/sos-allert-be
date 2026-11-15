@@ -919,6 +919,7 @@ type gaugeMetrics struct {
 
 func (g *gaugeMetrics) ObserveDispatchDuration(float64) {}
 func (g *gaugeMetrics) IncPushFailures()                {}
+func (g *gaugeMetrics) IncFanoutFailures()              {}
 
 func (g *gaugeMetrics) SetActiveSOS(n int64) {
 	g.mu.Lock()
