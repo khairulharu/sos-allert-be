@@ -608,9 +608,19 @@ func (u *TriggerSOSUseCase) resolveCoordinates(ctx context.Context, senderID str
 		}
 		return *req.Latitude, *req.Longitude, nil
 	}
+	if u.Deps.Location == nil {
+		// No location store wired: treat it like a missing heartbeat so the
+		// caller gets the documented 422 instead of a panic.
+		return 0, 0, fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound)
+	}
 	sender, err := u.Deps.Location.Get(ctx, senderID)
 	if err != nil {
+		// The sentinel is wrapped with %w, so mapSOSError can still answer
+		// 422 instead of a 500 (#42).
 		return 0, 0, fmt.Errorf("get sender location: %w", err)
+	}
+	if sender == nil {
+		return 0, 0, fmt.Errorf("get sender location: %w", model.ErrUserLocationNotFound)
 	}
 	return sender.Latitude, sender.Longitude, nil
 }

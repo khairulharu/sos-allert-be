@@ -534,6 +534,20 @@ berubah, jadi pesan validasi tetap bisa ditampilkan.
 - Tidak ada perubahan pada frame `auth`/`auth_ok`, `LOCATION_UPDATE`,
   `ALERT_STATUS`, `ALERT_TRIAGE`, `RESPONDER_ADDED`.
 
+## `POST /api/sos` tanpa lokasi → `422` (#42)
+
+> **Untuk agent frontend.** Status code berubah dari `500` menjadi `422`.
+
+- Kalau body `POST /api/sos` tidak memuat `latitude`/`longitude` **dan** user
+  belum pernah mengirim heartbeat (`PUT /api/location`), server sekarang
+  menjawab **`422`** dengan
+  `{"errors":"location is required: send latitude and longitude in the SOS body or PUT /api/location first"}`.
+- Sebelumnya kondisi ini keluar sebagai `500` dengan body generik, jadi user
+  pertama kali tidak tahu apa yang harus diperbaiki.
+- Frontend: kirim koordinat di body SOS bila tersedia (paling aman), atau
+  pastikan `PUT /api/location` sudah sukses sebelum trigger; kalau menerima
+  `422`, tampilkan pesan lokasi dan coba lagi setelah lokasi tersedia.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

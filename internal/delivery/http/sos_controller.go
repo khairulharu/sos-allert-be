@@ -36,6 +36,12 @@ func mapSOSError(err error) error {
 		return fiber.ErrNotFound
 	case errors.Is(err, model.ErrInvalidTransition):
 		return fiber.ErrConflict
+	case errors.Is(err, model.ErrUserLocationNotFound):
+		// A trigger with neither body coordinates nor a stored heartbeat
+		// has nothing to fan out from: that is a client-side fix (send the
+		// coordinates), not a 500 with an internal message (#42).
+		return fiber.NewError(fiber.StatusUnprocessableEntity,
+			"location is required: send latitude and longitude in the SOS body or PUT /api/location first")
 	case errors.Is(err, model.ErrDuplicateResponse):
 		// The responder already answered this alert: the insert is
 		// idempotent server-side, so a repeat is a conflict with a message
