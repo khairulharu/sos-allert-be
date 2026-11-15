@@ -371,6 +371,84 @@ Catatan tambahan:
 - `409` hanya muncul untuk retry milik user itu sendiri ketika trigger pertama
   masih berjalan (key sudah diklaim, hasil belum tersimpan).
 
+## Hardening keamanan (#41)
+
+Enam temuan review, semuanya mengubah kontrak HTTP di beberapa titik. Ringkas:
+
+### 1. Safe PIN salah → `403`, bukan `401`
+
+`POST /api/sos/{alertId}/cancel` dengan PIN salah sekarang menjawab **`403`**
+dengan body `{"errors":"invalid safe PIN"}`. `401` sekarang **hanya** berarti
+sesi tidak valid/kadaluarsa.
+
+Frontend: jangan logout user ketika menerima `403` dari cancel — tampilkan
+"PIN salah, coba lagi". Logout tetap hanya untuk `401`.
+
+### 2. Kontak darurat divalidasi + dibatasi
+
+`POST /api/emergency-contacts` sekarang menolak dengan **`422`** (bukan `200`
+dan bukan `500`) bila:
+
+| Kondisi | `errors` |
+|---|---|
+| nomor bukan E.164 | `phone number must be in E.164 format, e.g. +6281234567890` |
+| sudah ada 10 kontak | `too many emergency contacts (max 10)` |
+| nomor sudah terdaftar untuk user itu | `this phone number is already an emergency contact` |
+
+- E.164 = `+` lalu 8–15 digit (digit pertama bukan `0`). Spasi, `-`, `(`, `)`,
+  dan `.` dibuang sebelum validasi, dan nomor **disimpan dalam bentuk
+  kanonik** (`+62 812-3456-7890` → `+6281234567890`).
+- Kode premium/short code (`1234`) dan format nasional tanpa `+`
+  (`081234567890`) ditolak.
+- Maksimum **10 kontak per user** (bukan per nomor). Nomor yang sama tidak
+  bisa didaftarkan dua kali.
+- `GET /api/emergency-contacts` tidak berubah: baris lama yang tidak sesuai
+  aturan baru tetap terbaca apa adanya (tidak difilter/diubah).
+
+Frontend: kirim nomor lengkap dengan kode negara (`+62…`). Tangani `422`
+dengan menampilkan `errors` di field nomor telepon.
+
+### 3. Baca alert orang lain → `404` (bukan `403`)
+
+Untuk user yang **bukan** peserta (bukan sender/responder), endpoint baca
+sekarang menjawab `404` — sama seperti id acak — sehingga id alert tidak bisa
+ditebak:
+
+- `GET /api/sos/{alertId}/media`
+- `GET /api/sos/{alertId}/media/{mediaId}`
+- `GET /api/sos/{alertId}/breadcrumbs`
+- frame auth `WS /ws/sos/{alertId}/track` (frame error `{"error":"alert not found"}`)
+
+`GET /api/sos/{alertId}` memang sudah `404`. Aksi tulis (`cancel`,
+`acknowledge`, `resolve`, `respond`, `POST …/media`, `POST …/breadcrumbs`)
+**tetap `403`** untuk non-peserta; tidak ada perubahan di sana.
+
+Frontend: perlakukan `404` pada endpoint baca di atas sebagai "insiden tidak
+ditemukan / sudah tidak tersedia", bukan "tidak punya akses".
+
+### 4. Endpoint Web Push wajib `https` + tidak bisa diambil alih
+
+- `POST /api/push/subscriptions` menolak (`400`) endpoint yang bukan `https`,
+  termasuk host yang ada di allowlist (`http://fcm.googleapis.com/...`).
+  Allowlist host tetap berlaku seperti sebelumnya.
+- Sebuah `endpoint` sekarang **milik user yang mendaftarkannya lebih dulu**.
+  User lain yang mengirim endpoint yang sama mendapat **`409`**
+  (`push endpoint is already registered to another user`) dan baris lama
+  tidak berubah. User yang sama tetap bisa re-subscribe (upsert/refresh).
+
+Frontend: kalau subscribe mengembalikan `409`, jangan retry dengan endpoint
+yang sama; pakai `PushSubscription` milik browser itu sendiri atau tampilkan
+"push tidak tersedia".
+
+### 5. Body `5xx` generik
+
+Semua response `>= 500` sekarang `{"errors":"internal server error"}`; detail
+(SQL, path file, error provider) hanya masuk log server. Ini juga berlaku untuk
+`502`/`503` yang sudah ada (mis. STT tidak dikonfigurasi, limiter Redis error):
+**status code tetap sama**, hanya body-nya generik. Jadi percabangan di
+frontend harus memakai status code, bukan isi `errors`. Pesan `4xx` tidak
+berubah, jadi pesan validasi tetap bisa ditampilkan.
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai
