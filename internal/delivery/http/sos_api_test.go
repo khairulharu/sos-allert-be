@@ -549,9 +549,17 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 		!strings.Contains(resp.Header.Get("Content-Type"), "audio/mp4") {
 		t.Fatalf("download status = %d type = %q body = %q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
 	}
+	// A stranger cannot tell this alert from an unknown id: both reads
+	// answer 404, so the media endpoints cannot enumerate alert ids.
+	if resp, _ = do("GET", "/api/sos/"+alertID+"/media", "user-x", ""); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider media list status = %d, want 404", resp.StatusCode)
+	}
 	resp, _ = do("GET", uploaded.Data.URL, "user-x", "")
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("outsider download status = %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("outsider download status = %d, want 404", resp.StatusCode)
+	}
+	if resp, _ = do("GET", "/api/sos/does-not-exist/media", "user-x", ""); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown alert media status = %d, want 404", resp.StatusCode)
 	}
 	resp, _ = do("GET", "/api/sos/does-not-exist", "sender", "")
 	if resp.StatusCode != http.StatusNotFound {
