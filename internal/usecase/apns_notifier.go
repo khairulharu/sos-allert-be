@@ -20,11 +20,12 @@ import (
 )
 
 // apnsProviderTokenTTL is how long a minted APNs provider token is reused.
-// Apple rejects tokens younger than 20 minutes and answers
-// 403 TooManyProviderTokenUpdates when a key mints several in a short window,
-// which is what happened when BuildJWT ran per device in one fan-out (#42).
-// Refreshing at 50 minutes stays inside the 1 hour exp while leaving margin
-// for clock skew.
+// Apple expects the provider token to be refreshed no more than once every
+// 20 minutes and no less than once every 60 minutes, and answers
+// 403 TooManyProviderTokenUpdates when a key mints several in a short window
+// — which is what happened when BuildJWT ran per device in one fan-out (#42).
+// Refreshing at 50 minutes stays inside the 1 hour exp with margin left for
+// clock skew.
 const apnsProviderTokenTTL = 50 * time.Minute
 
 // APNsNotifier sends Apple Push Notification service alerts, including
