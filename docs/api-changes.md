@@ -60,19 +60,25 @@ alert_id)`. Jalankan `migrate up` sebelum memakai endpoint.
 
 ## Status copy
 
-- Re-copy terakhir: pentest F-6/F-7/F-9/F-11/F-12 (klaim client vs triage
+- Re-copy terakhir: #54/#55 — transkrip audio senyap jadi
+  `transcription_status: "empty"` (tanpa transcript/triage) dan `severity`
+  `0` adalah skor sah sementara `AlertDetailResponse.severity` absen bila
+  insiden belum diklasifikasi, dari backend `a4d479d` plus update
+  `api/api.md` + `api/api-spec.json` pada working tree handoff ini.
+- Re-copy sebelumnya: pentest F-6/F-7/F-9/F-11/F-12 (klaim client vs triage
   server, rate limit `classify`, allowlist endpoint push, recover + security
   headers, media download) dari backend `d931206`.
-- `api/api.md` + `api/api-spec.json` diperbarui di backend untuk keempat
-  perubahan itu (`TriggerSOSRequest.client_*`, `SOSCreatedResponse.client_*`,
-  `SOSCreatedResponse.triage`, `classify` 429/503, `push/subscriptions` 400,
-  media `attachment` + allowlist Content-Type).
-- Sudah disalin ke `../frontend/api/` — `md5sum` keempat file sama per saat
-  handoff ini.
+- `api/api.md` + `api/api-spec.json` diperbarui di backend untuk perubahan
+  tersebut (`AlertDetailResponse.severity` opsional, `ClassifyResponse`/
+  `AlertMediaResponse.transcription_status` `empty` untuk audio senyap).
+- Sudah disalin ke `../frontend/api/` (`api.md` + `api-spec.json`,
+  byte-identical — `md5sum` sama) dan `../frontend/docs/api-changes.md`
+  (salinan dokumen ini + banner "jangan diedit").
 - Baris "Last re-copy" di `../frontend/AGENTS.md` sudah diperbarui.
 - Dokumen ini juga di-mirror ke `../frontend/docs/api-changes.md` (dengan banner
   "jangan diedit di sini"). Sumber kebenaran tetap salinan backend ini — kalau
-  ada perubahan, edit di sini lalu re-copy.
+  ada perubahan, edit di sini lalu re-copy. `docs/SPEC-alerts-history.md`
+  **bukan** mirror: versi frontend adalah spec UI tersendiri.
 
 ## Media insiden (audio/video)
 

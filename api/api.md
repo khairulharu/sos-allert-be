@@ -170,7 +170,7 @@ asli, jadi siapa yang muncul tidak terpengaruh pembulatan ini.
 | Method | Path | Auth | Kegunaan |
 |---|---|:---:|---|
 | `POST` | `/api/sos` | ✅ | Trigger SOS. Body opsional; fallback ke lokasi Redis terakhir. Response `201`. |
-| `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun ke DB. Hasil server (`emergency_type`, `severity`, `summary`) disimpan 2 menit sekali-pakai dan **otomatis** dipakai `POST /api/sos` berikutnya dari user yang sama; trigger tidak perlu mengirim ulang nilainya. Rate limit `sos.classify_rate_limit_per_hour` (default **10/jam**) → `429` + `Retry-After`; store limiter error → `503` (fail-closed). |
+| `POST` | `/api/sos/classify` | ✅ | Klasifikasi klip audio pra-trigger (`multipart/form-data`, field `file`, audio ≤ 25 MB). Tidak menyimpan apa pun ke DB. Hasil server (`emergency_type`, `severity`, `summary`) disimpan 2 menit sekali-pakai dan **otomatis** dipakai `POST /api/sos` berikutnya dari user yang sama; trigger tidak perlu mengirim ulang nilainya. Klip senyap/noise → `200` dengan `transcription_status: "empty"` (transcript kosong, tidak ada triage); `502` hanya untuk provider error. Rate limit `sos.classify_rate_limit_per_hour` (default **10/jam**) → `429` + `Retry-After`; store limiter error → `503` (fail-closed). |
 | `GET` | `/api/sos/active` | ✅ | Insiden aktif milik user (cold start). |
 | `GET` | `/api/sos/inbox` | ✅ | Insiden yang push-nya pernah diterima user (inbox responder). |
 | `GET` | `/api/sos/history` | ✅ | Riwayat paged (`role=sent\|received`, `status`, `page`, `size`, `from_ms`, `to_ms`), semua status termasuk `RESOLVED`/`CANCELLED`/`EXPIRED`. Item `AlertDetailResponse` tanpa `responders[]`/`breadcrumbs`. |
@@ -183,7 +183,7 @@ asli, jadi siapa yang muncul tidak terpengaruh pembulatan ini.
 | `GET` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Riwayat posisi insiden (sender/responder). |
 | `POST` | `/api/sos/{alertId}/breadcrumbs` | ✅ | Simpan satu titik tracking. Sender saja, insiden harus aktif. |
 | `GET` | `/api/sos/{alertId}/media` | ✅ | List media insiden (sender/responder). |
-| `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. Audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible), lalu transcript masuk triage dan response memuat `transcript`, `transcription_status`, `triage`. Kalau severity naik, fan-out diperluas ke responder baru (`escalated: true`, `recipients_added: N`). |
+| `POST` | `/api/sos/{alertId}/media` | ✅ | Upload media (`multipart/form-data`, field `file`). Sender saja, `audio/*`/`video/*`, maks 50 MB. Audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible), lalu transcript masuk triage dan response memuat `transcript`, `transcription_status`, `triage`. Klip senyap/halusinasi → `transcription_status: "empty"` tanpa transcript dan tanpa perubahan triage. Kalau severity naik, fan-out diperluas ke responder baru (`escalated: true`, `recipients_added: N`). |
 | `GET` | `/api/sos/{alertId}/media/{mediaId}` | ✅ | Download media (sender/responder). Selalu `Content-Disposition: attachment`; `Content-Type` hanya dari allowlist (`audio/webm|mp4|mpeg|ogg|wav`, `video/webm|mp4`, `image/jpeg|png`), selain itu `application/octet-stream`. |
 
 Detail trigger:
@@ -198,7 +198,9 @@ Detail trigger:
   `POST /api/sos/classify` milik user yang sama — dipakai otomatis dalam 2
   menit, sekali pakai — atau (b) `description` (AI triage opsional, fail-open).
   `emergency_type` eksplisit menang atas klasifikasi. `severity` server
-  di-clamp ke `0..1`.
+  di-clamp ke `0..1`; **`0` adalah skor sah** (level terendah rubrik), jadi
+  tersimpan dan dikirim sebagai `0`. Klasifikasi tanpa `emergency_type`
+  dianggap tanpa sinyal (tidak menimpa triage yang ada).
 - `client_severity`/`client_summary` **tidak** memengaruhi triage atau radius:
   hanya di-echo di response dan dikirim ke notifikasi berlabel
   `Pelapor menyebut: ...`. Nama lama `severity`/`summary` diabaikan (bukan
@@ -309,8 +311,10 @@ Aturan:
 - Urutan `triggered_at DESC, id DESC` (tie-break supaya paging stabil).
 - Item memakai bentuk detail yang sama, tetapi **tanpa** `responders[]` dan
   `breadcrumbs`; `responders_en_route` tetap terisi.
-- Field opsional absen bila kosong (`omitempty`), bukan `null`: `severity`,
-  `summary`, `masked`, `resolved_at`, `cancelled_at`, `latest_location.updated_at`.
+- Field opsional absen bila kosong (`omitempty`), bukan `null`: `severity`
+  (hanya absen bila insiden belum pernah diklasifikasi; skor `0` tetap
+  dikirim), `summary`, `masked`, `resolved_at`, `cancelled_at`,
+  `latest_location.updated_at`.
 - Masking sama dengan `GET /api/sos/{alertId}`: `masked: true` + koordinat ~3
   desimal bila pemanggil bukan sender dan bukan responder terdaftar.
 - `role=received` tidak pernah memuat insiden yang dikirim sendiri.

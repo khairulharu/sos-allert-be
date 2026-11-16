@@ -1018,7 +1018,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Classify a short audio clip before triggering an SOS. Nothing is persisted to the database: the server-computed triage (`emergency_type`, `severity`, `summary`) is cached in Redis for 2 minutes and consumed by the caller's next `POST /api/sos`, so the first fan-out already uses the audio classification without the client sending a severity back. `400` for non-audio or audio above 25 MB, `503` when `ai.stt` is not configured, `502` when the provider fails. Throttled per user (`sos.classify_rate_limit_per_hour`, default 10/hour): `429` with `Retry-After`, and `503` when the limiter store is unavailable (fail-closed, because every call costs STT + LLM tokens).",
+        "description": "Classify a short audio clip before triggering an SOS. Nothing is persisted to the database: the server-computed triage (`emergency_type`, `severity`, `summary`) is cached in Redis for 2 minutes and consumed by the caller's next `POST /api/sos`, so the first fan-out already uses the audio classification without the client sending a severity back. A silent or noise-only clip (silence detection, low-confidence short text, or a known Whisper hallucination) answers `200` with `transcription_status: \"empty\"`, no transcript and no triage instead of a 502. `400` for non-audio or audio above 25 MB, `503` when `ai.stt` is not configured, `502` when the provider fails. Throttled per user (`sos.classify_rate_limit_per_hour`, default 10/hour): `429` with `Retry-After`, and `503` when the limiter store is unavailable (fail-closed, because every call costs STT + LLM tokens).",
         "security": [
           {
             "RawToken": []
@@ -1757,7 +1757,7 @@
         "tags": [
           "SOS API"
         ],
-        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend. Audio up to 25 MB is sent to the configured speech-to-text provider (Groq/OpenAI-compatible Whisper); the transcript feeds triage, updates the alert classification, and is returned in the response. STT/triage failures are fail-open: the media is still stored and `transcription_status` reports the outcome. If the transcript raises the incident severity, the responder fan-out widens to the larger radius (only newly reached responders are notified, still respecting the trigger grace period) and the response reports `escalated`/`recipients_added`.",
+        "description": "Upload one media file to an active incident. Sender only. Content type must be `audio/*` or `video/*`, max 50 MB. The backend stores it in the configured storage backend. Audio up to 25 MB is sent to the configured speech-to-text provider (Groq/OpenAI-compatible Whisper); the transcript feeds triage, updates the alert classification, and is returned in the response. Silence, room noise and Whisper's subtitle hallucinations are filtered: they answer `transcription_status: \"empty\"` with no transcript and no triage update. STT/triage failures are fail-open: the media is still stored and `transcription_status` reports the outcome. If the transcript raises the incident severity, the responder fan-out widens to the larger radius (only newly reached responders are notified, still respecting the trigger grace period) and the response reports `escalated`/`recipients_added`.",
         "security": [
           {
             "RawToken": []
@@ -2736,7 +2736,8 @@
             "type": "number",
             "format": "float",
             "minimum": 0,
-            "maximum": 1
+            "maximum": 1,
+            "description": "0..1. 0 is a real score (the lowest rubric level); the object is only present when a classifier produced an emergency_type."
           },
           "summary": {
             "type": "string"
@@ -2759,7 +2760,8 @@
             "type": "number",
             "format": "float",
             "minimum": 0,
-            "maximum": 1
+            "maximum": 1,
+            "description": "0..1. Only meaningful together with emergency_type; 0 is a real lowest score. A silent clip returns transcription_status \"empty\" with no classification."
           },
           "summary": {
             "type": "string"
@@ -2773,7 +2775,8 @@
             "enum": [
               "completed",
               "empty"
-            ]
+            ],
+            "description": "completed = transcript available; empty = no speech detected (silence, room noise, or a filtered Whisper hallucination). A silent clip is still HTTP 200, with no transcript and no triage."
           }
         }
       },
@@ -3037,7 +3040,8 @@
             "type": "number",
             "format": "float",
             "minimum": 0,
-            "maximum": 1
+            "maximum": 1,
+            "description": "Absent when the incident was never classified (alerts.severity NULL); 0 is a real lowest score and is sent as 0."
           },
           "summary": {
             "type": "string"
@@ -3145,7 +3149,7 @@
               "empty",
               "failed"
             ],
-            "description": "disabled = no STT provider or non-audio; too_large = audio above the 25 MB transcription limit; completed = transcript available; empty = no speech detected; failed = provider error (media is still stored)."
+            "description": "disabled = no STT provider or non-audio; too_large = audio above the 25 MB transcription limit; completed = transcript available; empty = no speech detected (silence, room noise, or a filtered Whisper hallucination), no transcript and no triage update; failed = provider error (media is still stored)."
           },
           "transcribed_at": {
             "type": "integer",
