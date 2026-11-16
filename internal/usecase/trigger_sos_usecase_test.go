@@ -148,11 +148,12 @@ type fakeAlertRepository struct {
 	media        map[string][]*entity.AlertMedia
 	recipients   map[string][]string
 
-	triageUpdated  bool
-	triageType     string
-	triageSeverity float64
-	triageSummary  string
-	triageErr      error
+	triageUpdated     bool
+	triageType        string
+	triageSeverity    float64
+	triageSeveritySet bool
+	triageSummary     string
+	triageErr         error
 
 	createMediaErr error
 
@@ -339,20 +340,23 @@ func (f *fakeAlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *e
 	return nil
 }
 
-func (f *fakeAlertRepository) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error {
+func (f *fakeAlertRepository) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity *float64, summary string) error {
 	if f.triageErr != nil {
 		return f.triageErr
 	}
 	f.triageUpdated = true
 	f.triageType = emergencyType
-	f.triageSeverity = severity
+	f.triageSeveritySet = severity != nil
+	if severity != nil {
+		f.triageSeverity = *severity
+	}
 	f.triageSummary = summary
 	if alert, ok := f.alerts[alertID]; ok {
 		if emergencyType != "" {
 			alert.EmergencyType = emergencyType
 		}
-		if severity > 0 {
-			v := severity
+		if severity != nil {
+			v := *severity
 			alert.Severity = &v
 		}
 		if summary != "" {
@@ -945,6 +949,37 @@ func TestTriggerSOSClampsServerSeverity(t *testing.T) {
 	}
 	if result.Triage == nil || result.Triage.Severity != 1 {
 		t.Fatalf("triage = %+v, want severity clamped to 1", result.Triage)
+	}
+}
+
+// Jev's lowest rubric level is a legitimate score of 0 (#55). A triage that
+// carries a type and severity 0 must be persisted as 0 — not left NULL as if
+// the alert had never been classified — while still starting at the closest
+// radius.
+func TestTriggerSOSStoresZeroSeverity(t *testing.T) {
+	uc, locRepo, alertRepo, _ := triggerSetup(t)
+	locRepo.nearbyByRadius = map[float64][]string{1000: {"sender", "user-b", "user-c", "user-d"}}
+	uc.Deps.Triage = &fakeTriageEngine{res: TriageResult{
+		EmergencyType: entity.EmergencyTypeDanger,
+		Severity:      0,
+		Summary:       "Potensi bahaya atau ancaman",
+	}}
+
+	result, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("ExecuteWithRequest error = %v", err)
+	}
+	if alertRepo.lastAlert.Severity == nil {
+		t.Fatal("stored severity = NULL, want a persisted 0")
+	}
+	if *alertRepo.lastAlert.Severity != 0 {
+		t.Fatalf("stored severity = %v, want 0", *alertRepo.lastAlert.Severity)
+	}
+	if result.Triage == nil || result.Triage.Severity != 0 || result.Triage.EmergencyType != entity.EmergencyTypeDanger {
+		t.Fatalf("triage = %+v, want DANGER with severity 0", result.Triage)
+	}
+	if result.RadiusMeters != 1000 {
+		t.Fatalf("radius = %v, want the closest 1000 m ring", result.RadiusMeters)
 	}
 }
 

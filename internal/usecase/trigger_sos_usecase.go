@@ -62,7 +62,7 @@ type AlertStore interface {
 	CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error
 	ListMedia(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertMedia, error)
 	GetMedia(ctx context.Context, db *gorm.DB, alertID, mediaID string) (*entity.AlertMedia, error)
-	UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error
+	UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity *float64, summary string) error
 	CreateRecipients(ctx context.Context, db *gorm.DB, alertID string, userIDs []string, notifiedAt int64) error
 	ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error)
 	ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error)
@@ -340,8 +340,13 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 			emergencyType = entity.EmergencyTypeDanger
 		}
 	}
+	// A usable classification (an emergency type) always carries a score;
+	// a no-signal result is empty in every field. The type is therefore
+	// the presence marker for severity, so a legitimate score of 0 is
+	// stored as 0 instead of looking like "no triage" (#55).
+	hasTriage := triageInfo.EmergencyType != ""
 	radiusStart := 0
-	if triageInfo.Severity > 0 {
+	if hasTriage {
 		radiusStart = u.radiusStartIndex(triageInfo.Severity)
 	}
 	alert := &entity.Alert{
@@ -355,7 +360,7 @@ func (u *TriggerSOSUseCase) ExecuteWithRequest(ctx context.Context, senderID str
 		AccuracyMeters:    req.AccuracyMeters,
 		BatteryPercentage: req.BatteryPercentage,
 	}
-	if triageInfo.Severity > 0 {
+	if hasTriage {
 		alert.Severity = &triageInfo.Severity
 	}
 	if triageInfo.Summary != "" {

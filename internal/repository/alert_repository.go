@@ -208,13 +208,18 @@ func (a *AlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entit
 
 // UpdateTriage refreshes the classification after post-trigger audio
 // transcription. Empty fields are left untouched.
-func (a *AlertRepository) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error {
+//
+// Severity is a pointer so a legitimate 0 score (e.g. Jev's lowest
+// rubric level) is written as 0 instead of being mistaken for "no
+// triage" and left NULL (#55). A nil pointer means the classifier had
+// no score, in which case the column keeps its previous value.
+func (a *AlertRepository) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity *float64, summary string) error {
 	updates := map[string]any{}
 	if emergencyType != "" {
 		updates["emergency_type"] = emergencyType
 	}
-	if severity > 0 {
-		updates["severity"] = severity
+	if severity != nil {
+		updates["severity"] = *severity
 	}
 	if summary != "" {
 		updates["summary"] = summary

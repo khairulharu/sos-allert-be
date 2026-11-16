@@ -270,6 +270,7 @@ func TestOllamaClientTriageErrors(t *testing.T) {
 		{name: "http error", status: http.StatusInternalServerError, body: `{"error":"boom"}`, wantErrSub: "status 500"},
 		{name: "invalid json", status: http.StatusOK, body: `{"message":{"role":"assistant","content":"not json"}}`, wantErrSub: "invalid provider JSON"},
 		{name: "unknown type", status: http.StatusOK, body: `{"message":{"role":"assistant","content":"{\"emergency_type\":\"FIRE\",\"severity\":0.5}"}}`, wantErrSub: "unknown emergency_type"},
+		{name: "missing severity", status: http.StatusOK, body: `{"message":{"role":"assistant","content":"{\"emergency_type\":\"MEDICAL\",\"summary\":\"x\"}"}}`, wantErrSub: "no severity score"},
 		{name: "severity out of range", status: http.StatusOK, body: `{"message":{"role":"assistant","content":"{\"emergency_type\":\"MEDICAL\",\"severity\":7}"}}`, wantErrSub: "out of range"},
 	}
 	for _, tc := range cases {

@@ -128,10 +128,12 @@ Aturan:
 - Item memakai `model.AlertDetailResponse` yang sudah ada (`internal/model/sos_model.go`),
   **tanpa** `responders[]` dan `breadcrumbs`. `responders_en_route` tetap diisi
   (batch `COUNT(DISTINCT responder_id)`).
-- Field opsional absen bila kosong (semua `omitempty`): `severity` (0),
-  `summary`, `masked` (false), `resolved_at`, `cancelled_at`, `updated_at`
-  (bila belum ada breadcrumb). `initial_location`/`latest_location` **selalu
-  ada** (struct non-pointer) dan tidak boleh berisi `0,0` — lihat §5.4.
+- Field opsional absen bila kosong (semua `omitempty`): `severity` (hanya
+  absen bila insiden **belum pernah diklasifikasi**; skor `0` adalah nilai sah
+  dan tetap dikirim — lihat #55), `summary`, `masked` (false), `resolved_at`,
+  `cancelled_at`, `updated_at` (bila belum ada breadcrumb).
+  `initial_location`/`latest_location` **selalu ada** (struct non-pointer) dan
+  tidak boleh berisi `0,0` — lihat §5.4.
 - `masked` memakai aturan yang sudah berlaku di `buildDetail`: `true` +
   koordinat dibulatkan ~3 desimal bila pemanggil bukan sender dan bukan
   responder terdaftar. **Jangan** membuat definisi masking kedua: kedua builder

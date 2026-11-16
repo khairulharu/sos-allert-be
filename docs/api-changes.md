@@ -548,6 +548,72 @@ berubah, jadi pesan validasi tetap bisa ditampilkan.
   pastikan `PUT /api/location` sudah sukses sebelum trigger; kalau menerima
   `422`, tampilkan pesan lokasi dan coba lagi setelah lokasi tersedia.
 
+## Transkrip audio: klip senyap jadi `empty`, bukan teks halusinasi (#54)
+
+> **Untuk agent frontend.** Ada perilaku baru + satu bug state yang harus
+> diperbaiki di `AlertFlow.svelte`.
+
+Whisper (Groq `whisper-large-v3-turbo`) dulu mengubah audio senyap/noise
+menjadi teks subtitle seperti `"Terima kasih telah menonton!"` atau `"Hai"`,
+lalu teks itu disimpan sebagai `transcript` dan dipakai triage. Sekarang
+backend memutuskan sendiri:
+
+- Request STT mengirim `response_format=verbose_json` dan `prompt` kosakata
+  darurat Indonesia (fallback ke `json` bila provider menolak).
+- Hasil dianggap **tidak ada suara** bila: semua segmen `no_speech_prob` ≥ 0.6,
+  hanya ada repetisi (`compression_ratio` > 2.4), `avg_logprob` sangat rendah
+  pada teks pendek, durasi < 0.5 s, atau teks pendek yang persis frasa
+  halusinasi umum ("terima kasih", "hai", "something happen…", dst).
+- Kasus itu mengembalikan `transcription_status: "empty"`, `transcript` kosong,
+  **tidak** memanggil triage, dan **tidak** mengirim `ALERT_TRIAGE`.
+- `POST /api/sos/classify` untuk klip senyap menjawab **`200`** dengan
+  `{"transcription_status":"empty"}` — bukan `502`. `502` sekarang hanya untuk
+  provider yang benar-benar error.
+- `transcribed_at` hanya diisi ketika provider benar-benar menjawab (sukses
+  atau `empty`); transkripsi yang gagal tidak lagi punya timestamp.
+
+**Perbaikan wajib di FE (akar "transcript tidak sesuai audio"):**
+`AlertFlow.svelte` menyimpan `transcript` sebagai state satu layar dan hanya
+menimpanya bila nilainya truthy (`if (classified?.transcript)` baris ~246 dan
+`if (result?.transcript)` baris ~513). Akibatnya klip baru yang senyap tetap
+menampilkan transkrip klip sebelumnya. Lakukan:
+
+1. Reset `transcript`/`transcriptionStatus`/`triageFromAudio` setiap SOS baru
+   dimulai **dan** di awal `uploadClip`/sebelum `classify`.
+2. Tetapkan hasil apa adanya: `transcript = result?.transcript || ''` dan
+   `transcriptionStatus = result?.transcription_status || ''` — jangan
+   mempertahankan teks lama saat response tidak membawa transkrip.
+3. Tampilkan transkrip **per item** dari `GET /api/sos/{alertId}/media`
+   (`AlertMedia.svelte` sudah benar); panel "Audio transcript · N s clip" di
+   layar aktif sebaiknya terikat ke media id klip itu, bukan state global.
+4. Kalau `classify` gagal/`empty`, jangan tampilkan transkrip dari klip lain —
+   tampilkan catatan status (`empty`, `failed`, `disabled`, `too_large`).
+
+## `severity` 0 adalah skor nyata, absen = belum diklasifikasi (#55)
+
+> **Untuk agent frontend.** Tipe JSON `severity` di detail/history berubah
+> menjadi optional number.
+
+- Dulu skor 0 (level terendah rubrik Jev) dibuang dan kolomnya tetap `NULL`,
+  sehingga UI jatuh ke default. Sekarang 0 disimpan dan dikirim sebagai `0`.
+- `alerts.severity` `NULL` tetap berarti "belum pernah diklasifikasi". Di
+  `AlertDetailResponse` (`GET /api/sos/{alertId}`, item `history`, `inbox`),
+  field `severity` **absen** untuk kasus itu dan **ada** (boleh `0`) bila
+  klasifikasi menghasilkan skor.
+- `triage.severity` di response `POST /api/sos`, `POST /api/sos/classify`,
+  `POST .../media`, dan frame `ALERT_TRIAGE` tidak berubah tipenya (number),
+  termasuk saat nilainya 0.
+- Awalan `radius` tidak berubah: skor 0 tetap memakai radius 1 km.
+- Triage tanpa `emergency_type` (mis. engine hanya mengembalikan summary) kini
+  dianggap **tanpa sinyal**, sama seperti `AITriage`: tidak menimpa
+  `emergency_type` yang sudah ada dan tidak mengirim `ALERT_TRIAGE`.
+
+Yang perlu dicek FE: jangan lagi memakai `severity` yang hilang sebagai "0";
+`Number.isFinite` pada nilai `undefined` sudah menghasilkan `false`, jadi
+kartu sebaiknya menampilkan state "belum diklasifikasi" alih-alih bar 0%.
+Kombinasi dengan perbaikan triage di atas menutup keluhan "tipe darurat
+menempel dari klip sebelumnya".
+
 ## Yang belum dikerjakan
 
 - `GET /api/sos/nearby` (Fase 3) belum ada. Kartu ke-3 UI tetap memakai

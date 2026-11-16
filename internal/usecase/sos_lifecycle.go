@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -228,12 +229,10 @@ func alertDetailBase(alert *entity.Alert) *model.AlertDetailResponse {
 		Sender:        model.SenderSummary{ID: alert.SenderID},
 		Status:        alert.Status,
 		EmergencyType: alert.EmergencyType,
+		Severity:      alert.Severity,
 		TriggeredAt:   alert.TriggeredAt,
 		ResolvedAt:    alert.ResolvedAt,
 		CancelledAt:   alert.CancelledAt,
-	}
-	if alert.Severity != nil {
-		detail.Severity = *alert.Severity
 	}
 	if alert.Summary != nil {
 		detail.Summary = *alert.Summary
@@ -786,15 +785,25 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 
 	var triageInfo *model.TriageInfo
 	if transcribe {
-		now := time.Now().UnixMilli()
-		media.TranscribedAt = &now
 		transcript, transcribeErr := u.Deps.Transcriber.Transcribe(ctx, filename, contentType, bytes.NewReader(audio))
-		if transcribeErr != nil {
+		switch {
+		case errors.Is(transcribeErr, ErrNoSpeechDetected):
+			// Silence/room noise: the provider answered but heard no
+			// speech, so there is nothing to store and nothing to
+			// classify (#54).
+			media.TranscriptionStatus = "empty"
+			now := time.Now().UnixMilli()
+			media.TranscribedAt = &now
+		case transcribeErr != nil:
 			media.TranscriptionStatus = "failed"
 			u.Log.WithError(transcribeErr).Warn("audio transcription failed, keeping media without transcript")
-		} else if transcript == "" {
+		case strings.TrimSpace(transcript) == "":
 			media.TranscriptionStatus = "empty"
-		} else {
+			now := time.Now().UnixMilli()
+			media.TranscribedAt = &now
+		default:
+			now := time.Now().UnixMilli()
+			media.TranscribedAt = &now
 			media.Transcript = transcript
 			media.TranscriptionStatus = "completed"
 			triageInfo = u.triageTranscript(ctx, transcript)
@@ -824,7 +833,7 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 		return nil, err
 	}
 	if triageInfo != nil {
-		if err := u.Deps.Alerts.UpdateTriage(ctx, db, alertID, triageInfo.EmergencyType, triageInfo.Severity, triageInfo.Summary); err != nil {
+		if err := u.Deps.Alerts.UpdateTriage(ctx, db, alertID, triageInfo.EmergencyType, &triageInfo.Severity, triageInfo.Summary); err != nil {
 			discardStored()
 			return nil, err
 		}
@@ -862,7 +871,9 @@ func (u *TriggerSOSUseCase) UploadMedia(ctx context.Context, senderID, alertID, 
 }
 
 // triageTranscript classifies the speech-to-text result. A zero result
-// (no keyword signal) leaves the alert's existing classification intact.
+// (no emergency type) leaves the alert's existing classification intact,
+// matching the AITriage contract where EmergencyType == "" means "not an
+// answer" rather than a classification with an empty label (#55).
 func (u *TriggerSOSUseCase) triageTranscript(ctx context.Context, transcript string) *model.TriageInfo {
 	if u.Deps.Triage == nil {
 		return nil
@@ -872,12 +883,12 @@ func (u *TriggerSOSUseCase) triageTranscript(ctx context.Context, transcript str
 		u.Log.WithError(err).Warn("triage from audio transcript failed")
 		return nil
 	}
-	if result.EmergencyType == "" && result.Severity == 0 && result.Summary == "" {
+	if result.EmergencyType == "" {
 		return nil
 	}
 	return &model.TriageInfo{
 		EmergencyType: result.EmergencyType,
-		Severity:      result.Severity,
+		Severity:      clampSeverity(result.Severity),
 		Summary:       result.Summary,
 	}
 }
@@ -907,11 +918,18 @@ func (u *TriggerSOSUseCase) ClassifyAudio(ctx context.Context, senderID, filenam
 
 	response := &model.ClassifyResponse{TranscriptionStatus: "completed"}
 	transcript, err := u.Deps.Transcriber.Transcribe(ctx, filename, contentType, bytes.NewReader(audio))
+	if errors.Is(err, ErrNoSpeechDetected) {
+		// A silent clip is not a provider failure (#54): answer with the
+		// documented "empty" status so the client keeps the description
+		// classification instead of showing an audio-service error.
+		response.TranscriptionStatus = "empty"
+		return response, nil
+	}
 	if err != nil {
 		u.Log.WithError(err).Warn("audio classification transcription failed")
 		return nil, model.ErrTranscriptionFailed
 	}
-	if transcript == "" {
+	if strings.TrimSpace(transcript) == "" {
 		response.TranscriptionStatus = "empty"
 		return response, nil
 	}

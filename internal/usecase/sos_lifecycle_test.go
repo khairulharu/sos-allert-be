@@ -877,6 +877,75 @@ func TestUploadMediaAudioOverTranscriptionLimit(t *testing.T) {
 	}
 }
 
+// A transcript triage may legitimately score 0 (Jev's lowest rubric level).
+// That must reach the repository as a real score, not be skipped as "no
+// triage" and leave alerts.severity NULL (#55).
+func TestUploadMediaStoresZeroSeverity(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{text: "tidak ada bahaya"}
+	uc.Deps.Triage = &fakeTriageEngine{res: TriageResult{
+		EmergencyType: entity.EmergencyTypeDanger,
+		Severity:      0,
+		Summary:       "Potensi bahaya atau ancaman",
+	}}
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"calm.webm", "audio/webm", int64(len("voice")), strings.NewReader("voice"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.Triage == nil || up.Triage.Severity != 0 || up.Triage.EmergencyType != entity.EmergencyTypeDanger {
+		t.Fatalf("response triage = %+v, want DANGER with severity 0", up.Triage)
+	}
+	if !alertRepo.triageUpdated || !alertRepo.triageSeveritySet || alertRepo.triageSeverity != 0 {
+		t.Fatalf("repository update = updated:%v set:%v severity:%v, want a written 0",
+			alertRepo.triageUpdated, alertRepo.triageSeveritySet, alertRepo.triageSeverity)
+	}
+	alert := alertRepo.alerts[created.Alert.ID]
+	if alert.Severity == nil || *alert.Severity != 0 {
+		t.Fatalf("stored severity = %v, want 0", alert.Severity)
+	}
+}
+
+// A classifier answer without an emergency type is not an answer (the same
+// rule AITriage applies). It must not overwrite the alert with a summary and
+// leave whatever type the alert already had (#55).
+func TestUploadMediaIgnoresTriageWithoutEmergencyType(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{text: "terima kasih telah menonton"}
+	uc.Deps.Triage = &fakeTriageEngine{res: TriageResult{
+		Severity: 0.4,
+		Summary:  "ringkasan tanpa tipe",
+	}}
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{
+		EmergencyType: entity.EmergencyTypeMedical,
+	}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"silence.webm", "audio/webm", int64(len("voice")), strings.NewReader("voice"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.Triage != nil {
+		t.Fatalf("triage = %+v, want no signal for a type-less answer", up.Triage)
+	}
+	if alertRepo.triageUpdated {
+		t.Fatal("UpdateTriage must not run for a type-less answer")
+	}
+	if got := alertRepo.alerts[created.Alert.ID].EmergencyType; got != entity.EmergencyTypeMedical {
+		t.Fatalf("emergency_type = %q, want the request's MEDICAL kept", got)
+	}
+}
+
 // audioEscalationSetup wires a use case whose geo search returns a wider
 // set at 2 km than at 1 km, so a severity raise must widen the fan-out.
 func audioEscalationSetup(t *testing.T) (*TriggerSOSUseCase, *fakeAlertRepository, *fakeNotifier) {
@@ -1086,6 +1155,69 @@ func TestClassifyAudioErrorsAndEmpty(t *testing.T) {
 	}
 	if res.TranscriptionStatus != "empty" || res.EmergencyType != "" {
 		t.Fatalf("empty transcript result = %+v", res)
+	}
+}
+
+// A silent clip is a normal outcome, not a provider failure (#54): classify
+// answers "empty" (no 502) and stores no pending triage.
+func TestClassifyAudioSilentClipReturnsEmpty(t *testing.T) {
+	uc, _, _, _ := triggerSetup(t)
+	uc.Deps.Transcriber = &fakeTranscriber{err: ErrNoSpeechDetected}
+	uc.Deps.Triage = NewAITriage(noopLogger(), nil, NewOfflineClassifier())
+	store := &fakeClassifyStore{}
+	uc.Deps.Classify = store
+
+	res, err := uc.ClassifyAudio(context.Background(), "sender", "silence.webm", "audio/webm",
+		int64(len("noise")), strings.NewReader("noise"))
+	if err != nil {
+		t.Fatalf("ClassifyAudio error = %v, want the silent clip treated as empty", err)
+	}
+	if res.TranscriptionStatus != "empty" || res.Transcript != "" || res.EmergencyType != "" {
+		t.Fatalf("classify = %+v, want an empty result", res)
+	}
+	if store.saves != 0 {
+		t.Fatalf("pending triage saves = %d, want none for a silent clip", store.saves)
+	}
+}
+
+// The same silent clip uploaded as evidence keeps the media row but never
+// produces a transcript or a triage update (#54).
+func TestUploadMediaSilentClipKeepsMediaEmpty(t *testing.T) {
+	uc, _, alertRepo, _ := triggerSetup(t)
+	uc.Deps.MediaStore = &fakeMediaStorage{}
+	uc.Deps.Transcriber = &fakeTranscriber{err: ErrNoSpeechDetected}
+
+	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")
+	if err != nil {
+		t.Fatalf("trigger error = %v", err)
+	}
+	up, err := uc.UploadMedia(context.Background(), "sender", created.Alert.ID,
+		"silence.webm", "audio/webm", int64(len("noise")), strings.NewReader("noise"))
+	if err != nil {
+		t.Fatalf("UploadMedia error = %v", err)
+	}
+	if up.TranscriptionStatus != "empty" || up.Transcript != "" {
+		t.Fatalf("upload = %+v, want empty transcript", up)
+	}
+	if up.Triage != nil || alertRepo.triageUpdated {
+		t.Fatal("a silent clip must not update the incident triage")
+	}
+	if len(alertRepo.media[created.Alert.ID]) != 1 {
+		t.Fatal("the audio evidence must still be stored")
+	}
+}
+
+// The detail response must distinguish "never classified" from a real 0
+// score: nil/absent versus an explicit 0 (#55).
+func TestAlertDetailBaseKeepsZeroSeverity(t *testing.T) {
+	zero := 0.0
+	withScore := alertDetailBase(&entity.Alert{ID: "alert-a", Severity: &zero})
+	if withScore.Severity == nil || *withScore.Severity != 0 {
+		t.Fatalf("severity = %v, want an explicit 0", withScore.Severity)
+	}
+	unclassified := alertDetailBase(&entity.Alert{ID: "alert-b"})
+	if unclassified.Severity != nil {
+		t.Fatalf("severity = %v, want nil for an unclassified alert", *unclassified.Severity)
 	}
 }
 

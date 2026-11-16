@@ -104,11 +104,15 @@ func (c *OpenAIClient) Triage(ctx context.Context, in TriageInput) (TriageResult
 // parseTriageJSON validates a provider's JSON payload. Invalid or
 // out-of-range values are errors so the composed engine falls back to
 // the deterministic offline classifier.
+//
+// Severity is decoded into a pointer because 0 is a legitimate score
+// (the whole rubric starts at "no emergency"): a payload without a
+// score is a malformed answer, not a confident zero (#55).
 func parseTriageJSON(data []byte) (TriageResult, error) {
 	var payload struct {
-		EmergencyType string  `json:"emergency_type"`
-		Severity      float64 `json:"severity"`
-		Summary       string  `json:"summary"`
+		EmergencyType string   `json:"emergency_type"`
+		Severity      *float64 `json:"severity"`
+		Summary       string   `json:"summary"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return TriageResult{}, fmt.Errorf("ai triage: invalid provider JSON: %w", err)
@@ -118,12 +122,15 @@ func parseTriageJSON(data []byte) (TriageResult, error) {
 	default:
 		return TriageResult{}, fmt.Errorf("ai triage: unknown emergency_type %q", payload.EmergencyType)
 	}
-	if payload.Severity < 0 || payload.Severity > 1 {
-		return TriageResult{}, fmt.Errorf("ai triage: severity %v out of range", payload.Severity)
+	if payload.Severity == nil {
+		return TriageResult{}, fmt.Errorf("ai triage: %q returned no severity score", payload.EmergencyType)
+	}
+	if *payload.Severity < 0 || *payload.Severity > 1 {
+		return TriageResult{}, fmt.Errorf("ai triage: severity %v out of range", *payload.Severity)
 	}
 	return TriageResult{
 		EmergencyType: payload.EmergencyType,
-		Severity:      payload.Severity,
+		Severity:      *payload.Severity,
 		Summary:       strings.TrimSpace(payload.Summary),
 	}, nil
 }

@@ -13,7 +13,10 @@ type Alert struct {
 	EmergencyType     string
 	AccuracyMeters    *float64
 	BatteryPercentage *int
-	// Severity is the server-side triage score (0..1); 0 means no triage.
+	// Severity is the server-side triage score (0..1) carried in the
+	// notification payload. Unlike the API detail response, the
+	// notification path keeps 0 as "nothing to show", so a stored 0 and
+	// a never-classified alert look the same here (#55).
 	Severity float64
 	// Summary is the server-side triage summary; empty means no triage.
 	Summary string

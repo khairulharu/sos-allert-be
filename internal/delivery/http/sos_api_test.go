@@ -146,14 +146,14 @@ func (s *memAlerts) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.Aler
 	return nil
 }
 
-func (s *memAlerts) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity float64, summary string) error {
+func (s *memAlerts) UpdateTriage(ctx context.Context, db *gorm.DB, alertID, emergencyType string, severity *float64, summary string) error {
 	s.init()
 	if a, ok := s.alerts[alertID]; ok {
 		if emergencyType != "" {
 			a.EmergencyType = emergencyType
 		}
-		if severity > 0 {
-			v := severity
+		if severity != nil {
+			v := *severity
 			a.Severity = &v
 		}
 		if summary != "" {
@@ -536,7 +536,7 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(body, &detail); err != nil {
 		t.Fatalf("detail decode: %v", err)
 	}
-	if detail.Data.Severity <= 0 || detail.Data.Summary == "" || !detail.Data.Masked {
+	if detail.Data.Severity == nil || *detail.Data.Severity <= 0 || detail.Data.Summary == "" || !detail.Data.Masked {
 		t.Fatalf("detail = %+v, want persisted triage + masking for a non-participant", detail.Data)
 	}
 

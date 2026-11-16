@@ -86,7 +86,7 @@ func TestTriggerSOSAITriageClassification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAlert() error = %v", err)
 	}
-	if detail.Severity != 0.8 || detail.Summary != "Kemungkinan darurat medis" {
+	if detail.Severity == nil || *detail.Severity != 0.8 || detail.Summary != "Kemungkinan darurat medis" {
 		t.Errorf("detail triage = severity %v summary %q, want 0.8 / Kemungkinan darurat medis", detail.Severity, detail.Summary)
 	}
 }

@@ -124,6 +124,28 @@ func TestJevClientTriageCriticalSeverity(t *testing.T) {
 	}
 }
 
+// Score 0 is the rubric's lowest level, not "no answer": the choice is still
+// usable and the severity must survive as 0 (#55).
+func TestJevClientTriageZeroSeverity(t *testing.T) {
+	srv := newJevTestServer(t, http.StatusOK, `{
+		"model": "jev-1.14.0",
+		"answers": {
+			"emergency_type": {"type":"choice","choice":"DANGER","confidence":0.91,"probabilities":{}},
+			"severity": {"type":"score","score":0.0,"confidence":0.8}
+		}
+	}`, nil, nil)
+	defer srv.Close()
+
+	c := NewJevClient(srv.URL, "jev-test", "jev-latest", time.Second)
+	res, err := c.Triage(context.Background(), TriageInput{Description: "ada orang mencurigakan"})
+	if err != nil {
+		t.Fatalf("Triage() error = %v", err)
+	}
+	if res.EmergencyType != entity.EmergencyTypeDanger || res.Severity != 0 {
+		t.Fatalf("result = %+v, want DANGER/0", res)
+	}
+}
+
 func TestJevClientTriageErrors(t *testing.T) {
 	cases := []struct {
 		name       string

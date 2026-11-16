@@ -34,6 +34,9 @@ type TriggerSOSResult struct {
 // TriageInfo is the optional AI triage metadata attached to a trigger:
 // the classified emergency type, a 0..1 severity score (drives the
 // adaptive fan-out start radius) and a short human-readable summary.
+// Severity 0 is a real score (the lowest rubric level); the struct is
+// only attached when the classifier produced an emergency type, so
+// there is no separate "no score" state here (#55).
 type TriageInfo struct {
 	EmergencyType string  `json:"emergency_type,omitempty"`
 	Severity      float64 `json:"severity"`
@@ -134,11 +137,13 @@ type ResponderSummary struct {
 // LatestLocation is masked (rounded) for viewers who are neither the
 // sender nor a responder; Masked reports that.
 type AlertDetailResponse struct {
-	AlertID           string        `json:"alert_id"`
-	Sender            SenderSummary `json:"sender"`
-	Status            string        `json:"status"`
-	EmergencyType     string        `json:"emergency_type"`
-	Severity          float64       `json:"severity,omitempty"`
+	AlertID       string        `json:"alert_id"`
+	Sender        SenderSummary `json:"sender"`
+	Status        string        `json:"status"`
+	EmergencyType string        `json:"emergency_type"`
+	// Severity is absent when the incident was never classified and 0
+	// when the classifier returned its lowest (legitimate) score (#55).
+	Severity          *float64      `json:"severity,omitempty"`
 	Summary           string        `json:"summary,omitempty"`
 	InitialLocation   LocationPoint `json:"initial_location"`
 	LatestLocation    LocationPoint `json:"latest_location"`
