@@ -1,913 +1,274 @@
-# SOS-Allert Backend — Real-Time Geospatial Emergency Dispatch Engine
+# SOS Allert Backend
 
-Mission-critical, high-availability Go backend for real-time proximity-based SOS alerts, emergency contact broadcast, and live responder dispatch.
+Proximity-based emergency dispatch backend written in Go with Fiber. A client reports its position in the background; when someone triggers an SOS, the service stores the incident, finds active users nearby, and fans the alert out to push, SMS, and live-tracking clients while the incident moves through a small state machine.
 
-Designed under Silicon Valley life-safety system principles: **<200ms dispatch latency (p99)**, **zero-drop multi-channel failover**, and **resilient geospatial telemetry**.
+- **MySQL** keeps the durable data: incidents, breadcrumbs, media metadata, emergency contacts, and push subscriptions.
+- **Redis** is the operational store: geospatial index, sessions, rate limits, idempotency keys, and the pending audio classification.
+- **Kafka is optional.** When enabled, `cmd/worker` consumes events and becomes the only notifier.
 
----
+> This file documents behaviour and configuration **names**, never values. Copy `config.json.example` to `config.json` and fill it in locally. `config.json` and `ca.pem` are gitignored; never commit them.
 
-## 1. System Overview & Core Concept
+## How an alert flows
 
-When a user in distress triggers an emergency SOS:
-1. **Instant Geolocation Capture & Ingestion**: The system locks the user's latest coordinates and device telemetry.
-2. **Multi-Tiered Notification Fan-out**:
-   - **Tier 1 (Emergency Circle)**: Instant Push + SMS/Voice call to registered family/emergency contacts regardless of distance.
-   - **Tier 2 (Proximity Crowd Responders)**: Push alert to active nearby users within dynamic radius ($1\text{ km}$ default, adaptive based on responder density).
-   - **Tier 3 (Emergency Services / PSAP)**: Escalation to local first responders / dispatch centers.
-3. **Live Breadcrumb Tracking**: Continuous bidirectional streaming (WebSocket/gRPC) tracks the victim if moving (e.g. kidnapping, vehicular pursuit).
-4. **Incident Lifecycle Management**: Full state machine from trigger to responder acknowledgment, resolution, or authenticated cancellation.
-
----
-
-## 2. Feature Implementation & Priority Roadmap
-
-### Status Legend
-- ✅ **Done**: Implemented, tested, and running in current codebase.
-- 🟡 **In Progress**: Partially built or stubbed; needs production hardening.
-- 🔴 **P0 (Blocker for Production / Life-Safety)**: Must have before public launch.
-- 🟠 **P1 (High Priority / Core Experience)**: Required for real-world reliability.
-- 🔵 **P2 (Scale, Trust & Safety, Enterprise)**: Post-launch enhancements.
-
----
-
-### Matrix Fitur
-
-| Kategori | Fitur | Status | Prioritas | Keterangan & Spesifikasi Teknis |
-|---|---|:---:|:---:|---|
-| **Core Geospatial** | Haversine distance calculator | ✅ Done | - | Boundary-checked distance helper (`< 1 km`). |
-| | Redis GEO user positioning (`PUT /api/location`) | ✅ Done | - | High-throughput Redis GEO `GEOADD` (`users:locations`) + upsert histori MySQL `locations`. |
-| | Location read & nearby responders (`GET /api/location`, `GET /api/location/nearby`) | ✅ Done | - | Posisi terakhir + `stale`; responder aktif di radius 100–5000 m, stale > 2 menit difilter, koordinat dimask ~100 m, maks 50. |
-| | Stale user filter (`users:last_seen`) | ✅ Done | - | Redis Hash timestamp tracking; excludes idle users > 2 min from SOS fan-out and the nearby map. |
-| | Dynamic Adaptive Radius | ✅ Done | **P1** | Adapt radius ($500\text{m} - 5\text{km}$) based on urban/rural responder density; limit max recipient fan-out (cap: 50 recipients). |
-| **AI Triage** | SOS description classifier | ✅ Done | **P1** | Optional AI triage on `POST /api/sos`: `description` → classify `DANGER/MEDICAL/ACCIDENT` + severity 0–1 + summary. Providers: offline keyword classifier (default, zero-dependency) / Ollama / OpenAI (`ai.*` config); severity drives the adaptive-radius start (more severe = broader fan-out); fail-open: engine errors fall back to rule-based, so zero-drop life safety never depends on AI. Audio evidence ≤ 25 MB is transcribed via Groq/Whisper-compatible STT and fed into the same triage engine. `POST /api/sos/classify` classifies a clip pre-trigger so the first fan-out can use it; a post-trigger clip that raises severity widens the fan-out to the new radius. |
-| **Incident Lifecycle** | `POST /api/sos` trigger & record persistence | ✅ Done | - | Atomic alert persistence in MySQL (`alerts` table) + Redis GeoSearch. |
-| | SOS State Machine | ✅ Done | **P0** | Lifecycle: `TRIGGERED` $\to$ `ACKNOWLEDGED` $\to$ `RESOLVED` / `CANCELLED` / `EXPIRED`. |
-| | False Alarm Cancellation (`POST /api/sos/:id/cancel`) | ✅ Done | **P0** | 10s countdown grace period + secure 4-digit Duress/Safe PIN to abort accidental sirens or forced cancellations under duress. |
-| | Incident Query & Active Status API | ✅ Done | **P0** | `GET /api/sos/:id` & `GET /api/sos/active` for polling/sync on app cold start. |
-| | Idempotency Key & Deduplication | ✅ Done | **P0** | Prevent duplicate alerts caused by mobile retry/flaky cellular networks via `X-Idempotency-Key` in Redis. |
-| **Multi-Channel Dispatch** | Composite `AlertDispatcher` | ✅ Done | - | FCM/APNs/Twilio when configured; log-only fallback when a channel has no credentials. |
-| | APNs Critical Alerts & FCM v1 | 🟡 In Progress | **P0** | Apple Critical Alerts (bypasses iOS Silent/DND) + Android High-Priority FCM with custom siren sound channel. |
-| | Emergency Contacts SMS/Call Fallback | 🟡 In Progress | **P0** | Integration with Twilio/AWS SNS/Infobip: SMS + automated voice call with Google Maps link to verified contacts. |
-| | Kafka Asynchronous Notification Worker | ✅ Done | **P1** | Decouple HTTP trigger from slow push/SMS gateways via Kafka `sos.dispatched` topic with retry + dead-letter topic (DLQ). |
-| | PSAP / 911 / E911 Integration | 🔵 Planned | **P2** | RapidSOS / Noonlight integration to push location directly to 911 CAD (Computer Aided Dispatch). |
-| **Live Tracking & Telemetry** | WebSocket Live Tracking Stream | ✅ Done | **P1** | Bidirectional WS `/ws/sos/:id/track` for real-time moving coordinates update (interval 3-5s). |
-| | Breadcrumb History (`alert_breadcrumbs`) | ✅ Done | **P1** | Store trajectory trail (lat, lng, speed, heading, altitude, accuracy) to reconstruct movement on responders' map. |
-| | Device Telemetry Monitoring | 🟡 In Progress | **P1** | Track battery level, battery charging state, network quality, and automated fall/crash sensor flags. |
-| | Incident Media & Audio Capture | ✅ Done | **P1** | 10-second ambient audio recording uploaded to `POST /api/sos/:id/media` (local storage); audio ≤ 25 MB is transcribed and used for post-trigger triage. S3/GCS backend still pending. |
-| **Responder Operations** | Responder Acceptance & ETA | ✅ Done | **P1** | Responders can click "I am coming" (`POST /api/sos/:id/respond`), calculating ETA & live distance to victim. |
-| | Anonymized In-Incident Comms | 🔵 Planned | **P2** | Ephemeral, masked chat or WebRTC voice channel between victim and responding volunteers. |
-| | Emergency Medical ID Card | 🔵 Planned | **P2** | Victim's blood type, allergies, medications, and emergency contacts accessible only during active SOS. |
-| **Safety & Geofencing** | Geofenced Safe Zones | 🔵 Planned | **P2** | Define "Home", "Campus", "Office" polygons; automatic check-in timers (e.g. "Alert if I don't reach home in 30 mins"). |
-| **Anti-Abuse & Rate Limiting** | ✅ Done | **P0** | Redis sliding-window: SOS max 3 trigger/jam/user; auth (`POST /api/users`, `_login`) max 5 percobaan/menit/IP + lockout 15 menit. Wajib set `web.proxy_header` kalau deploy di belakang proxy/tunnel (§9), kalau tidak limit per-IP jadi satu bucket global untuk semua user. |
-| | Privacy Masking & Ephemeral Retention | ✅ Done | **P2** | Mask exact victim street number to unconfirmed crowd responders; auto-purge precise breadcrumbs 30 days post-incident. |
-| **Observability & SRE** | Prometheus Metrics (manual `/metrics`) | ✅ Done | **P1** | Expose metrics: `sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, `active_sos_count`. Route hanya didaftarkan bila `metrics.token` diisi dan scrape wajib mengirim `Authorization: <token>`. |
-
----
-
-## 3. Architecture & Data Flow
+1. The client sends `PUT /api/location` at least every two minutes.
+2. The client sends `POST /api/sos`, optionally with a `description` or a recent audio classification.
+3. The alert is committed to MySQL, then recipient search runs on Redis GEO with an adaptive radius (1, 2, or 5 km).
+4. A 10-second grace period lets the sender cancel with a safe PIN before anything is sent.
+5. The dispatcher sends Web Push, FCM, APNs, SMS to the sender's emergency contacts, and publishes to Kafka when enabled.
+6. Responders answer with an ETA, stream breadcrumbs over WebSocket, and the alert closes as `RESOLVED`, `CANCELLED`, or `EXPIRED`.
 
 ```mermaid
 sequenceDiagram
-    autonumber
-    actor Victim as Victim Mobile App
-    participant API as Fiber HTTP / WS Gateway
-    participant Redis as Redis (GEO & Cache)
-    participant DB as MySQL (Aiven)
-    participant Kafka as Kafka Event Bus
-    participant Worker as Notification Consumers
-    participant Push as FCM / APNs / Twilio
-    actor Responders as Nearby Users & Contacts
-
-    Victim->>API: POST /api/sos (coords, battery, idempotency_key)
-    activate API
-    API->>Redis: Set Idempotency Lock & Fetch Last Known Location
-    API->>DB: INSERT alerts (status: TRIGGERED, lat, lng, time)
-    API->>Redis: GEOSEARCH users:locations (radius: 1km)
-    Redis-->>API: Return Nearby Candidates
-    API->>Redis: Filter Stale Candidates (users:last_seen < 120s)
-    API->>Kafka: Produce Event: sos.triggered
-    API-->>Victim: 200 OK (alert_id, status: TRIGGERED, recipient_count)
-    deactivate API
-
-    par Parallel Asynchronous Dispatch
-        Kafka->>Worker: Consume sos.triggered
-        Worker->>DB: Query Emergency Contacts (SMS/Voice)
-        Worker->>Push: Send APNs Critical Alert + FCM Siren
-        Push-->>Responders: High-Priority Emergency Siren Notification
-    and Real-Time Tracking
-        Victim->>API: WS /ws/sos/{id}/track (live coords stream every 3s)
-        API->>Redis: XADD stream:sos:{id}:breadcrumbs
-        API-->>Responders: WS Push Live Coordinate Vector & Map Pin
-    end
+    participant App
+    participant API
+    participant Redis
+    participant DB
+    participant Notifier
+    App->>API: PUT /api/location
+    API->>Redis: GEOADD users:locations + HSET last_seen
+    API->>DB: upsert locations
+    App->>API: POST /api/sos
+    API->>DB: INSERT alerts (TRIGGERED)
+    API->>Redis: GEOSEARCH (adaptive radius)
+    API-->>App: 201 {alert_id, recipients_notified}
+    Note over API: 10 s grace period
+    API->>Notifier: push / SMS / Kafka
 ```
 
----
+## Implemented features
 
-## 4. API Specification
+Legend: ✅ done and unit-tested · 🟡 implemented but not exercised with a real provider · 🔵 planned.
 
-### Current Active Endpoints
+### Accounts and sessions
 
-| Method | Path | Auth | Keterangan |
+- ✅ **Register, login, logout** — `POST /api/users`, `POST /api/users/_login`, `DELETE /api/users`.
+- ✅ **Current profile** — `GET` and `PATCH /api/users/_current` (profile, safe PIN, push tokens).
+- ✅ **Sessions** — raw token in `Authorization` (no `Bearer` needed), stored only in Redis with a TTL (default 168 h); a new login replaces the old token.
+- ✅ **Safe PIN** — 4 digits, bcrypt hash, required to cancel an alert. A wrong PIN is `403`, never `401`.
+- ✅ **Auth rate limit** — 5 attempts per minute per IP, then a 15-minute lockout (`429` + `Retry-After`); fails open when Redis is down.
+
+### Location
+
+- ✅ **Heartbeat** — `PUT /api/location`; Redis first, MySQL snapshot second.
+- ✅ **Read own position** — `GET /api/location` returns the last heartbeat plus a `stale` flag.
+- ✅ **Nearby responders** — `GET /api/location/nearby`; radius 100–5000 m (default 1000), max 50, masked coordinates, stale users dropped.
+
+### SOS lifecycle
+
+- ✅ **Trigger** — `POST /api/sos`; body coordinates optional (falls back to the last heartbeat), idempotency key optional.
+- ✅ **Idempotency** — `X-Idempotency-Key` with a 5-minute replay window; a finished replay is answered before the rate limiter, so retries do not burn quota.
+- ✅ **Rate limit** — 3 triggers per hour per user by default; can be disabled.
+- ✅ **Adaptive radius** — starts at 1/2/5 km depending on severity, widens until at least 3 fresh users, capped at 50.
+- ✅ **Grace period** — 10 s default, stored as `alerts.dispatch_due_at` and dispatched by a durable outbox loop (at-least-once).
+- ✅ **State machine** — `TRIGGERED → ACKNOWLEDGED → RESOLVED`, plus `CANCELLED` and `EXPIRED`; acknowledge and resolve rules are enforced in the use case.
+- ✅ **Cancel** — safe PIN plus reason (`FALSE_ALARM`, `ACCIDENTAL`, `SAFE_NOW`, `TEST`).
+- ✅ **Active, inbox, history, summary** — history is paged across all statuses with `role=sent|received`.
+- ✅ **Breadcrumbs** — REST and WebSocket; a client timestamp older than 24 h is rejected.
+- ✅ **Media** — multipart upload up to 50 MB, local storage, authenticated download.
+- ✅ **Housekeeping** — expires `TRIGGERED` alerts after 24 h and purges breadcrumbs after 30 days.
+
+### Responders and live tracking
+
+- ✅ **Respond with ETA** — `POST /api/sos/:alertId/respond` returns distance and ETA; a duplicate answer is `409`.
+- ✅ **WebSocket tracking** — `/ws/sos/:alertId/track` broadcasts `LOCATION_UPDATE`, `ALERT_STATUS`, `ALERT_TRIAGE`, and `RESPONDER_ADDED`.
+- ✅ **Socket budgets** — 500 global, 10 per IP, 3 per user; ping/pong drops half-open connections.
+- ✅ **Participant-only data** — responder identities and precise coordinates only for the sender and recorded responders.
+
+### Notifications
+
+- ✅ **Alert dispatcher** — FCM v1, APNs, Twilio SMS, and Web Push; a channel without credentials logs instead of failing the alert.
+- ✅ **Web Push (VAPID)** — no Firebase needed; subscriptions live in `push_subscriptions`, endpoints are allowlisted, dead ones are deleted.
+- ✅ **Kafka worker** — `sos.dispatched` plus user/contact/address mirrors, each with its own consumer group.
+- ✅ **Retry and DLQ** — same-message retry with backoff, then publish to `sos.dispatched.dlq` with the original payload and source headers.
+- ✅ **Emergency contacts** — max 10 per user, E.164 only, deduplicated, so the SMS target list is bounded.
+- ✅ **Push tokens** — `fcm_token` / `apns_token` via profile; without one, FCM falls back to topic `user_<id>`.
+- 🟡 **Live provider credentials** — the FCM, APNs, and Twilio clients are tested against stub servers, not with real credentials in this repo.
+
+### AI and operations
+
+- ✅ **Text triage** — `description` → emergency type, severity, and summary; fail-open.
+- ✅ **Audio transcription** — OpenAI-compatible Whisper provider, audio ≤ 25 MB, silence detection.
+- ✅ **Pre-trigger classification** — `POST /api/sos/classify` stores nothing; the result is handed to the next trigger through Redis.
+- ✅ **Post-audio escalation** — a higher severity widens the fan-out and notifies only the newly reached responders.
+- 🟡 **Live LLM providers** — Jev, OpenAI, and Ollama clients exist; only the offline classifier path is unit-tested end to end.
+- ✅ **Metrics** — `/metrics` is registered only when `metrics.token` is set, and scraping requires `Authorization`.
+- ✅ **Graceful shutdown** — SIGINT/SIGTERM drains HTTP for 10 s and stops background loops.
+- ✅ **CORS and masking** — production plus local dev origins only; non-participants get coordinates rounded to about 100 m.
+- 🔵 **TLS** — not implemented at the application layer (see production notes).
+
+## AI triage
+
+Triage turns a short incident description or audio clip into a classification. It is optional and never blocks an alert.
+
+| Output | Meaning |
+|---|---|
+| `emergency_type` | `DANGER`, `MEDICAL`, or `ACCIDENT` |
+| `severity` | score from 0 to 1, used to choose the first fan-out radius |
+| `summary` | short Indonesian summary shown in notifications and detail responses |
+
+### Where the classification comes from
+
+1. **During the trigger** — the `description` field (up to 1000 characters) is classified inline.
+2. **Before the trigger** — `POST /api/sos/classify` accepts a short audio clip, transcribes it, and classifies the transcript. Nothing is persisted; the server keeps the result in Redis for 2 minutes, one key per user, single use. The next trigger consumes it, so the first fan-out already matches the clip and a client cannot inflate the severity by editing the request.
+3. **After the trigger** — uploading audio to `/api/sos/:alertId/media` transcribes it, updates the alert, and broadcasts `ALERT_TRIAGE` over the tracking socket.
+
+Priority rules:
+
+- A pending audio classification wins over description triage.
+- An explicit `emergency_type` in the trigger body wins for the type; severity still comes from triage.
+- `client_severity` and `client_summary` are the sender's claim. They are echoed and labelled "Pelapor menyebut: …" in the notification, but never drive triage or the radius.
+
+### Provider chain
+
+| `ai.provider` | Order tried |
+|---|---|
+| `offline` (default) | offline keyword classifier |
+| `jev` | Jev → OpenAI (only if its key is configured) → offline |
+| `ollama` | Ollama → offline |
+| `openai` | OpenAI → offline |
+
+A stage that errors, times out, or returns no emergency type is logged and the next stage is tried. If every stage fails, the alert still triggers with `DANGER` and a 1 km start radius.
+
+### Offline classifier
+
+The default classifier is deterministic and needs no credentials. It matches Indonesian and English keywords (strong weight 2, weak weight 1), resolves ties by life-safety priority `MEDICAL > DANGER > ACCIDENT`, starts severity at 0.6, adds 0.2 per urgency keyword, and caps at 1.0.
+
+### Severity picks the first radius
+
+| Severity | Start radius |
+|---|---|
+| 0.00 – 0.33 | 1 km |
+| 0.34 – 0.66 | 2 km |
+| 0.67 – 1.00 | 5 km |
+
+The search then widens on its own until it has at least 3 fresh recipients, never more than 50, nearest first. A severity of `0` is a real score and starts at 1 km; `alerts.severity = NULL` means the incident was never classified.
+
+### Audio and silence handling
+
+Audio evidence is transcribed by an OpenAI-compatible provider (default: Groq `whisper-large-v3-turbo`, Indonesian). Only audio up to 25 MB is sent. Transcription status is `disabled`, `too_large`, `completed`, `empty`, or `failed`.
+
+A silent clip is not a transcript: high `no_speech_prob` across segments, a repetition loop, a very low log probability on short text, a clip under 0.5 s, or a known Whisper hallucination such as "terima kasih" produces `empty` with no triage and no `transcribed_at`.
+
+### Escalation after audio
+
+When post-trigger audio raises the severity enough to move to a wider radius, the backend notifies only responders not already recorded for that alert, waits out the remaining grace period, and re-checks the alert status so a cancelled alert never spreads.
+
+It publishes a second `sos.dispatched` event with `push_only: true` so the sender's contacts are not texted twice, and the media response reports `escalated` and `recipients_added`.
+
+### Failure behaviour
+
+AI is advisory only. A disabled engine, missing credentials, a provider error, or an empty description all fall back to request defaults. There is no inline retry on provider rate limits, because a retry would delay the SOS itself.
+
+Notification payloads carry `severity` and `summary` only when a classification exists. Configuration names live under `ai.*` and `ai.stt.*`; values belong in the local `config.json`.
+
+## How locations are stored and used
+
+Two systems hold location data, with different jobs.
+
+| Store | Contents | Role |
+|---|---|---|
+| Redis GEO `users:locations` | member = user id, value = `(longitude, latitude)` | operational index for radius search |
+| Redis Hash `users:last_seen` | user id → epoch milliseconds of the last heartbeat | freshness filter |
+| MySQL `locations` | one row per user (`UNIQUE user_id`) | audit copy of the latest position, not a track |
+
+### Write path
+
+`PUT /api/location` requires both `latitude` and `longitude`. It writes `GEOADD users:locations`, then `HSET users:last_seen`. If either Redis write fails, the heartbeat fails. After Redis succeeds, MySQL upserts the `locations` row; a MySQL failure is only logged and the heartbeat still succeeds.
+
+Neither Redis structure has a TTL. Old positions stay, but users whose `last_seen` is older than two minutes are filtered out by every reader, so they stop receiving alerts and disappear from the nearby list without being deleted.
+
+### Read paths
+
+- `GET /api/location` reads the caller's position and timestamp and reports `stale`.
+- `GET /api/location/nearby` runs `GEOSEARCH` with distance, drops the caller, reads `last_seen` for all candidates in one `HMGET`, drops stale users, masks coordinates to about 100 m, rounds distances to 100 m buckets, and caps the list at 50.
+- The SOS trigger reads body coordinates first and falls back to this Redis position when the body omits them. With no stored heartbeat either, the request is `422`.
+
+### What the data is used for
+
+1. **Recipient selection for SOS** — `GEOSEARCH` inside 1/2/5 km, bounded candidate count, nearest first, capped at 50.
+2. **Coordinate fallback** — a trigger without body coordinates still knows where the sender is.
+3. **Responder map** — the nearby endpoint the app shows before or during an incident.
+4. **Freshness filtering** — a user must heartbeat at least every two minutes to stay reachable.
+5. **Privacy** — nearby and non-participant views are always masked; only the sender and recorded responders see the precise point in an incident detail.
+
+### Boundaries to keep in mind
+
+- MySQL `locations` is a single latest snapshot per user, not movement history. The trail lives in `alert_breadcrumbs`.
+- Redis is the source of truth for fan-out and the nearby map; MySQL is only the audit copy.
+- Location data is not encrypted by the application, because TLS is not wired into the MySQL or Redis clients.
+
+## API overview
+
+All responses use `{ "data": ... }`, with `paging` on list endpoints and `{ "errors": ... }` on failure. Timestamps are epoch milliseconds. Full schemas are in [`api/api.md`](api/api.md) and [`api/api-spec.json`](api/api-spec.json); recent contract changes are in [`docs/api-changes.md`](docs/api-changes.md).
+
+| Method | Path | Auth | Notes |
 |---|---|:---:|---|
-| `POST` | `/api/users` | ❌ | Registrasi user baru |
-| `POST` | `/api/users/_login` | ❌ | Login, return raw session token. Token disimpan di Redis (`auth:token:<token>`) dengan TTL (`auth.token_ttl_hours`, default 7 hari); login baru membatalkan token lama (single-session) |
-| `DELETE` | `/api/users` | ✅ | Logout session |
-| `PATCH` | `/api/users/_current` | ✅ | Update profil user saat ini; kirim `safe_pin` (4 digit, disimpan sebagai hash), `fcm_token`, atau `apns_token` untuk mengaturnya |
-| `GET` | `/api/users/_current` | ✅ | Ambil profil user saat ini |
-| `PUT` | `/api/location` | ✅ | Heartbeat lokasi user ke Redis GEO (`users:locations` & `users:last_seen`) + upsert histori MySQL `locations` |
-| `GET` | `/api/location` | ✅ | Baca heartbeat lokasi terakhir user (`last_seen`, `stale`) dari Redis |
-| `GET` | `/api/location/nearby` | ✅ | Responder aktif di sekitar user (`radius_m` 100–5000, default 1000); stale > 2 menit & diri sendiri difilter, koordinat dimask ~100 m, maks 50. `users:last_seen` dibaca satu `HMGET` per request (bukan `HGET` per kandidat) |
-| `POST` | `/api/sos` | ✅ | Trigger SOS (body opsional sesuai spek §4, header `X-Idempotency-Key` opsional, rate limit per jam default 3 → `sos.rate_limit_per_hour`, matikan dengan `sos.rate_limit_disabled: true`). `emergency_type`/`severity`/`summary` eksplisit menang atas hasil triage deskripsi. Fan-out **fail-open**: alert sudah tersimpan sebelum pencarian penerima, jadi error Redis GEO/HMGET tetap `201` dengan `recipients_notified: 0` (dispatch + SMS kontak darurat tetap jalan), bukan 5xx |
-| `POST` | `/api/sos/classify` | ✅ | Klasifikasi audio pra-trigger (multipart `file`, audio ≤ 25 MB, tidak disimpan) → `{emergency_type, severity, summary, transcript, transcription_status}`; kirim hasilnya di body trigger agar fan-out pertama sudah memakai level dari suara |
-| `GET` | `/api/sos/active` | ✅ | Daftar insiden aktif milik user (untuk cold start) |
-| `GET` | `/api/sos/inbox` | ✅ | Inbox responder: insiden aktif yang push-nya pernah dikirim ke user ini |
-| `GET` | `/api/sos/:alertId` | ✅ | Detail insiden; lokasi dimask untuk viewer yang bukan sender/responder. `responders[]` (nama + `distance_m`/`eta_seconds`) hanya untuk participant |
-| `POST` | `/api/sos/:alertId/cancel` | ✅ | Batalkan false alarm (PIN 4 digit + alasan) |
-| `POST` | `/api/sos/:alertId/acknowledge` | ✅ | `TRIGGERED` → `ACKNOWLEDGED` |
-| `POST` | `/api/sos/:alertId/resolve` | ✅ | `TRIGGERED`/`ACKNOWLEDGED` → `RESOLVED` (sender saja) |
-| `POST` | `/api/sos/:alertId/respond` | ✅ | Responder menjawab, hitung ETA & jarak |
-| `GET/POST` | `/api/sos/:alertId/breadcrumbs` | ✅ | Riwayat breadcrumb / kirim satu titik tracking |
-| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media (multipart `file`, audio/video, max 50 MB, penyimpanan lokal); audio ≤ 25 MB ditranskrip (Groq/Whisper-compatible) lalu transcript masuk triage; response memuat `url`, `transcript`, `transcription_status`, `triage`. Kalau triage audio menaikkan severity, fan-out diperluas ke radius lebih lebar: `escalated: true` + `recipients_added: N` |
-| `GET` | `/api/sos/:alertId/media` | ✅ | Daftar media insiden (sender/responder saja) |
-| `GET` | `/api/sos/:alertId/media/:mediaId` | ✅ | Stream/download media; header `Authorization`, `Content-Type` asli |
-| `WS` | `/ws/sos/:alertId/track` | ✅ | Live tracking stream (sender kirim breadcrumb, responder terima `LOCATION_UPDATE`). Auth lewat frame pertama `{"type":"auth","token":"..."}` (atau header `Authorization` untuk klien native); server balas `{"type":"auth_ok"}`. Token tidak pernah di URL |
-| `GET/POST` | `/api/emergency-contacts` | ✅ | CRUD Tier-1 emergency contacts untuk SMS fallback |
-| `GET` | `/api/push/vapid-public-key` | ✅ | VAPID public key untuk `PushManager.subscribe()`; `503` saat `webpush.enabled: false` atau key kosong |
-| `GET/POST` | `/api/push/subscriptions` | ✅ | Daftar / simpan langganan Web Push browser (`endpoint`, `p256dh`, `auth`, `user_agent`); `endpoint` unik → re-subscribe = upsert |
-| `DELETE` | `/api/push/subscriptions` | ✅ | Hapus langganan milik user (body `{"endpoint": "..."}`); endpoint tak dikenal tetap `200` |
-| `GET` | `/metrics` | ❌ | Metrik Prometheus (`sos_dispatch_latency_ms`, `push_delivery_failures_total`, `sos_fanout_failures_total`, `active_sos_count`). Hanya aktif bila `metrics.token` diset; kirim `Authorization: <token>` (`401` tanpa token, `404` bila token kosong) |
-| `GET/POST` | `/api/contacts` | ✅ | CRUD daftar kontak |
-| `GET/POST` | `/api/contacts/:id/addresses` | ✅ | CRUD alamat kontak |
+| `POST` | `/api/users`, `/api/users/_login` | — | Register or log in; login returns the raw session token |
+| `GET/PATCH` | `/api/users/_current` | ✅ | Profile, safe PIN, push tokens |
+| `DELETE` | `/api/users` | ✅ | Logout and revoke the session |
+| `GET/POST` | `/api/contacts` | ✅ | Legacy contact CRUD |
+| `PUT/GET/DELETE` | `/api/contacts/:contactId` | ✅ | Legacy contact CRUD |
+| `GET/POST` | `/api/contacts/:contactId/addresses` | ✅ | Legacy address CRUD |
+| `PUT/GET/DELETE` | `/api/contacts/:contactId/addresses/:addressId` | ✅ | Legacy address CRUD |
+| `PUT/GET` | `/api/location` | ✅ | Send or read the heartbeat |
+| `GET` | `/api/location/nearby` | ✅ | Active users around the caller |
+| `POST` | `/api/sos` | ✅ | Trigger an alert; body and `X-Idempotency-Key` optional |
+| `POST` | `/api/sos/classify` | ✅ | Pre-trigger audio classification (nothing persisted) |
+| `GET` | `/api/sos/active`, `/api/sos/inbox` | ✅ | Current incidents, or incidents the caller was notified about |
+| `GET` | `/api/sos/history`, `/api/sos/summary` | ✅ | Paged history and aggregate counters |
+| `GET` | `/api/sos/:alertId` | ✅ | Detail; masked unless the caller is a participant |
+| `POST` | `/api/sos/:alertId/cancel` | ✅ | Safe PIN and reason |
+| `POST` | `/api/sos/:alertId/acknowledge`, `.../resolve` | ✅ | Lifecycle transitions |
+| `POST` | `/api/sos/:alertId/respond` | ✅ | "I am coming"; returns ETA and distance |
+| `GET/POST` | `/api/sos/:alertId/breadcrumbs` | ✅ | Trail history and live points |
+| `POST` | `/api/sos/:alertId/media` | ✅ | Upload media; audio is transcribed and may escalate |
+| `GET` | `/api/sos/:alertId/media`, `.../media/:mediaId` | ✅ | List or download media |
+| `GET/POST` | `/api/emergency-contacts` | ✅ | Tier-1 SMS contacts |
+| `GET` | `/api/push/vapid-public-key` | ✅ | Browser push public key |
+| `GET/POST/DELETE` | `/api/push/subscriptions` | ✅ | Browser push subscriptions |
+| `WS` | `/ws/sos/:alertId/track` | in-band | First frame `{"type":"auth","token":"..."}`, then `LOCATION_UPDATE` broadcasts |
+| `GET` | `/metrics` | token | Prometheus metrics, only when `metrics.token` is configured |
 
-> **Format Auth**: Header `Authorization: <token>` (raw token langsung, tanpa prefix `Bearer `). Token sesi hanya hidup di Redis (`auth:token:<token>` → user id, `auth:user:<user_id>` → token) dengan TTL `auth.token_ttl_hours` (default 168 jam); tidak ada kolom token di MySQL. Logout menghapus kedua key, dan login berikutnya membatalkan token sebelumnya (single-session).
+## Running locally
 
----
-
-### Target Roadmap Endpoints (P0 & P1 Specifications)
-
-#### 1. Incident Lifecycle Management
-
-```http
-POST /api/sos
-Header: Authorization: <token>, X-Idempotency-Key: <uuid>
-Body:
-{
-  "latitude": -6.2088,
-  "longitude": 106.8456,
-  "accuracy_meters": 4.5,
-  "battery_percentage": 18,
-  "emergency_type": "DANGER", // DANGER | MEDICAL | ACCIDENT (optional; AI triage can classify it)
-  "description": "Ada orang pingsan di pantai, tidak sadar", // optional; feeds AI triage
-  "severity": 0.8, // optional; hasil POST /api/sos/classify, menang atas triage deskripsi
-  "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis" // optional; ikut ke push/notifikasi
-}
-Response 201 Created:
-{
-  "data": {
-    "alert_id": "alt_01HXYZ...",
-    "status": "TRIGGERED",
-    "grace_period_seconds": 10,
-    "recipients_notified": 7,
-    "triggered_at": 1730304000000,
-    "triage": { "emergency_type": "MEDICAL", "severity": 0.8, "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis" }
-  }
-}
-```
-
-> **Fail-open fan-out.** Alert disimpan *sebelum* pencarian penerima. Kalau
-> `GEOSEARCH`/`users:last_seen` (Redis) gagal, request tetap `201` dengan
-> `recipients_notified: 0`: alert tetap `TRIGGERED`, dispatch (push + SMS
-> kontak darurat Tier-1) tetap dijalankan dengan daftar penerima kosong, dan
-> kegagalan dihitung di `sos_fanout_failures_total`. `5xx` hanya untuk
-> kegagalan yang membuat alert sendiri tidak tersimpan.
-
-```http
-POST /api/sos/:alertId/cancel
-Header: Authorization: <token>
-Body:
-{
-  "pin": "1234",          // Verified against user's safe PIN
-  "reason": "FALSE_ALARM" // ACCIDENTAL | SAFE_NOW | TEST
-}
-Response 200 OK:
-{
-  "data": {
-    "alert_id": "alt_01HXYZ...",
-    "status": "CANCELLED",
-    "cancelled_at": 1730304015000
-  }
-}
-```
-
-```http
-GET /api/sos/:alertId
-Header: Authorization: <token>
-Response 200 OK:
-{
-  "data": {
-    "alert_id": "alt_01HXYZ...",
-    "sender": { "id": "usr_1", "name": "Jane Doe" },
-    "status": "TRIGGERED",
-    "emergency_type": "MEDICAL",
-    "severity": 0.8,                                   // ada kalau triage jalan
-    "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
-    "initial_location": { "latitude": -6.2088, "longitude": 106.8456 },
-    "latest_location": { "latitude": -6.2091, "longitude": 106.8460, "updated_at": 1730304050000 },
-    "responders_en_route": 2,
-    "triggered_at": 1730304000000
-  }
-}
-```
-
-> `masked: true` muncul (dan koordinat dibulatkan ~100 m) kalau viewer bukan
-> sender/responder. `severity`/`summary` ikut tersimpan di tabel `alerts`, jadi
-> tampil juga di `GET /api/sos/active` dan `GET /api/sos/inbox`.
-
-#### 2. Live Tracking Stream (WebSocket)
-
-```
-WS /ws/sos/:alertId/track
-```
-
-Autentikasi tidak lewat URL. Browser mengirim frame pertama (deadline 10 detik)
-dan menunggu `auth_ok` sebelum mengirim breadcrumb:
-
-```json
-Client -> Server (frame pertama, wajib):
-{
-  "type": "auth",
-  "token": "<raw session token>"
-}
-
-Server -> Client:
-{
-  "type": "auth_ok"
-}
-```
-
-Klien native (mobile) boleh mengirim token mentah di header
-`Authorization` saat handshake dan langsung mengirim breadcrumb tanpa frame
-`auth`; server tetap membalas `auth_ok`. Query `?token=` sudah tidak
-dipakai/diabaikan. Hanya sender atau responder terdaftar yang boleh
-berlangganan; kegagalan auth/otorisasi dikirim sebagai
-`{"error":"..."}` lalu koneksi ditutup.
-
-```
-Client -> Server (Pelapor kirim breadcrumb):
-{
-  "latitude": -6.2092,
-  "longitude": 106.8462,
-  "speed_mps": 4.2,
-  "heading_deg": 135.0,
-  "battery_percentage": 17,
-  "timestamp": 1730304060000
-}
-
-Server -> Responders (Broadcast posisi terkini):
-{
-  "type": "LOCATION_UPDATE",
-  "alert_id": "alt_01HXYZ...",
-  "latitude": -6.2092,
-  "longitude": 106.8462,
-  "speed_mps": 4.2,
-  "heading_deg": 135.0
-}
-
-Server -> Responders (perubahan status, tanpa perlu polling):
-{
-  "type": "ALERT_STATUS",
-  "alert_id": "alt_01HXYZ...",
-  "status": "RESOLVED",   // ACKNOWLEDGED | RESOLVED | CANCELLED
-  "updated_at": 1730304075000
-}
-
-Server -> Sender/Responders (triage dari audio yang baru ditranskrip):
-{
-  "type": "ALERT_TRIAGE",
-  "alert_id": "alt_01HXYZ...",
-  "emergency_type": "MEDICAL",
-  "severity": 0.8,
-  "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
-  "updated_at": 1730304075000
-}
-
-Server -> Sender/Responders (responder baru menjawab "saya datang"):
-{
-  "type": "RESPONDER_ADDED",
-  "alert_id": "alt_01HXYZ...",
-  "responder_id": "user-b",
-  "name": "Budi",
-  "distance_m": 240,
-  "eta_seconds": 180,
-  "responded_at": 1730304060000
-}
-```
-
-#### 3. Responder Coordination
-
-```http
-POST /api/sos/:alertId/respond
-Header: Authorization: <token>
-Body:
-{
-  "responder_latitude": -6.2100,
-  "responder_longitude": 106.8470
-}
-Response 200 OK:
-{
-  "data": {
-    "response_id": "rsp_01ABC...",
-    "eta_seconds": 180,
-    "victim_distance_meters": 240
-  }
-}
-```
-
----
-
-## 5. AI Triage (Text + Audio Evidence)
-
-Optional AI layer di `POST /api/sos`. Saat pelapor mengisi `description`
-(misal `"ada orang pingsan di pantai, tidak sadar"`), backend mengklasifikasikannya
-menjadi **emergency type** (`DANGER/MEDICAL/ACCIDENT`), **severity score 0–1**,
-dan **summary singkat**. Severity dipakai untuk memilih radius adaptive fan-out
-(1/2/5 km): insiden makin urgent → fan-out makin lebar ke user sekitar. Hasil
-triage dikembalikan di response sebagai `triage`.
-
-### Fail-open (life-safety first)
-
-AI **tidak pernah** memblokir trigger SOS:
-
-- `ai.enabled: false`, atau engine error/timeout → berperilaku persis pre-AI
-  (request default, radius mulai 1 km).
-- `description` kosong / tidak terdeteksi keyword → zero signal (DANGER default, 1 km).
-- Request `emergency_type` eksplisit menang atas hasil klasifikasi AI.
-
-### Provider
-
-| Provider | `ai.provider` | Keterangan |
-|---|---|---|
-| Offline classifier (default) | `offline` | Rule-based keyword (ID/EN), deterministic, zero-credential, microseconds. |
-| Ollama (lokal) | `ollama` | `POST {ollama.base_url}/api/chat` dengan structured JSON output. |
-| OpenAI / compatible gateway | `openai` | chat completions + `response_format: json_object`. |
-
-Provider live (`ollama`/`openai`) + fallback otomatis ke offline classifier saat
-gagal/timeout. Mapping severity → radius: `0–0.33` → 1 km, `0.34–0.66` → 2 km,
-`≥0.67` → 5 km.
-
-### Speech-to-text untuk audio evidence
-
-Frontend merekam 10 detik audio setelah alert aktif, lalu mengirim satu file
-`.webm`/`.m4a`/`.ogg` ke `POST /api/sos/:alertId/media`. Backend:
-
-1. Menyimpan media (bukti insiden).
-2. Audio ≤ 25 MB ditranskrip lewat provider OpenAI-compatible (Groq/OpenAI/local).
-3. Transcript dimasukkan ke engine triage yang sama.
-4. `alerts.emergency_type/severity/summary` di-update dan `ALERT_TRIAGE`
-   disiarkan lewat WebSocket.
-5. Response upload memuat `transcript`, `transcription_status`, dan `triage`.
-
-STT/triage fail-open: kalau provider error, media tetap tersimpan dengan
-`transcription_status: "failed"`; upload tidak gagal. Nilai status:
-`disabled`, `too_large`, `completed`, `empty`, `failed`.
-
-### Klasifikasi audio pra-trigger (`POST /api/sos/classify`)
-
-Frontend merekam klip selama countdown 10 detik, jadi klip itu sudah ada saat
-alert dikirim. Supaya **fan-out pertama** sudah memakai level dari suara (bukan
-dari deskripsi), kirim klipnya dulu:
-
-```http
-POST /api/sos/classify
-Header: Authorization: <token>
-Content-Type: multipart/form-data  (field `file`, audio ≤ 25 MB)
-Response 200:
-{
-  "data": {
-    "emergency_type": "MEDICAL",
-    "severity": 0.8,
-    "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis",
-    "transcript": "ada orang pingsan tidak sadar",
-    "transcription_status": "completed"
-  }
-}
-```
-
-Endpoint ini **tidak menyimpan apa pun** (audio, media, alert). Hasilnya
-dikirim ulang di body `POST /api/sos` (`emergency_type` + `severity` +
-`summary`), dan nilai eksplisit itu menang atas triage deskripsi, sehingga
-radius adaptive (1/2/5 km) langsung mengikuti severity dari suara. Karena
-fan-out baru jalan setelah grace period 10 detik, latency STT (ratusan ms)
-terserap oleh countdown dan tidak menunda notifikasi.
-
-Error: `400` untuk non-audio / audio > 25 MB, `503` kalau `ai.stt` belum aktif
-(tidak ada key), `502` kalau provider STT gagal. Frontend boleh mengabaikannya
-dan tetap memakai triage deskripsi.
-
-### Re-fanout saat audio menaikkan severity
-
-Kalau klip baru diunggah **setelah** trigger (alur `POST /api/sos/:alertId/media`),
-transkrip bisa menaikkan severity dari level yang dipakai fan-out pertama.
-Backend memperlebar sendiri jangkauannya:
-
-- Hanya responder **baru** (di radius lebih lebar, belum pernah dicatat untuk
-  alert ini) yang dinotifikasi; penerima awal tidak di-notify ulang.
-- Notifikasi ini tetap menunggu grace period (`TRIGGERED` + 10 detik) dan
-  re-check status, jadi alert yang di-cancel di countdown tidak menyebar.
-- Kalau dispatch lewat Kafka, event `sos.dispatched` kedua dikirim dengan daftar
-  penerima tambahan saja **plus `push_only: true`**, jadi worker hanya mengirim
-  push ke penerima baru dan tidak mengulang SMS ke kontak darurat pengirim.
-- Response upload menandai perluasan: `escalated: true`, `recipients_added: N`.
-- Kontak darurat pengirim **tidak** di-SMS dua kali (kanal push-only).
-
-Responder yang sudah menjawab level baru tetap menerima frame `ALERT_TRIAGE`
-di WebSocket tracking; mengubah tampilan sheet responder jadi tugas frontend.
-
-**API key Groq** ditempel di `backend/config.json` → `ai.stt.api_key`
-(nilai `gsk_...`), bukan di frontend. Set `ai.stt.enabled: true`.
-
-| Provider STT | `ai.stt.provider` | Key |
-|---|---|---|
-| Groq (default) | `groq` | `ai.stt.api_key` (`gsk_...`) |
-| OpenAI Whisper | `openai` | `ai.stt.api_key`, fallback `ai.openai.api_key` |
-| Local Whisper (OpenAI-compatible) | `local` | tidak perlu key |
-
-Model default Groq: `whisper-large-v3-turbo`, language default `id`.
-Batas Groq free tier: 25 MB per file; backend hanya mengirim audio ≤ 25 MB ke STT.
-
-### Config (`config.json`, section `ai`)
-
-```json
-"ai": {
-  "enabled": true,
-  "provider": "offline",            // offline | ollama | openai
-  "timeout_seconds": 5,
-  "stt": {
-    "enabled": true,
-    "provider": "groq",             // groq | openai | local
-    "base_url": "https://api.groq.com/openai/v1",
-    "api_key": "gsk_...",
-    "model": "whisper-large-v3-turbo",
-    "language": "id",
-    "timeout_seconds": 30
-  },
-  "ollama": { "base_url": "http://localhost:11434", "model": "llama3" },
-  "openai": { "base_url": "https://api.openai.com/v1", "api_key": "", "model": "gpt-4o-mini" }
-}
-```
-
-### Contoh
+Requirements: Go 1.22+, MySQL, Redis 7+. Kafka is optional.
 
 ```bash
-curl -X POST http://localhost:3000/api/sos \
-  -H "Authorization: <token>" \
-  -d '{"latitude":-8.65,"longitude":115.22,"description":"ada orang pingsan, tidak sadar"}'
-```
+cp config.json.example config.json   # fill in local values
+migrate -path db/migrations -database "mysql://DB_USER:DB_PASSWORD@tcp(DB_HOST:DB_PORT)/DB_NAME" up
 
-```json
-{
-  "data": {
-    "alert_id": "alt_01...",
-    "status": "TRIGGERED",
-    "recipients_notified": 7,
-    "triage": {
-      "emergency_type": "MEDICAL",
-      "severity": 0.8,
-      "summary": "PRIORITAS TINGGI: Kemungkinan darurat medis"
-    }
-  }
-}
-```
-
-### Isi Push Notification
-
-Hasil triage ikut masuk ke push (FCM), dan tetap sama saat dispatch lewat
-Kafka worker (`sos.dispatched` membawa `severity` + `summary`):
-
-- `data.severity` → `"0.80"` (format 2 desimal, hanya kalau triage jalan).
-- `data.summary` → ringkasan AI (hanya kalau tidak kosong).
-- Body notifikasi → `<summary> — Emergency MEDICAL nearby. Open the app for the live location.`
-  Tanpa summary, body tetap seperti sebelumnya.
-
-**Kontrak penerimaan push (wajib di client):** backend mengirim ke
-`fcm_token`/`apns_token` user kalau terdaftar; kalau tidak ada, ke FCM topic
-`user_<user_id>`. Jadi app harus memilih salah satu:
-
-1. Kirim token setelah login/refresh: `PATCH /api/users/_current`
-   `{"fcm_token": "<token>"}` (atau `apns_token`), **atau**
-2. Subscribe topic `user_<user_id>` di FCM setelah login.
-
-Tanpa salah satu, push tidak akan pernah sampai ke device. User juga harus
-mengirim heartbeat `PUT /api/location` minimal tiap 2 menit agar masuk radius
-penerima (`users:last_seen` yang lebih tua difilter).
-
-Setelah push dibuka, responder memakai `GET /api/sos/inbox` (riwayat insiden
-yang pernah dinotifikasi) dan `GET /api/sos/:alertId/media` + `url` media untuk
-memutar rekaman.
-
----
-
-## 6. Skema Database & Evolusi
-
-### Tabel `alerts` (Saat Ini)
-```sql
-CREATE TABLE alerts (
-    id           VARCHAR(100) NOT NULL PRIMARY KEY,
-    sender_id    VARCHAR(100) NOT NULL,
-    longitude    DOUBLE       NOT NULL,
-    latitude     DOUBLE       NOT NULL,
-    triggered_at BIGINT       NOT NULL,
-    FOREIGN KEY (sender_id) REFERENCES users (id)
-);
-```
-
-### Migrasi `alerts` v2 (diterapkan di `db/migrations/20261031000000_alerts_v2.*.sql`, termasuk tabel `alert_breadcrumbs`, `emergency_contacts`, `alert_responses`, `alert_media`, dan kolom `safe_pin_hash`/`fcm_token`/`apns_token` di `users`)
-
-```sql
-ALTER TABLE alerts
-    ADD COLUMN status              VARCHAR(20)  NOT NULL DEFAULT 'TRIGGERED', -- TRIGGERED, ACKNOWLEDGED, RESOLVED, CANCELLED
-    ADD COLUMN emergency_type      VARCHAR(30)  NOT NULL DEFAULT 'DANGER',
-    ADD COLUMN cancellation_reason VARCHAR(100) NULL,
-    ADD COLUMN resolved_at         BIGINT       NULL,
-    ADD COLUMN cancelled_at        BIGINT       NULL,
-    ADD INDEX idx_alerts_status_triggered_at (status, triggered_at);
-
-CREATE TABLE alert_breadcrumbs (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    alert_id    VARCHAR(100) NOT NULL,
-    latitude    DOUBLE       NOT NULL,
-    longitude   DOUBLE       NOT NULL,
-    speed_mps   FLOAT        NULL,
-    heading_deg FLOAT        NULL,
-    recorded_at BIGINT       NOT NULL,
-    FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE,
-    INDEX idx_breadcrumbs_alert_time (alert_id, recorded_at)
-);
-
-CREATE TABLE emergency_contacts (
-    id           VARCHAR(100) NOT NULL PRIMARY KEY,
-    user_id      VARCHAR(100) NOT NULL,
-    contact_name VARCHAR(100) NOT NULL,
-    phone_number VARCHAR(30)  NOT NULL,
-    relationship VARCHAR(50)  NOT NULL,
-    is_verified  BOOLEAN      NOT NULL DEFAULT FALSE,
-    created_at   BIGINT       NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-```
-
-### Migrasi triage & inbox (`20261101000000_alerts_triage.*.sql`, `20261102000000_alert_recipients.*.sql`)
-
-- `alerts.severity DOUBLE NULL` + `alerts.summary VARCHAR(512) NULL` — hasil AI triage
-  ikut tersimpan supaya detail/active/inbox menampilkan data yang sama dengan push.
-- `alert_recipients(alert_id, user_id, notified_at)` — daftar user yang dinotifikasi,
-  dipakai `GET /api/sos/inbox`; baris dihapus otomatis saat alert dihapus.
-
-### Migrasi lokasi (`20261107000000_locations_user_unique.*.sql`)
-
-- Menambah `UNIQUE KEY uq_locations_user_id (user_id)` pada tabel `locations`.
-- `PUT /api/location` meng-upsert satu baris histori per user (koordinat terakhir)
-  setelah Redis GEO berhasil ditulis. Kegagalan MySQL hanya di-log dan tidak
-  menggagalkan heartbeat.
-- Endpoint `GET /api/location/nearby` memakai Redis GEO + `users:last_seen`,
-  bukan tabel histori ini.
-
-### Migrasi transkripsi media (`20261108000000_alert_media_transcription.*.sql`)
-
-- Menambah `alert_media.transcript TEXT NULL`,
-  `alert_media.transcription_status VARCHAR(20) NOT NULL DEFAULT 'disabled'`, dan
-  `alert_media.transcribed_at BIGINT NULL`.
-- Dipakai saat upload audio: transcript disimpan bersama media dan hasil triage
-  di-update ke tabel `alerts`.
-
-### Migrasi sesi Redis (`20261114000000_drop_users_token.*.sql`)
-
-- Menghapus kolom plaintext `users.token`; sesi sekarang hanya di Redis dengan
-  TTL (lihat §7).
-- **Semua token lama otomatis tidak berlaku** — user harus login ulang. Urutan
-  deploy: deploy binary baru dulu, baru `migrate up` (kalau migrasi dijalankan
-  duluan, binary lama gagal saat auth). Rollback: `migrate down` dulu, baru
-  deploy binary lama; token tetap tidak bisa dipulihkan.
-
-### Migrasi grace period outbox (`20261115000000_alert_dispatch_outbox.*.sql`)
-
-- Menambah `alerts.dispatch_due_at BIGINT NULL` dan `alerts.dispatched_at
-  BIGINT NULL`, plus index `(status, dispatch_due_at, dispatched_at)` untuk
-  scan due.
-- Latar belakang: fan-out setelah grace period dulu dijadwalkan dengan
-  `time.AfterFunc` di proses web. Restart/deploy/OOM di dalam window 10 detik
-  membuat alert tetap `TRIGGERED` (penerima sudah tercatat di
-  `alert_recipients`) tapi **tidak pernah dikirim ke siapa pun**.
-- Sekarang `dispatch_due_at` (= `triggered_at` + grace) disimpan bersama alert
-  saat `Create`, dan `TriggerSOSUseCase.RunDispatchLoop` (proses web saja)
-  memindai baris yang sudah due setiap `sos.dispatch_poll_seconds` (default 1,
-  minimal 0.1 detik): re-check status masih `TRIGGERED`, muat penerima dari
-  `alert_recipients`, dispatch seperti jalur trigger (Kafka kalau aktif, kalau
-  tidak `Notifier`), lalu `MarkDispatched` (`UPDATE … WHERE dispatched_at IS
-  NULL`). Alert yang di-cancel/resolve dilewati dan tetap ditandai.
-- Semantik **at-least-once**: crash setelah kirim tapi sebelum menandai akan
-  mengirim ulang. Duplikat notifikasi masih bisa diterima; SOS yang hilang
-  tidak. `sos.grace_period_seconds = 0` tetap dispatch inline dan tidak menulis
-  `dispatch_due_at`.
-- Catatan: perluasan fan-out pasca-audio (`escalateFanout`) masih menunggu sisa
-  grace period lewat timer in-process; alert yang di-cancel tetap tidak
-  menyebar karena status di-recheck.
-
-Untuk environment lain, jalankan `migrate up` (termasuk migrasi sesi di atas).
-
----
-
-## 7. Desain Penyimpanan Lokasi
-
-- **Redis GEO** (`users:locations`): Menyimpan geospatial coordinates semua user aktif. Format data: Member = `userId`, Value = `(longitude, latitude)`.
-- **Redis Hash** (`users:last_seen`): Key = `userId`, Value = Epoch ms saat `PUT /api/location` terakhir diterima. User yang offline/inaktif $> 2$ menit difilter dari broadcast SOS dan `GET /api/location/nearby` (bukan dihapus).
-- **Redis Key Value** (`idempotency:sos:{key}`): TTL 5 menit untuk deduplikasi request pengiriman SOS.
-- **Redis Sorted Set** (`ratelimit:sos:{userId}`): sliding window rate limit, `sos.rate_limit_per_hour` trigger SOS per jam per user (default 3). `sos.rate_limit_disabled: true` melewati pemeriksaan ini (idempotency & grace period tetap jalan).
-- **Redis Sorted Set** (`ratelimit:auth:{ip}`): sliding window 5 percobaan auth per menit per IP.
-- **Redis Key Value** (`lockout:auth:{ip}`): TTL 15 menit setelah limit auth terlampaui.
-- **Redis Key Value** (`auth:token:{token}`): user id pemilik sesi, TTL `auth.token_ttl_hours` (default 168 jam). Satu-satunya tempat token sesi disimpan.
-- **Redis Key Value** (`auth:user:{userId}`): token sesi aktif user, TTL sama. Dipakai login baru untuk menghapus token lama (single-session) dan logout untuk menghapus sesi tanpa membaca MySQL.
-- **MySQL** (`locations` table): Satu baris histori per user (unique `user_id`), di-upsert pada setiap `PUT /api/location`. Dipakai untuk audit/riwayat, bukan untuk pencarian radius real-time.
-- **MySQL** (`alerts` & `alert_breadcrumbs`): Persistence insiden resmi untuk audit dan investigasi forensik.
-
----
-
-## 8. Non-Functional Requirements & SLA
-
-| Metrik | Target SLA | Mitigasi Kegagalan |
-|---|---|---|
-| **API Response Time (`POST /api/sos`)** | $p99 < 150\text{ ms}$ | Async event bus; database write didahulukan sebelum push notification. |
-| **Notification Fan-out Latency** | $< 2.0\text{ s}$ ke seluruh penerima | Kafka worker pool multi-partition dengan FCM HTTP v1 batch send. |
-| **Availability / Uptime** | $99.95\%$ | Multi-AZ deployment, Redis Sentinel/Cluster, stateless Fiber web instances. |
-| **Delivery Reliability** | $100\%$ zero-drop untuk Emergency Contacts | Fallback otomatis ke SMS Twilio jika Push notification tidak terkirim dalam 5 detik. |
-
----
-
-## 9. Panduan Menjalankan Service
-
-### Prasyarat
-- Go 1.22+
-- MySQL (Aiven / Local)
-- Redis 7+
-- Kafka (Opsional, disabled by default via config)
-
-`config.json` dan `ca.pem` harus berada di direktori root backend; keduanya
-sudah masuk `.gitignore`, jadi jangan pernah commit kredensial aslinya. Mulai
-dari template yang di-commit:
-
-```bash
-cp config.json.example config.json   # lalu isi kredensial asli
-```
-
-`config.json.example` memuat **seluruh** key yang dibaca kode (`app`, `web`,
-`log`, `database`, `redis`, `kafka`, `sos`, `auth`, `fcm`, `apns`, `twilio`,
-`webpush`, `storage`, `ai`) dengan nilai placeholder. Tambahkan key baru di sana
-setiap kali menambah setelan, supaya deploy dari nol tidak kehilangan
-konfigurasi.
-
-`database.pool.idle` / `max` / `lifetime` (detik) diisi default 10 / 100 / 300
-kalau tidak ada di config. Kalau di-set `0`, backend menulis warning dan
-memakai default itu, karena `0` berarti "koneksi terbuka tanpa batas" dan
-"koneksi tidak pernah didaur ulang" di `database/sql`.
-
-### Catatan: TLS belum diimplementasikan
-
-`ca.pem` ikut di-.gitignore dan disebut di catatan deploy, tetapi **kode belum
-memakai TLS**: DSN MySQL di `internal/config/gorm.go` tidak punya parameter
-`tls`, dan `redis.NewClient` di `internal/config/redis.go` tidak menyetel
-`TLSConfig`. Jangan menganggap koneksi DB/Redis terenkripsi oleh aplikasi;
-kalau butuh, terminasi di provider (mis. Aiven) atau di proxy/tunnel.
-Menambahkan opsi TLS ke kedua klien adalah pekerjaan terpisah.
-
-### WAJIB: `web.proxy_header` di belakang proxy / tunnel
-
-Kalau semua trafik masuk lewat proxy (Cloudflare Tunnel, nginx, Traefik, load
-balancer), backend melihat **semua klien datang dari IP proxy yang sama**.
-Rate limit auth (§2, §4) dihitung per IP klien, jadi bucket-nya jadi satu
-global: **1 user salah login 5 kali → semua user lain ikut kena `429` +
-`Retry-After` selama 15 menit.** Set header yang membawa IP klien, lalu restart
-service:
-
-```json
-"web": {
-  "port": 3000,
-  "prefork": false,
-  "proxy_header": "X-Forwarded-For",
-  "trusted_proxies": ["127.0.0.1", "::1"]
-}
-```
-
-- `cloudflared` dan nginx (`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`) mengisi `X-Forwarded-For` dengan IP klien.
-- Anti-spoofing: set `web.trusted_proxies` (IP/CIDR proxy yang dipercaya, mis. `[\"127.0.0.1\",\"::1\"]` untuk cloudflared/nginx di host yang sama) supaya `X-Forwarded-For` hanya dipakai kalau request datang dari alamat itu; dari luar daftar itu header diabaikan dan `ctx.IP()` memakai IP TCP asli. Tanpa `trusted_proxies`, header dipakai apa adanya (kompatibel config lama) tapi bisa dipalsukan kalau app bisa diakses langsung — backend log warning saat startup.
-- Biarkan `""` untuk dev lokal / saat app diekspos langsung.
-- Cek setelah deploy: 5 login gagal dari satu device tidak boleh memblokir device lain, dan key Redis `ratelimit:auth:<ip>` harus memuat IP klien, bukan IP proxy.
-- Tanpa section `auth`, limiter memakai default `rate_limit_per_minute: 5`, `lockout_minutes: 15`, dan `token_ttl_hours: 168`. Nilai `token_ttl_hours` 0/negatif dianggap tidak valid dan jatuh ke default 168 jam; sesi tidak pernah dibuat tanpa expiry.
-
-### Web Push ke browser (VAPID)
-
-Endpoint push alternatif yang **tidak butuh kredensial Firebase**: notifikasi
-dikirim langsung ke browser yang login (service worker `frontend/public/sw.js`),
-jadi demo tetap jalan tanpa `fcm.project_id`. Jalur FCM v1/APNs/Twilio tidak
-berubah; keduanya jalan berdampingan dan masing-masing gagal-terbuka.
-
-```json
-"webpush": {
-  "enabled": true,
-  "vapid_public_key": "<base64url>",
-  "vapid_private_key": "<base64url>",
-  "subscriber": "sos@allert.my.id",
-  "ttl_seconds": 300
-}
-```
-
-- Generate pasangan key sekali: `webpush.GenerateVAPIDKeys()` (base64url tanpa padding). `private_key` cuma dipakai backend; browser mengambil public key dari `GET /api/push/vapid-public-key`.
-- `subscriber` diisi **email polos** atau URL `https://…` — library yang menambahkan prefix `mailto:` sendiri.
-- `enabled: false` atau key kosong → kanal dianggap tidak terkonfigurasi (`ErrPushNotConfigured`); dispatcher hanya menulis log dan SOS tetap sukses.
-- Alur: user menekan toggle **Push notifications** di Profile (butuh gesture untuk prompt izin) → browser `PushManager.subscribe()` → `POST /api/push/subscriptions` → saat SOS fan-out, `AlertDispatcher` mengenkripsi payload (RFC 8291) dan mengirim per langganan. Endpoint yang dijawab `404`/`410` oleh push service langsung dihapus dari `push_subscriptions`.
-- Butuh secure context: `https://` atau `localhost` (alamat LAN `http://` tidak bisa).
-- Kalau `kafka.producer.enabled: true`, dispatch pindah ke worker; worker membuka
-  MySQL yang sama, jadi FCM token, APNs critical alert, SMS kontak darurat, dan
-  web push (`push_subscriptions`) tetap terkirim dari worker. Web process tidak
-  ikut mengirim setelah publish sukses, jadi tidak ada notifikasi ganda.
-
-### Retry & Dead-Letter Topic Kafka
-
-Consumer worker tidak lagi melewati pesan yang gagal: offset hanya di-commit
-setelah pesan berhasil diproses **atau** sudah aman di DLQ.
-
-```json
-"kafka": {
-  "consumer": {
-    "max_retries": 3,
-    "retry_backoff_seconds": 1
-  },
-  "dlq": {
-    "topic": "sos.dispatched.dlq"
-  }
-}
-```
-
-- `kafka.consumer.max_retries` (default `3`) = jumlah retry pesan yang sama
-  setelah percobaan pertama, dengan jeda `kafka.consumer.retry_backoff_seconds`
-  (default `1` detik, linear) sebelum tiap retry. Nilai `0`/tidak diisi =
-  default; nilai negatif mematikan retry sehingga pesan gagal langsung ke DLQ.
-  Retry pertama sudah menangani gangguan sesaat khas gateway (FCM 5xx, timeout
-  Twilio) tanpa kehilangan notifikasi.
-- `kafka.dlq.topic` (default `sos.dispatched.dlq`) menerima payload **asli
-  byte-for-byte** (key asli ikut dipertahankan) setelah semua retry habis,
-  ditambah header: `dlq.source.topic`, `dlq.source.partition`,
-  `dlq.source.offset`, dan `dlq.error` (error terakhir). Header asli pesan ikut
-  disalin, jadi trace/tenant id tidak hilang. Setelah publish DLQ sukses baru
-  offset di-commit.
-- Kalau publish ke DLQ gagal (broker mati), offset **tidak** di-commit dan
-  claim dihentikan, sehingga consumer group me-replay pesan itu dari offset
-  terakhir yang ter-commit. Kalau `kafka.producer.enabled: false` atau
-  `kafka.dlq.topic` dikosongkan, pesan dicatat di log sebagai dropped setelah
-  retry (tidak panic, tidak menggantung partisi).
-- Topik `users`/`contacts`/`addresses` ikut me-retry tapi tanpa DLQ (mirror
-  best-effort). DLQ belum punya replay otomatis: untuk memproses ulang, isi
-  ulang `sos.dispatched` dari record `sos.dispatched.dlq` secara manual.
-
-### Menjalankan Database Migration
-```bash
-# Menggunakan migrate CLI
-migrate -path db/migrations -database "mysql://user:pass@tcp(host:port)/dbname" up
-```
-
-### Menjalankan Server
-```bash
-# 1. Jalankan HTTP API Server (port 3000)
-go run cmd/web/main.go
-
-# 2. Jalankan Worker Kafka (jika Kafka enabled)
-#    Worker butuh MySQL yang sama (token push + kontak darurat) dan Kafka.
-go run cmd/worker/main.go
-
-# 3. Build & Vet
+go run cmd/web/main.go      # HTTP API on :3000
+go run cmd/worker/main.go   # Kafka consumers, only needed with Kafka enabled
 go build ./... && go vet ./...
 ```
 
-`cmd/web` menangani `SIGINT`/`SIGTERM`: listener berhenti menerima koneksi
-baru, request yang sedang jalan diberi waktu sampai 10 detik
-(`app.ShutdownWithTimeout`), dan context root dibatalkan sehingga loop
-background (gauge `active_sos_count` dan scan grace-period outbox) ikut
-berhenti. Fan-out yang belum jatuh tempo tetap aman karena due time-nya sudah
-tersimpan di tabel `alerts`; proses berikutnya yang mengirimkannya (§6).
-Ctrl-C kedua langsung mematikan proses tanpa menunggu drain.
+The web process refuses to start when MySQL or Redis is unreachable. An unreachable Kafka broker does not: producers and consumers retry a few times, then disable themselves, and the web process notifies directly.
 
----
+## Production notes
 
-## 10. Status Implementasi & Yang Belum Live
+- **Behind a proxy**, set `web.proxy_header` (for example `X-Forwarded-For`) and `web.trusted_proxies`. Without it every client appears to come from the proxy, so the per-IP limiter becomes one global bucket.
+- **TLS is not implemented.** The MySQL DSN has no TLS parameter and Redis has no TLS config; terminate TLS at the provider or proxy.
+- **Kafka producer is off by default.** With it on, the worker sends notifications; with it off, the web process does. Both read the same MySQL data, so notifications are not sent twice.
+- **Web Push needs a secure context** (`https://` or `localhost`) and an allowed push-service host.
+- **CORS is locked** to the production origin and the local dev origin in `internal/config/fiber.go`.
+- **Shutdown drains** for 10 seconds. Undispatched grace-period alerts are safe because their due time is in MySQL, not in a timer.
+- **Metrics** are not public by default; the route only exists when a token is configured.
 
-**CORS**: terkunci ke origin produksi `https://allert.my.id` + dev `http://localhost:5173` (di `internal/config/fiber.go`); header `Authorization` + `X-Idempotency-Key` diizinkan (raw token, tanpa `Bearer`). Origin lain ditolak.
+## Not implemented
 
-Yang sudah diimplementasi di branch ini (P0 + P1, lihat matriks §2):
-state machine, cancel + PIN + grace period 10 detik, query/active API,
-idempotency & rate limit, adaptive radius (1/2/5 km, cap 50), WebSocket
-tracking + breadcrumbs + telemetri breadcrumb (baterai/speed/heading/altitude/accuracy; flag fall/crash & kualitas jaringan belum), responder & ETA, Kafka producer
-`sos.dispatched` + worker consumer, metrik `/metrics`, masking lokasi,
-retensi breadcrumb 30 hari, dan klien FCM v1 / APNs Critical Alert /
-Twilio SMS dengan fallback log-only saat kredensial belum diisi.
+- PSAP / 911 / E911 dispatch integration, an emergency medical ID card, and geofenced safe zones.
+- Anonymous in-incident chat or WebRTC voice.
+- S3/GCS media storage (uploads are local) and OpenTelemetry tracing.
+- Fall/crash sensor flags and network-quality telemetry.
+- Automatic DLQ replay; replaying `sos.dispatched.dlq` is manual.
+- A durable escalation timer: post-audio escalation still uses an in-process timer for the remaining grace period, unlike the trigger outbox.
 
-Lokasi juga sudah melayani sisi baca: `GET /api/location` (posisi terakhir +
-`stale`) dan `GET /api/location/nearby` (responder aktif di radius tertentu,
-koordinat dimask ~100 m, stale > 2 menit difilter). Setiap heartbeat meng-upsert
-satu baris histori ke MySQL `locations`. Response `POST /api/sos/:id/acknowledge`
-sekarang memakai sudut pandang pemanggil, jadi user di luar insiden tetap menerima
-koordinat yang dimask.
-
-Rate limit auth juga aktif: `POST /api/users` dan `POST /api/users/_login`
-dibatasi 5 percobaan/menit per IP, lalu lockout 15 menit (`429` +
-`Retry-After`). Limiter gagal-terbuka saat Redis error agar login tidak mati.
-
-Feature **AI Triage** udah diimplementasi di branch ini: klasifikasi
-deskripsi insiden (`description` → `DANGER/MEDICAL/ACCIDENT`), severity
-0–1, dan summary. Provider default = offline keyword classifier
-(zero-credential, deterministik); `ai.provider: "ollama"` / `"openai"`
-diaktif klien LLM dengan fallback automatic ke offline classifier
-(fail-open — AI mati tak pernah nge-blokir trigger SOS). Severity AI
-nambah start radius adaptive fan-out (1/2/5 km); `ai.enabled: false`
-atum perilakum pre-AI persis (tanpa deskripsi → zero signal, radius
-mulai 1 km). LLM sungguhan (Ollama/OpenAI) belum tês pergian — path
-offline dites otomatis di unit test.
-
-Audio evidence sudah terhubung ke triage: upload `.webm`/`.m4a`/`.ogg`
-≤ 25 MB ditranskrip via provider OpenAI-compatible (default Groq
-`whisper-large-v3-turbo`), transcript masuk engine triage, alert
-di-update, dan `ALERT_TRIAGE` disiarkan lewat WebSocket. Kalau STT
-belum dikonfigurasi/gagal, media tetap tersimpan dan triage awal tidak
-berubah.
-
-Feature **Web Push browser (VAPID)** sudah live dan terverifikasi end-to-end:
-`POST /api/sos` → `AlertDispatcher` → push terenkripsi (RFC 8291) → push service
-browser → `sw.js` menampilkan notifikasi OS, tanpa kredensial Firebase. Langganan
-disimpan di tabel `push_subscriptions` (satu baris per browser, `endpoint` unik),
-endpoint yang dijawab `404`/`410` dihapus otomatis, dan user tanpa langganan hanya
-dicatat di log. Konfigurasi + alur ada di §9.
-
-Yang **belum** terverifikasi live dan butuh kredensial/keputusan produk:
-- **FCM/APNs/Twilio**: klien HTTP sudah ada dan dites dengan server
-  tiruan, tapi belum pernah mengirim push/SMS sungguhan. Butuh
-  `fcm.project_id` + access token OAuth2, `.p8` APNs + bundle id, dan
-  SID/token/nomor Twilio, plus device token per user (`fcm_token` /
-  `apns_token` via `PATCH /api/users/_current`; tanpa token, FCM
-  memakai topic `user_<id>`). Kanal ini terpisah dari Web Push browser
-  (§9) yang sudah terbukti mengirim notifikasi sungguhan.
-- **PSAP / 911 (RapidSOS/Noonlight)**, **komunikasi anonim WebRTC**,
-  **Emergency Medical ID Card**, dan **Geofenced Safe Zones**: belum
-  diimplementasi (integrasi eksternal / keputusan produk).
-- **Media S3/GCS**: upload tersimpan lokal (`storage.local_dir`);
-  backend S3 belum di-wire.
-- **OpenTelemetry**: hanya metrik Prometheus manual; tracing OTEL
-  belum ditambahkan. **DLQ Kafka** (`sos.dispatched.dlq`) sekarang
-  di-wire: consumer worker me-retry pesan yang gagal di offset yang sama
-  (`kafka.consumer.max_retries`, default 3, backoff
-  `kafka.consumer.retry_backoff_seconds`, default 1 s), lalu
-  mem-publish payload aslinya ke `kafka.dlq.topic` beserta header
-  `dlq.source.topic/partition/offset` + `dlq.error` sebelum offset
-  di-commit. Kalau publish DLQ sendiri gagal, offset **tidak** di-commit
-  supaya pesan di-redeliver; kalau producer Kafka dimatikan atau topik DLQ
-  dikosongkan, pesan dicatat di log lalu di-drop setelah retry. Topik
-  `users`/`contacts`/`addresses` hanya me-retry (tanpa DLQ). `DLQ` belum
-  punya consumer/replay tool otomatis, jadi replay masih manual.
-
-Jalankan semua migrasi (`migrate up`; versi terakhir `20261109000000_push_subscriptions`)
-sebelum memakai endpoint baru, dan atur Safe PIN dulu (`PATCH /api/users/_current`,
-`{"safe_pin": "1234"}`) agar cancel bisa diverifikasi.
-
----
-
-## 11. Menjalankan Pengujian (Testing)
-
-Test dibagi mengikuti konvensi package Go: unit/integration test yang membutuhkan
-fake atau helper internal tetap berada dekat package yang diuji; test Redis live
-lintas package berada di `test/`. Semua test tercakup oleh `go test ./...`, tetapi
-package `test` membutuhkan `config.json` dan Redis yang dapat dijangkau.
+## Tests
 
 ```bash
-# Semua unit/integration test tanpa MySQL, Redis, atau Kafka live:
-go test ./internal/... -v -count=1
-
-# Seluruh test, termasuk Redis live:
-go test ./... -v -count=1
-
-# Helper distance saja:
+go test ./internal/... -v -count=1   # no live infrastructure needed
+go test ./... -v -count=1            # also needs config.json and a reachable Redis
 go test ./test/ -run '^TestCalculateDistance' -v -count=1
-
-# Build dan pemeriksaan statis:
-go build ./... && go vet ./...
 ```
 
-Coverage utama yang diuji:
-- trigger SOS, idempotency, rate limit, adaptive radius, dan error persistence;
-- lifecycle alert, PIN, responder/ETA, breadcrumbs, media, dan akses peserta;
-- AI triage, dispatch FCM/APNs/Twilio melalui `httptest`, consumer Kafka
-  (retry pesan yang sama, DLQ dengan payload + header asli, offset tetap
-  uncommitted kalau DLQ gagal);
-- HTTP SOS end-to-end dengan in-memory stores, WebSocket hub, metrics;
-- state machine entity alert (`IsActive` dan `CanTransitionTo`);
-- helper geospatial distance dan repository lokasi Redis live.
-
-> `test/` berisi test stateful yang memutasi Redis live (`user-B` dihapus oleh
-> `TestDelete`). Jalankan hanya terhadap Redis isolasi/fixture yang sesuai.
-Tanpa `config.json`, gunakan `go test ./internal/...`.
+The `test/` package is stateful and mutates a live Redis (it deletes a fixture user), so point it at an isolated instance. Coverage focuses on the trigger flow, idempotency, rate limits, adaptive radius, lifecycle, AI triage, dispatch clients via fake servers, Kafka consumer retry/DLQ, WebSocket tracking, and the location helpers.
