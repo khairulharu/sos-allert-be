@@ -127,6 +127,15 @@ func (s *memAlerts) ListResponses(ctx context.Context, db *gorm.DB, alertID stri
 	return append([]*entity.AlertResponse(nil), s.responses[alertID]...), nil
 }
 
+func (s *memAlerts) ListResponsesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]*entity.AlertResponse, error) {
+	s.init()
+	out := make(map[string][]*entity.AlertResponse, len(alertIDs))
+	for _, alertID := range alertIDs {
+		out[alertID] = append([]*entity.AlertResponse(nil), s.responses[alertID]...)
+	}
+	return out, nil
+}
+
 func (s *memAlerts) CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error) {
 	return len(s.responses[alertID]), nil
 }

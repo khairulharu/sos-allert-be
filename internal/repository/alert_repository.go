@@ -201,6 +201,26 @@ func (a *AlertRepository) ListResponses(ctx context.Context, db *gorm.DB, alertI
 	return out, nil
 }
 
+// ListResponsesByAlertIDs batches the responder roster for a page of
+// alerts, so the lifecycle list endpoints cost one query instead of one
+// per participant row. Each alert keeps the ListResponses order
+// (responded_at ASC), so the JSON is identical to the single-alert view.
+func (a *AlertRepository) ListResponsesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]*entity.AlertResponse, error) {
+	out := make(map[string][]*entity.AlertResponse, len(alertIDs))
+	if len(alertIDs) == 0 {
+		return out, nil
+	}
+	var rows []*entity.AlertResponse
+	if err := db.WithContext(ctx).Where("alert_id IN ?", alertIDs).
+		Order("alert_id ASC, responded_at ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.AlertID] = append(out[row.AlertID], row)
+	}
+	return out, nil
+}
+
 // CreateMedia records an uploaded media file.
 func (a *AlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
 	return db.WithContext(ctx).Create(m).Error

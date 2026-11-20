@@ -157,9 +157,20 @@ type fakeAlertRepository struct {
 
 	createMediaErr error
 
-	// batch call counters guard against per-row queries in history.
+	// batch call counters guard against per-row queries in history and the
+	// lifecycle list endpoints.
 	countRespondersBatchCalls   int
 	latestBreadcrumbsBatchCalls int
+	listResponsesBatchCalls     int
+	listRespondedBatchCalls     int
+
+	// single call counters prove the list paths never fall back to the
+	// per-row detail reads.
+	countRespondersCalls  int
+	latestBreadcrumbCalls int
+	isResponderCalls      int
+	listResponsesCalls    int
+	listRecipientsCalls   int
 
 	// Durable outbox (#40) knobs: dueListErr fails the due scan,
 	// recipientsErr fails the fan-out recipient lookup, afterListDue runs
@@ -287,6 +298,7 @@ func (f *fakeAlertRepository) ListBreadcrumbs(ctx context.Context, db *gorm.DB, 
 
 func (f *fakeAlertRepository) LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID string) (*entity.AlertBreadcrumb, error) {
 	f.ensure()
+	f.latestBreadcrumbCalls++
 	list := f.breadcrumbs[alertID]
 	if len(list) == 0 {
 		return nil, nil
@@ -309,11 +321,24 @@ func (f *fakeAlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r
 
 func (f *fakeAlertRepository) ListResponses(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertResponse, error) {
 	f.ensure()
+	f.listResponsesCalls++
 	return append([]*entity.AlertResponse(nil), f.responses[alertID]...), nil
+}
+
+// ListResponsesByAlertIDs batches the responder roster for a page of alerts.
+func (f *fakeAlertRepository) ListResponsesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]*entity.AlertResponse, error) {
+	f.ensure()
+	f.listResponsesBatchCalls++
+	out := make(map[string][]*entity.AlertResponse, len(alertIDs))
+	for _, alertID := range alertIDs {
+		out[alertID] = append([]*entity.AlertResponse(nil), f.responses[alertID]...)
+	}
+	return out, nil
 }
 
 func (f *fakeAlertRepository) CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error) {
 	f.ensure()
+	f.countRespondersCalls++
 	seen := map[string]struct{}{}
 	for _, r := range f.responses[alertID] {
 		seen[r.ResponderID] = struct{}{}
@@ -323,6 +348,7 @@ func (f *fakeAlertRepository) CountResponders(ctx context.Context, db *gorm.DB, 
 
 func (f *fakeAlertRepository) IsResponder(ctx context.Context, db *gorm.DB, alertID, userID string) (bool, error) {
 	f.ensure()
+	f.isResponderCalls++
 	for _, r := range f.responses[alertID] {
 		if r.ResponderID == userID {
 			return true, nil
@@ -390,6 +416,7 @@ func (f *fakeAlertRepository) CreateRecipients(ctx context.Context, db *gorm.DB,
 
 func (f *fakeAlertRepository) ListRecipients(ctx context.Context, db *gorm.DB, alertID string) ([]string, error) {
 	f.ensure()
+	f.listRecipientsCalls++
 	if f.recipientsErr != nil {
 		return nil, f.recipientsErr
 	}
@@ -609,6 +636,7 @@ func (f *fakeAlertRepository) LatestBreadcrumbsByAlertIDs(ctx context.Context, d
 
 func (f *fakeAlertRepository) ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, userID string, alertIDs []string) (map[string]bool, error) {
 	f.ensure()
+	f.listRespondedBatchCalls++
 	out := map[string]bool{}
 	for _, alertID := range alertIDs {
 		for _, r := range f.responses[alertID] {
