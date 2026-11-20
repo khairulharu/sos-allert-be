@@ -408,62 +408,66 @@ func (a *AlertRepository) ListHistoryForRecipient(ctx context.Context, db *gorm.
 	return out, total, nil
 }
 
-// statusCountRows is the scan target for the GROUP BY status queries.
-type statusCountRow struct {
+// summaryCountRow is one labelled aggregate row of the UNION ALL behind
+// SummaryCounts.
+type summaryCountRow struct {
+	Kind   string
 	Status string
 	Total  int64
 }
 
-func statusCountMap(rows []statusCountRow) map[string]int64 {
-	out := make(map[string]int64, len(rows))
+// SummaryCounts returns every number behind the summary cards in one
+// statement (#57): the caller's sent alerts grouped by status, the alerts
+// they were notified for grouped by status, and how many distinct
+// incidents they responded to (total and resolved). Four separate queries
+// cost four serialised datastore round trips; this costs one.
+//
+// COUNT(DISTINCT ...) is required for the responded figures because
+// alert_responses is only unique on (alert_id, responder_id) since
+// migration 20261116000000.
+func (a *AlertRepository) SummaryCounts(ctx context.Context, db *gorm.DB, userID string) (sent, received map[string]int64, respondedTotal, respondedResolved int64, err error) {
+	const query = `
+		SELECT 'sent' AS kind, status AS status, COUNT(*) AS total
+		  FROM alerts
+		 WHERE sender_id = ?
+		 GROUP BY status
+		UNION ALL
+		SELECT 'received', alerts.status, COUNT(*)
+		  FROM alerts
+		  JOIN alert_recipients r ON r.alert_id = alerts.id
+		 WHERE r.user_id = ?
+		 GROUP BY alerts.status
+		UNION ALL
+		SELECT 'responded', '', COUNT(DISTINCT alert_id)
+		  FROM alert_responses
+		 WHERE responder_id = ?
+		UNION ALL
+		SELECT 'responded_resolved', '', COUNT(DISTINCT r.alert_id)
+		  FROM alert_responses r
+		  JOIN alerts a ON a.id = r.alert_id
+		 WHERE r.responder_id = ? AND a.status = ?`
+
+	var rows []summaryCountRow
+	if err := db.WithContext(ctx).Raw(query, userID, userID, userID, userID, entity.AlertStatusResolved).
+		Scan(&rows).Error; err != nil {
+		return nil, nil, 0, 0, err
+	}
+
+	sent = make(map[string]int64)
+	received = make(map[string]int64)
 	for _, row := range rows {
-		out[row.Status] = row.Total
+		switch row.Kind {
+		case "sent":
+			sent[row.Status] = row.Total
+		case "received":
+			received[row.Status] = row.Total
+		case "responded":
+			respondedTotal = row.Total
+		case "responded_resolved":
+			respondedResolved = row.Total
+		}
 	}
-	return out
-}
-
-// CountBySenderStatus groups the caller's sent alerts by status.
-func (a *AlertRepository) CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error) {
-	var rows []statusCountRow
-	if err := db.WithContext(ctx).Model(&entity.Alert{}).
-		Select("status, COUNT(*) AS total").
-		Where("sender_id = ?", senderID).
-		Group("status").Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	return statusCountMap(rows), nil
-}
-
-// CountByRecipientStatus groups the alerts the caller was notified for
-// by status (all of them, active or closed).
-func (a *AlertRepository) CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error) {
-	var rows []statusCountRow
-	if err := db.WithContext(ctx).Model(&entity.Alert{}).
-		Select("alerts.status AS status, COUNT(*) AS total").
-		Joins("JOIN alert_recipients r ON r.alert_id = alerts.id").
-		Where("r.user_id = ?", userID).
-		Group("alerts.status").Scan(&rows).Error; err != nil {
-		return nil, err
-	}
-	return statusCountMap(rows), nil
-}
-
-// CountResponded reports how many distinct incidents the caller answered
-// (total) and how many of those ended RESOLVED. COUNT(DISTINCT ...) is
-// required: alert_responses has no unique (alert_id, responder_id).
-func (a *AlertRepository) CountResponded(ctx context.Context, db *gorm.DB, userID string) (total, resolved int64, err error) {
-	if err = db.WithContext(ctx).Model(&entity.AlertResponse{}).
-		Where("responder_id = ?", userID).
-		Select("COUNT(DISTINCT alert_id)").Scan(&total).Error; err != nil {
-		return 0, 0, err
-	}
-	if err = db.WithContext(ctx).Table("alert_responses r").
-		Joins("JOIN alerts a ON a.id = r.alert_id").
-		Where("r.responder_id = ? AND a.status = ?", userID, entity.AlertStatusResolved).
-		Select("COUNT(DISTINCT r.alert_id)").Scan(&resolved).Error; err != nil {
-		return 0, 0, err
-	}
-	return total, resolved, nil
+	return sent, received, respondedTotal, respondedResolved, nil
 }
 
 // CountRespondersByAlertIDs batches the responder count for a page of

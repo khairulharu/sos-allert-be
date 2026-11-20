@@ -68,9 +68,9 @@ type AlertStore interface {
 	ListInbox(ctx context.Context, db *gorm.DB, userID string, limit int) ([]*entity.Alert, error)
 	ListHistoryBySender(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error)
 	ListHistoryForRecipient(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error)
-	CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error)
-	CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error)
-	CountResponded(ctx context.Context, db *gorm.DB, userID string) (total, resolved int64, err error)
+	// SummaryCounts folds the three summary aggregates into one query so
+	// GET /api/sos/summary costs one round trip instead of four (#57).
+	SummaryCounts(ctx context.Context, db *gorm.DB, userID string) (sent, received map[string]int64, respondedTotal, respondedResolved int64, err error)
 	CountRespondersByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]int, error)
 	LatestBreadcrumbsByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]*entity.AlertBreadcrumb, error)
 	ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, userID string, alertIDs []string) (map[string]bool, error)

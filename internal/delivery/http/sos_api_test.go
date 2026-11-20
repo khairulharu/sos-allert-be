@@ -322,30 +322,20 @@ func (s *memAlerts) ListHistoryForRecipient(ctx context.Context, db *gorm.DB, re
 	return s.historyList(req, func(a *entity.Alert) bool { return s.isRecipient(a.ID, req.UserID) })
 }
 
-func (s *memAlerts) CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error) {
+// SummaryCounts mirrors the single-statement aggregate (#57): sent per
+// status, received per status, distinct responded and responded+resolved.
+func (s *memAlerts) SummaryCounts(ctx context.Context, db *gorm.DB, userID string) (sent, received map[string]int64, respondedTotal, respondedResolved int64, err error) {
 	s.init()
-	out := map[string]int64{}
-	for _, alert := range s.alerts {
-		if alert.SenderID == senderID {
-			out[alert.Status]++
-		}
-	}
-	return out, nil
-}
-
-func (s *memAlerts) CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error) {
-	s.init()
-	out := map[string]int64{}
+	sent = map[string]int64{}
+	received = map[string]int64{}
 	for alertID, alert := range s.alerts {
+		if alert.SenderID == userID {
+			sent[alert.Status]++
+		}
 		if s.isRecipient(alertID, userID) {
-			out[alert.Status]++
+			received[alert.Status]++
 		}
 	}
-	return out, nil
-}
-
-func (s *memAlerts) CountResponded(ctx context.Context, db *gorm.DB, userID string) (int64, int64, error) {
-	s.init()
 	total := map[string]struct{}{}
 	resolved := map[string]struct{}{}
 	for alertID, responses := range s.responses {
@@ -359,7 +349,7 @@ func (s *memAlerts) CountResponded(ctx context.Context, db *gorm.DB, userID stri
 			}
 		}
 	}
-	return int64(len(total)), int64(len(resolved)), nil
+	return sent, received, int64(len(total)), int64(len(resolved)), nil
 }
 
 func (s *memAlerts) CountRespondersByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]int, error) {
