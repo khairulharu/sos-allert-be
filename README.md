@@ -246,6 +246,7 @@ The web process refuses to start when MySQL or Redis is unreachable. An unreacha
 
 ## Production notes
 
+- **Load test baseline**: a read-only k6 run against production (741 requests, 2 → 10 req/s, 0% failures, p95 ≈ 1.6 s) is documented in [`perf/k6/`](perf/k6/README.md) with the dashboard and the raw metric stream.
 - **Behind a proxy**, set `web.proxy_header` (for example `X-Forwarded-For`) and `web.trusted_proxies`. Without it every client appears to come from the proxy, so the per-IP limiter becomes one global bucket.
 - **TLS is not implemented.** The MySQL DSN has no TLS parameter and Redis has no TLS config; terminate TLS at the provider or proxy.
 - **Kafka producer is off by default.** With it on, the worker sends notifications; with it off, the web process does. Both read the same MySQL data, so notifications are not sent twice.
