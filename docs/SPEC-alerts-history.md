@@ -423,29 +423,28 @@ applyAlertHistoryFilter(join(), req).
 applyAlertHistoryFilter(join(), req).Count(&total)
 ```
 
-- [x] `CountBySenderStatus(ctx, db, senderID) (map[string]int64, error)`:
+- [x] `SummaryCounts(ctx, db, userID)` — keempat agregat di bawah ini digabung
+      menjadi **satu** statement `UNION ALL` (perf #57), karena empat query
+      serial berarti empat round trip untuk payload 189 byte:
 
 ```sql
-SELECT status, COUNT(*) AS total FROM alerts WHERE sender_id = ? GROUP BY status
+SELECT 'sent' AS kind, status, COUNT(*) AS total
+  FROM alerts WHERE sender_id = ? GROUP BY status
+UNION ALL
+SELECT 'received', alerts.status, COUNT(*)
+  FROM alerts JOIN alert_recipients r ON r.alert_id = alerts.id
+ WHERE r.user_id = ? GROUP BY alerts.status
+UNION ALL
+SELECT 'responded', '', COUNT(DISTINCT alert_id)
+  FROM alert_responses WHERE responder_id = ?
+UNION ALL
+SELECT 'responded_resolved', '', COUNT(DISTINCT r.alert_id)
+  FROM alert_responses r JOIN alerts a ON a.id = r.alert_id
+ WHERE r.responder_id = ? AND a.status = 'RESOLVED'
 ```
 
-- [x] `CountByRecipientStatus(ctx, db, userID) (map[string]int64, error)` — join
-      yang sama, `GROUP BY alerts.status`.
-
-- [x] `CountResponded(ctx, db, userID) (total, resolved int64, err error)`:
-
-```go
-db.WithContext(ctx).Model(&entity.AlertResponse{}).
-	Where("responder_id = ?", userID).
-	Select("COUNT(DISTINCT alert_id)").Scan(&total)
-
-db.WithContext(ctx).Table("alert_responses r").
-	Joins("JOIN alerts a ON a.id = r.alert_id").
-	Where("r.responder_id = ? AND a.status = ?", userID, entity.AlertStatusResolved).
-	Select("COUNT(DISTINCT r.alert_id)").Scan(&resolved)
-```
-
-  Jangan pakai `Distinct("r.alert_id").Count(...)` untuk query join: GORM hanya
+  `COUNT(DISTINCT ...)` tetap wajib untuk dua angka responded. Jangan pakai
+  `Distinct("r.alert_id").Count(...)` untuk query join: GORM hanya
   menerjemahkannya ke `COUNT(DISTINCT(?))` bila `Selects[0]` berupa satu nama
   kolom polos (`alert_id`). Dengan prefix tabel (`r.alert_id`) ia jatuh ke
   `COUNT(*)` dan hasilnya salah.
@@ -499,9 +498,7 @@ WHERE responder_id = ? AND alert_id IN (?)
 ```go
 ListHistoryBySender(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error)
 ListHistoryForRecipient(ctx context.Context, db *gorm.DB, req *model.SearchAlertHistoryRequest) ([]*entity.Alert, int64, error)
-CountBySenderStatus(ctx context.Context, db *gorm.DB, senderID string) (map[string]int64, error)
-CountByRecipientStatus(ctx context.Context, db *gorm.DB, userID string) (map[string]int64, error)
-CountResponded(ctx context.Context, db *gorm.DB, userID string) (total, resolved int64, err error)
+SummaryCounts(ctx context.Context, db *gorm.DB, userID string) (sent, received map[string]int64, respondedTotal, respondedResolved int64, err error)
 CountRespondersByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]int, error)
 LatestBreadcrumbsByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]*entity.AlertBreadcrumb, error)
 ListRespondedAlertIDs(ctx context.Context, db *gorm.DB, userID string, alertIDs []string) (map[string]bool, error)
@@ -581,11 +578,7 @@ func setDetailLocations(detail *model.AlertDetailResponse, initial, latest model
       (+ helper package-level `statusCounts`, bukan closure di dalam method):
 
 ```go
-sent, err := u.Deps.Alerts.CountBySenderStatus(ctx, u.DB, userID)
-// ... early return on err
-recv, err := u.Deps.Alerts.CountByRecipientStatus(ctx, u.DB, userID)
-// ... early return on err
-respondedTotal, respondedResolved, err := u.Deps.Alerts.CountResponded(ctx, u.DB, userID)
+sent, recv, respondedTotal, respondedResolved, err := u.Deps.Alerts.SummaryCounts(ctx, u.DB, userID)
 // ... early return on err
 return &model.AlertSummaryResponse{
 	Sent:      statusCounts(sent),
