@@ -184,24 +184,21 @@ func (c *AddressUseCase) Delete(ctx context.Context, request *model.DeleteAddres
 	return nil
 }
 
+// List returns the addresses of one of the caller's contacts. The
+// ownership check and the list are reads, so they run on the pool rather
+// than inside a BEGIN/COMMIT that adds two round trips per request (#56).
 func (c *AddressUseCase) List(ctx context.Context, request *model.ListAddressRequest) ([]model.AddressResponse, error) {
-	tx := c.DB.WithContext(ctx).Begin()
-	defer tx.Rollback()
+	db := c.DB.WithContext(ctx)
 
 	contact := new(entity.Contact)
-	if err := c.ContactRepository.FindByIdAndUserId(tx, contact, request.ContactId, request.UserId); err != nil {
+	if err := c.ContactRepository.FindByIdAndUserId(db, contact, request.ContactId, request.UserId); err != nil {
 		c.Log.WithError(err).Error("failed to find contact")
 		return nil, fiber.ErrNotFound
 	}
 
-	addresses, err := c.AddressRepository.FindAllByContactId(tx, contact.ID)
+	addresses, err := c.AddressRepository.FindAllByContactId(db, contact.ID)
 	if err != nil {
 		c.Log.WithError(err).Error("failed to find addresses")
-		return nil, fiber.ErrInternalServerError
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		c.Log.WithError(err).Error("failed to commit transaction")
 		return nil, fiber.ErrInternalServerError
 	}
 

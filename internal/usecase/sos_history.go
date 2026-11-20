@@ -68,15 +68,7 @@ func (u *TriggerSOSUseCase) ListHistory(ctx context.Context, request *model.Sear
 // derive these numbers from the visible page, so they are counted over
 // every status.
 func (u *TriggerSOSUseCase) Summary(ctx context.Context, userID string) (*model.AlertSummaryResponse, error) {
-	sent, err := u.Deps.Alerts.CountBySenderStatus(ctx, u.DB, userID)
-	if err != nil {
-		return nil, err
-	}
-	received, err := u.Deps.Alerts.CountByRecipientStatus(ctx, u.DB, userID)
-	if err != nil {
-		return nil, err
-	}
-	respondedTotal, respondedResolved, err := u.Deps.Alerts.CountResponded(ctx, u.DB, userID)
+	sent, received, respondedTotal, respondedResolved, err := u.Deps.Alerts.SummaryCounts(ctx, u.DB, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +98,9 @@ func statusCounts(counts map[string]int64) model.AlertStatusCounts {
 // buildHistoryDetails maps a page of alerts to detail responses with a
 // fixed number of queries (no per-row lookups): responder counts, latest
 // breadcrumbs, the caller's own responses (masking) and sender names are
-// each batched once.
+// each batched once. The batches are independent, so they run
+// concurrently and the page costs roughly one round trip instead of the
+// sum of four (#57).
 func (u *TriggerSOSUseCase) buildHistoryDetails(ctx context.Context, alerts []*entity.Alert, requesterID, role string) ([]*model.AlertDetailResponse, error) {
 	items := make([]*model.AlertDetailResponse, 0, len(alerts))
 	if len(alerts) == 0 {
@@ -124,31 +118,47 @@ func (u *TriggerSOSUseCase) buildHistoryDetails(ctx context.Context, alerts []*e
 		}
 	}
 
-	responderCounts, err := u.Deps.Alerts.CountRespondersByAlertIDs(ctx, u.DB, ids)
-	if err != nil {
-		return nil, err
-	}
-	latestCrumbs, err := u.Deps.Alerts.LatestBreadcrumbsByAlertIDs(ctx, u.DB, ids)
-	if err != nil {
-		return nil, err
+	var (
+		responderCounts map[string]int
+		latestCrumbs    map[string]*entity.AlertBreadcrumb
+		responded       = map[string]bool{}
+		names           = map[string]string{}
+	)
+
+	tasks := []func(context.Context) error{
+		func(ctx context.Context) (err error) {
+			responderCounts, err = u.Deps.Alerts.CountRespondersByAlertIDs(ctx, u.DB, ids)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			latestCrumbs, err = u.Deps.Alerts.LatestBreadcrumbsByAlertIDs(ctx, u.DB, ids)
+			return err
+		},
 	}
 	// role=sent means the caller is the sender of every row, so no
 	// responder lookup is needed to decide masking there.
-	responded := map[string]bool{}
 	if role != "sent" {
-		if responded, err = u.Deps.Alerts.ListRespondedAlertIDs(ctx, u.DB, requesterID, ids); err != nil {
-			return nil, err
-		}
+		tasks = append(tasks, func(ctx context.Context) (err error) {
+			responded, err = u.Deps.Alerts.ListRespondedAlertIDs(ctx, u.DB, requesterID, ids)
+			return err
+		})
 	}
-	names := map[string]string{}
 	if u.Deps.Users != nil && len(senderIDs) > 0 {
-		if users, err := u.Deps.Users.ListByIDs(ctx, senderIDs); err != nil {
-			u.Log.WithError(err).Warn("could not load history sender names")
-		} else {
+		tasks = append(tasks, func(ctx context.Context) error {
+			users, err := u.Deps.Users.ListByIDs(ctx, senderIDs)
+			if err != nil {
+				// A missing display name must not fail the page.
+				u.Log.WithError(err).Warn("could not load history sender names")
+				return nil
+			}
 			for id, user := range users {
 				names[id] = user.Name
 			}
-		}
+			return nil
+		})
+	}
+	if err := runConcurrently(ctx, tasks...); err != nil {
+		return nil, err
 	}
 
 	for _, alert := range alerts {
