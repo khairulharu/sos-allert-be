@@ -57,9 +57,10 @@ type AlertStore interface {
 	LatestBreadcrumb(ctx context.Context, db *gorm.DB, alertID string) (*entity.AlertBreadcrumb, error)
 	CreateResponse(ctx context.Context, db *gorm.DB, r *entity.AlertResponse) error
 	ListResponses(ctx context.Context, db *gorm.DB, alertID string) ([]*entity.AlertResponse, error)
-	// ListResponsesByAlertIDs batches the responder roster for a page of
-	// alerts so the list endpoints do not query it per row.
-	ListResponsesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]*entity.AlertResponse, error)
+	// ListResponderSummariesByAlertIDs batches the visible responder
+	// roster (with display names) for a page of alerts so the list
+	// endpoints do not query it per row.
+	ListResponderSummariesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]model.ResponderSummary, error)
 	CountResponders(ctx context.Context, db *gorm.DB, alertID string) (int, error)
 	IsResponder(ctx context.Context, db *gorm.DB, alertID, userID string) (bool, error)
 	CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error

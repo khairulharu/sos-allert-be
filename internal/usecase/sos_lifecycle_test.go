@@ -334,11 +334,12 @@ func TestCancelSOSWithoutPINConfigured(t *testing.T) {
 }
 
 func TestRespondSOSAndDetailMasking(t *testing.T) {
-	uc, _, _, _ := triggerSetup(t)
+	uc, _, alertRepo, _ := triggerSetup(t)
 	uc.Deps.Users = &fakeUserReader{users: map[string]*entity.User{
 		"sender": {ID: "sender", Name: "Jane Doe"},
 		"user-b": {ID: "user-b", Name: "Budi"},
 	}}
+	alertRepo.users = uc.Deps.Users.(*fakeUserReader)
 	hub := &fakeHub{}
 	uc.Deps.Hub = hub
 	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")

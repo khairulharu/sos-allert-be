@@ -3,10 +3,12 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
 	"golang-clean-architecture/internal/entity"
+	"golang-clean-architecture/internal/model"
 )
 
 // detailBatchSetup builds a use case backed by the in-memory alert store
@@ -43,7 +45,7 @@ func seedActiveAlert(repo *fakeAlertRepository, id, sender string, triggeredAt i
 func (f *fakeAlertRepository) resetDetailCounters() {
 	f.countRespondersBatchCalls = 0
 	f.latestBreadcrumbsBatchCalls = 0
-	f.listResponsesBatchCalls = 0
+	f.responderSummariesBatchCalls = 0
 	f.listRespondedBatchCalls = 0
 	f.countRespondersCalls = 0
 	f.latestBreadcrumbCalls = 0
@@ -87,18 +89,18 @@ func TestListActiveUsesBatchedDetailLookups(t *testing.T) {
 		t.Fatalf("ListActive returned %d items, want 20", len(items))
 	}
 	if repo.countRespondersBatchCalls != 1 || repo.latestBreadcrumbsBatchCalls != 1 ||
-		repo.listResponsesBatchCalls != 1 {
-		t.Fatalf("batch calls = counts:%d crumbs:%d responses:%d, want 1/1/1",
+		repo.responderSummariesBatchCalls != 1 {
+		t.Fatalf("batch calls = counts:%d crumbs:%d summaries:%d, want 1/1/1",
 			repo.countRespondersBatchCalls, repo.latestBreadcrumbsBatchCalls,
-			repo.listResponsesBatchCalls)
+			repo.responderSummariesBatchCalls)
 	}
 	if repo.listRespondedBatchCalls != 0 {
 		t.Fatalf("role=sent ran %d responded lookups, want 0", repo.listRespondedBatchCalls)
 	}
 	assertNoPerRowDetailReads(t, repo)
-	// One lookup for sender names, one for the responder names.
-	if users.listByIDsCalls != 2 {
-		t.Fatalf("ListByIDs calls = %d, want 2 (senders + responders)", users.listByIDsCalls)
+	// Sender names only: the roster query already carries responder names.
+	if users.listByIDsCalls != 1 {
+		t.Fatalf("ListByIDs calls = %d, want 1 (senders)", users.listByIDsCalls)
 	}
 
 	for _, item := range items {
@@ -127,10 +129,13 @@ func TestListInboxUsesBatchedDetailLookups(t *testing.T) {
 	seedActiveAlert(repo, "a-unresponded", "sender", 2000)
 	repo.recipients["a-responded"] = []string{"user-b"}
 	repo.recipients["a-unresponded"] = []string{"user-b"}
-	repo.responses["a-responded"] = []*entity.AlertResponse{{
-		ID: "resp-b", AlertID: "a-responded", ResponderID: "user-b",
-		DistanceMeters: 15, ETASeconds: 40, RespondedAt: 1500,
-	}}
+	repo.responses["a-responded"] = []*entity.AlertResponse{
+		{ID: "resp-b-late", AlertID: "a-responded", ResponderID: "user-c",
+			DistanceMeters: 30, ETASeconds: 70, RespondedAt: 1600},
+		// Deliberately out of order: the API must expose responded_at ASC.
+		{ID: "resp-b", AlertID: "a-responded", ResponderID: "user-b",
+			DistanceMeters: 15, ETASeconds: 40, RespondedAt: 1500},
+	}
 	repo.breadcrumbs["a-unresponded"] = []*entity.AlertBreadcrumb{{
 		AlertID: "a-unresponded", Latitude: -6.22, Longitude: 106.86, RecordedAt: 2500,
 	}}
@@ -145,14 +150,14 @@ func TestListInboxUsesBatchedDetailLookups(t *testing.T) {
 		t.Fatalf("ListInbox returned %d items, want 2", len(items))
 	}
 	if repo.countRespondersBatchCalls != 1 || repo.latestBreadcrumbsBatchCalls != 1 ||
-		repo.listResponsesBatchCalls != 1 || repo.listRespondedBatchCalls != 1 {
-		t.Fatalf("batch calls = counts:%d crumbs:%d responses:%d responded:%d, want 1/1/1/1",
+		repo.responderSummariesBatchCalls != 1 || repo.listRespondedBatchCalls != 1 {
+		t.Fatalf("batch calls = counts:%d crumbs:%d summaries:%d responded:%d, want 1/1/1/1",
 			repo.countRespondersBatchCalls, repo.latestBreadcrumbsBatchCalls,
-			repo.listResponsesBatchCalls, repo.listRespondedBatchCalls)
+			repo.responderSummariesBatchCalls, repo.listRespondedBatchCalls)
 	}
 	assertNoPerRowDetailReads(t, repo)
-	if users.listByIDsCalls != 2 {
-		t.Fatalf("ListByIDs calls = %d, want 2 (senders + responders)", users.listByIDsCalls)
+	if users.listByIDsCalls != 1 {
+		t.Fatalf("ListByIDs calls = %d, want 1 (senders)", users.listByIDsCalls)
 	}
 
 	byID := map[string]bool{}
@@ -162,8 +167,9 @@ func TestListInboxUsesBatchedDetailLookups(t *testing.T) {
 			if item.Masked {
 				t.Fatalf("a responder must see exact coordinates: %+v", item)
 			}
-			if len(item.Responders) != 1 || item.Responders[0].Name != "Budi" {
-				t.Fatalf("responder roster = %+v, want Budi", item.Responders)
+			if len(item.Responders) != 2 || item.Responders[0].Name != "Budi" ||
+				item.Responders[1].Name != "Citra" {
+				t.Fatalf("responder roster = %+v, want Budi then Citra", item.Responders)
 			}
 			if item.LatestLocation.Latitude != -6.2091234 {
 				t.Fatalf("responder latest location = %+v, want exact", item.LatestLocation)
@@ -172,6 +178,10 @@ func TestListInboxUsesBatchedDetailLookups(t *testing.T) {
 		case "a-unresponded":
 			if !item.Masked {
 				t.Fatalf("a notified non-responder must stay masked: %+v", item)
+			}
+			wantLat, wantLng := model.MaskCoordinates(-6.2091234, 106.8461234)
+			if item.InitialLocation.Latitude != wantLat || item.InitialLocation.Longitude != wantLng {
+				t.Fatalf("masked coords = %+v, want %v/%v", item.InitialLocation, wantLat, wantLng)
 			}
 			if len(item.Responders) != 0 {
 				t.Fatalf("non-participant leaked responder identities: %+v", item.Responders)
@@ -244,7 +254,7 @@ func marshalDetail(t *testing.T, detail interface{}) string {
 }
 
 func TestGetAlertResolvesResponderOnce(t *testing.T) {
-	uc, repo, _ := detailBatchSetup(t)
+	uc, repo, users := detailBatchSetup(t)
 	seedActiveAlert(repo, "a1", "sender", 1000)
 	repo.recipients["a1"] = []string{"user-b"}
 	repo.responses["a1"] = []*entity.AlertResponse{{
@@ -252,6 +262,7 @@ func TestGetAlertResolvesResponderOnce(t *testing.T) {
 	}}
 
 	repo.resetDetailCounters()
+	users.listByIDsCalls = 0
 	if _, err := uc.GetAlert(context.Background(), "sender", "a1"); err != nil {
 		t.Fatalf("GetAlert(sender) error = %v", err)
 	}
@@ -259,8 +270,12 @@ func TestGetAlertResolvesResponderOnce(t *testing.T) {
 		t.Fatalf("sender lookup ran responder checks: %d/%d, want 0/0",
 			repo.isResponderCalls, repo.listRecipientsCalls)
 	}
+	if users.listByIDsCalls != 1 {
+		t.Fatalf("sender name lookups = %d, want 1", users.listByIDsCalls)
+	}
 
 	repo.resetDetailCounters()
+	users.listByIDsCalls = 0
 	if _, err := uc.GetAlert(context.Background(), "user-b", "a1"); err != nil {
 		t.Fatalf("GetAlert(recipient) error = %v", err)
 	}
@@ -268,17 +283,24 @@ func TestGetAlertResolvesResponderOnce(t *testing.T) {
 		t.Fatalf("recipient checks = responder:%d recipients:%d, want 1/1",
 			repo.isResponderCalls, repo.listRecipientsCalls)
 	}
+	if users.listByIDsCalls != 1 {
+		t.Fatalf("recipient sender name lookups = %d, want 1", users.listByIDsCalls)
+	}
 
 	repo.responses["a1"] = append(repo.responses["a1"], &entity.AlertResponse{
 		ID: "resp-b", AlertID: "a1", ResponderID: "user-b", RespondedAt: 1200,
 	})
 	repo.resetDetailCounters()
+	users.listByIDsCalls = 0
 	if _, err := uc.GetAlert(context.Background(), "user-b", "a1"); err != nil {
 		t.Fatalf("GetAlert(responder) error = %v", err)
 	}
 	if repo.isResponderCalls != 1 || repo.listRecipientsCalls != 0 {
 		t.Fatalf("responder checks = responder:%d recipients:%d, want 1/0 (no repeat)",
 			repo.isResponderCalls, repo.listRecipientsCalls)
+	}
+	if users.listByIDsCalls != 1 {
+		t.Fatalf("responder sender name lookups = %d, want 1", users.listByIDsCalls)
 	}
 }
 
@@ -295,11 +317,56 @@ func TestListActiveEmptyPageSkipsDetailReads(t *testing.T) {
 		t.Fatalf("ListActive returned %d items, want 0", len(items))
 	}
 	if repo.countRespondersBatchCalls != 0 || repo.latestBreadcrumbsBatchCalls != 0 ||
-		repo.listResponsesBatchCalls != 0 || repo.listRespondedBatchCalls != 0 {
+		repo.responderSummariesBatchCalls != 0 || repo.listRespondedBatchCalls != 0 {
 		t.Fatalf("empty page ran batch reads: %+v", repo)
 	}
 	assertNoPerRowDetailReads(t, repo)
 	if users.listByIDsCalls != 0 {
 		t.Fatalf("empty page ran %d user lookups, want 0", users.listByIDsCalls)
+	}
+
+	repo.resetDetailCounters()
+	inbox, err := uc.ListInbox(context.Background(), "user-b")
+	if err != nil {
+		t.Fatalf("ListInbox error = %v", err)
+	}
+	if len(inbox) != 0 {
+		t.Fatalf("ListInbox returned %d items, want 0", len(inbox))
+	}
+	if repo.countRespondersBatchCalls != 0 || repo.latestBreadcrumbsBatchCalls != 0 ||
+		repo.responderSummariesBatchCalls != 0 || repo.listRespondedBatchCalls != 0 {
+		t.Fatalf("empty inbox ran batch reads: %+v", repo)
+	}
+	assertNoPerRowDetailReads(t, repo)
+}
+
+func TestListInboxFailsWhenRosterReadFails(t *testing.T) {
+	uc, repo, _ := detailBatchSetup(t)
+	seedActiveAlert(repo, "a1", "sender", 1000)
+	repo.recipients["a1"] = []string{"user-b"}
+	repo.responses["a1"] = []*entity.AlertResponse{{
+		ID: "resp-b", AlertID: "a1", ResponderID: "user-b", RespondedAt: 1100,
+	}}
+	rosterErr := errors.New("roster unavailable")
+	repo.responderSummariesErr = rosterErr
+
+	if _, err := uc.ListInbox(context.Background(), "user-b"); !errors.Is(err, rosterErr) {
+		t.Fatalf("ListInbox error = %v, want %v", err, rosterErr)
+	}
+}
+
+// The resolved-viewer path is a single-alert optimization; a partial map
+// must fail loudly instead of silently masking a responder's own incident.
+func TestBuildAlertDetailsRejectsMissingResolvedViewer(t *testing.T) {
+	uc, repo, _ := detailBatchSetup(t)
+	alert := seedActiveAlert(repo, "a1", "sender", 1000)
+
+	_, err := uc.buildAlertDetails(context.Background(), []*entity.Alert{alert}, detailBatchOptions{
+		requesterID:     "user-b",
+		withResponders:  true,
+		viewersResolved: true,
+	})
+	if err == nil {
+		t.Fatal("missing resolved viewer must fail instead of falling back to masking")
 	}
 }

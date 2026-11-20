@@ -148,6 +148,13 @@ type fakeAlertRepository struct {
 	media        map[string][]*entity.AlertMedia
 	recipients   map[string][]string
 
+	// users lets the fake roster query resolve display names the way the
+	// real LEFT JOIN users does.
+	users *fakeUserReader
+
+	// responderSummariesErr fails the batched roster read.
+	responderSummariesErr error
+
 	triageUpdated     bool
 	triageType        string
 	triageSeverity    float64
@@ -159,10 +166,10 @@ type fakeAlertRepository struct {
 
 	// batch call counters guard against per-row queries in history and the
 	// lifecycle list endpoints.
-	countRespondersBatchCalls   int
-	latestBreadcrumbsBatchCalls int
-	listResponsesBatchCalls     int
-	listRespondedBatchCalls     int
+	countRespondersBatchCalls    int
+	latestBreadcrumbsBatchCalls  int
+	responderSummariesBatchCalls int
+	listRespondedBatchCalls      int
 
 	// single call counters prove the list paths never fall back to the
 	// per-row detail reads.
@@ -325,13 +332,35 @@ func (f *fakeAlertRepository) ListResponses(ctx context.Context, db *gorm.DB, al
 	return append([]*entity.AlertResponse(nil), f.responses[alertID]...), nil
 }
 
-// ListResponsesByAlertIDs batches the responder roster for a page of alerts.
-func (f *fakeAlertRepository) ListResponsesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]*entity.AlertResponse, error) {
+// ListResponderSummariesByAlertIDs mirrors the joined roster query: the
+// responses of each alert ordered by responded_at, with display names.
+func (f *fakeAlertRepository) ListResponderSummariesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]model.ResponderSummary, error) {
 	f.ensure()
-	f.listResponsesBatchCalls++
-	out := make(map[string][]*entity.AlertResponse, len(alertIDs))
+	f.responderSummariesBatchCalls++
+	if f.responderSummariesErr != nil {
+		return nil, f.responderSummariesErr
+	}
+	out := make(map[string][]model.ResponderSummary, len(alertIDs))
 	for _, alertID := range alertIDs {
-		out[alertID] = append([]*entity.AlertResponse(nil), f.responses[alertID]...)
+		responses := append([]*entity.AlertResponse(nil), f.responses[alertID]...)
+		sort.SliceStable(responses, func(i, j int) bool {
+			return responses[i].RespondedAt < responses[j].RespondedAt
+		})
+		for _, r := range responses {
+			name := ""
+			if f.users != nil {
+				if user, ok := f.users.users[r.ResponderID]; ok {
+					name = user.Name
+				}
+			}
+			out[alertID] = append(out[alertID], model.ResponderSummary{
+				UserID:         r.ResponderID,
+				Name:           name,
+				DistanceMeters: int(r.DistanceMeters + 0.5),
+				ETASeconds:     r.ETASeconds,
+				RespondedAt:    r.RespondedAt,
+			})
+		}
 	}
 	return out, nil
 }
@@ -706,6 +735,13 @@ func newUseCase(locRepo LocationRepository, alertRepo AlertStore, notifier Notif
 }
 
 func newUseCaseWithDeps(deps TriggerSOSDeps) *TriggerSOSUseCase {
+	// Wire the fake roster query to the fake user directory so its
+	// joined-name behaviour mirrors the real SQL.
+	if repo, ok := deps.Alerts.(*fakeAlertRepository); ok {
+		if users, ok := deps.Users.(*fakeUserReader); ok {
+			repo.users = users
+		}
+	}
 	return NewTriggerSOSUseCase(nil, noopLogger(), deps)
 }
 

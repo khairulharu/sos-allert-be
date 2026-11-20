@@ -132,9 +132,11 @@ type detailBatchOptions struct {
 	// withResponders attaches the responder roster (identities, distance,
 	// ETA) to the rows the viewer participates in.
 	withResponders bool
-	// includeBreadcrumbs loads the full trail; only the single-alert view
-	// would use it.
-	includeBreadcrumbs bool
+	// viewersResolved marks opt.viewers as the complete, authoritative
+	// answer for every alert, resolving the viewer once for a single alert.
+	// It is explicit so a partial map can never silently fall back to
+	// masking a responder's own incident.
+	viewersResolved bool
 	// viewers short-circuits per-alert viewer resolution for callers that
 	// already authorized the read (GetAlert, Acknowledge, Resolve).
 	viewers map[string]detailViewer
@@ -168,8 +170,26 @@ func (u *TriggerSOSUseCase) buildAlertDetails(ctx context.Context, alerts []*ent
 		latestCrumbs    map[string]*entity.AlertBreadcrumb
 		responded       = map[string]bool{}
 		names           = map[string]string{}
-		responses       = map[string][]*entity.AlertResponse{}
+		summaries       = map[string][]model.ResponderSummary{}
 	)
+
+	// The roster is only fetched for rows the caller may actually see.
+	// role=sent rows all belong to the caller; a resolved-viewer call
+	// already knows each viewer. Inbox rows need the responded lookup
+	// first, so their roster is fetched after the first wave.
+	rosterIDs := make([]string, 0, len(alerts))
+	if opt.withResponders {
+		switch {
+		case opt.viewersResolved:
+			for _, alert := range alerts {
+				if opt.viewers[alert.ID].participant() {
+					rosterIDs = append(rosterIDs, alert.ID)
+				}
+			}
+		case opt.role == "sent":
+			rosterIDs = ids
+		}
+	}
 
 	tasks := []func(context.Context) error{
 		func(ctx context.Context) (err error) {
@@ -181,7 +201,7 @@ func (u *TriggerSOSUseCase) buildAlertDetails(ctx context.Context, alerts []*ent
 			return err
 		},
 	}
-	if opt.role != "sent" && len(opt.viewers) == 0 {
+	if opt.role != "sent" && !opt.viewersResolved {
 		tasks = append(tasks, func(ctx context.Context) (err error) {
 			responded, err = u.Deps.Alerts.ListRespondedAlertIDs(ctx, u.DB, opt.requesterID, ids)
 			return err
@@ -201,9 +221,9 @@ func (u *TriggerSOSUseCase) buildAlertDetails(ctx context.Context, alerts []*ent
 			return nil
 		})
 	}
-	if opt.withResponders {
+	if len(rosterIDs) > 0 {
 		tasks = append(tasks, func(ctx context.Context) (err error) {
-			responses, err = u.Deps.Alerts.ListResponsesByAlertIDs(ctx, u.DB, ids)
+			summaries, err = u.Deps.Alerts.ListResponderSummariesByAlertIDs(ctx, u.DB, rosterIDs)
 			return err
 		})
 	}
@@ -217,12 +237,30 @@ func (u *TriggerSOSUseCase) buildAlertDetails(ctx context.Context, alerts []*ent
 			viewers[alert.ID] = viewer
 			continue
 		}
+		if opt.viewersResolved {
+			return nil, fmt.Errorf("alert %s has no resolved viewer", alert.ID)
+		}
 		viewers[alert.ID] = detailViewer{
 			isSender:    alert.SenderID == opt.requesterID,
 			isResponder: responded[alert.ID],
 		}
 	}
-	responderNames := u.loadResponderNames(ctx, alerts, viewers, responses, opt.withResponders)
+
+	if opt.withResponders && len(rosterIDs) == 0 {
+		participantIDs := make([]string, 0, len(alerts))
+		for _, alert := range alerts {
+			if viewers[alert.ID].participant() {
+				participantIDs = append(participantIDs, alert.ID)
+			}
+		}
+		if len(participantIDs) > 0 {
+			var err error
+			summaries, err = u.Deps.Alerts.ListResponderSummariesByAlertIDs(ctx, u.DB, participantIDs)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	for _, alert := range alerts {
 		detail := alertDetailBase(alert)
@@ -240,67 +278,22 @@ func (u *TriggerSOSUseCase) buildAlertDetails(ctx context.Context, alerts []*ent
 		// viewers keep the bare count so the endpoint does not leak who is
 		// answering a stranger's incident.
 		if viewer.participant() {
-			detail.Responders = responderSummaries(responses[alert.ID], responderNames)
+			detail.Responders = summaries[alert.ID]
 		}
 		setDetailLocations(detail, initial, latest, viewer.participant())
-
-		if opt.includeBreadcrumbs {
-			crumbs, err := u.Deps.Alerts.ListBreadcrumbs(ctx, u.DB, alert.ID, 1000)
-			if err != nil {
-				return nil, err
-			}
-			for _, c := range crumbs {
-				detail.Breadcrumbs = append(detail.Breadcrumbs, breadcrumbToResponse(c))
-			}
-		}
 		items = append(items, detail)
 	}
 	return items, nil
-}
-
-// loadResponderNames resolves the display names of every responder the
-// viewer may see in one query. A lookup failure leaves names empty rather
-// than failing the page, matching the previous per-row behaviour.
-func (u *TriggerSOSUseCase) loadResponderNames(ctx context.Context, alerts []*entity.Alert, viewers map[string]detailViewer, responses map[string][]*entity.AlertResponse, enabled bool) map[string]string {
-	names := map[string]string{}
-	if !enabled || u.Deps.Users == nil {
-		return names
-	}
-	seen := map[string]struct{}{}
-	ids := make([]string, 0, len(alerts))
-	for _, alert := range alerts {
-		if !viewers[alert.ID].participant() {
-			continue
-		}
-		for _, response := range responses[alert.ID] {
-			if _, ok := seen[response.ResponderID]; ok {
-				continue
-			}
-			seen[response.ResponderID] = struct{}{}
-			ids = append(ids, response.ResponderID)
-		}
-	}
-	if len(ids) == 0 {
-		return names
-	}
-	users, err := u.Deps.Users.ListByIDs(ctx, ids)
-	if err != nil {
-		u.Log.WithError(err).Warn("could not load responder names")
-		return names
-	}
-	for id, user := range users {
-		names[id] = user.Name
-	}
-	return names
 }
 
 // detailForAlert builds one detail response from a viewer that was already
 // resolved, so a single-incident read does not repeat IsResponder.
 func (u *TriggerSOSUseCase) detailForAlert(ctx context.Context, alert *entity.Alert, requesterID string, viewer detailViewer) (*model.AlertDetailResponse, error) {
 	items, err := u.buildAlertDetails(ctx, []*entity.Alert{alert}, detailBatchOptions{
-		requesterID:    requesterID,
-		withResponders: true,
-		viewers:        map[string]detailViewer{alert.ID: viewer},
+		requesterID:     requesterID,
+		withResponders:  true,
+		viewersResolved: true,
+		viewers:         map[string]detailViewer{alert.ID: viewer},
 	})
 	if err != nil {
 		return nil, err
@@ -390,25 +383,6 @@ func setDetailLocations(detail *model.AlertDetailResponse, initial, latest model
 	lat, lng = model.MaskCoordinates(latest.Latitude, latest.Longitude)
 	detail.LatestLocation = model.LocationPoint{Latitude: lat, Longitude: lng, UpdatedAt: latest.UpdatedAt}
 	detail.Masked = true
-}
-
-// responderSummaries maps the stored answers to the API shape. The names
-// map is resolved in one query by the caller.
-func responderSummaries(responses []*entity.AlertResponse, names map[string]string) []model.ResponderSummary {
-	if len(responses) == 0 {
-		return nil
-	}
-	out := make([]model.ResponderSummary, 0, len(responses))
-	for _, r := range responses {
-		out = append(out, model.ResponderSummary{
-			UserID:         r.ResponderID,
-			Name:           names[r.ResponderID],
-			DistanceMeters: int(r.DistanceMeters + 0.5),
-			ETASeconds:     r.ETASeconds,
-			RespondedAt:    r.RespondedAt,
-		})
-	}
-	return out
 }
 
 func breadcrumbToResponse(c *entity.AlertBreadcrumb) model.BreadcrumbResponse {
