@@ -83,6 +83,17 @@ func Bootstrap(config *BootstrapConfig) {
 	if config.Config.IsSet("auth.token_ttl_hours") && config.Config.GetInt("auth.token_ttl_hours") <= 0 {
 		config.Log.Warn("auth.token_ttl_hours must be positive; using the 168h default so sessions expire")
 	}
+	// Session verification runs on every authenticated request, and the
+	// managed Redis is a full round trip away. Memoise the answer for a
+	// short TTL: Redis stays the source of truth, and logout/delete evict
+	// the entry here and on the other instances through pub/sub (#58).
+	sessionCache := repository.NewSessionCache(sessionRepository, config.Log, authConfig.SessionCacheTTL)
+	if authConfig.SessionCacheTTL > 0 {
+		go sessionCache.RunInvalidation(rootCtx)
+		config.Log.Infof("session verification cache enabled (ttl %s)", authConfig.SessionCacheTTL)
+	} else {
+		config.Log.Warn("session verification cache disabled; every authenticated request pays a Redis GET")
+	}
 	notificationConfig := NewNotificationConfig(config.Config, config.Log)
 	webPushConfig := NewWebPushConfig(config.Config)
 	storageConfig := NewStorageConfig(config.Config)
@@ -187,7 +198,7 @@ func Bootstrap(config *BootstrapConfig) {
 
 	// setup use cases
 	userUseCase := usecase.NewUserUseCase(config.DB, config.Log, config.Validate, userRepository,
-		sessionRepository, authConfig.TokenTTL, userProducer)
+		sessionCache, authConfig.TokenTTL, userProducer)
 	contactUseCase := usecase.NewContactUseCase(config.DB, config.Log, config.Validate, contactRepository, contactProducer)
 	addressUseCase := usecase.NewAddressUseCase(config.DB, config.Log, config.Validate, contactRepository, addressRepository, addressProducer)
 	locationUseCase := usecase.NewLocationUseCase(locationCacheRepository, locationRepository, config.Validate, config.Log)
