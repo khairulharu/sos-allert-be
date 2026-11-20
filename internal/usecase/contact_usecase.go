@@ -114,24 +114,18 @@ func (c *ContactUseCase) Update(ctx context.Context, request *model.UpdateContac
 	return converter.ContactToResponse(contact), nil
 }
 
+// Get reads one contact. Read-only, so it stays on the pool: wrapping a
+// single SELECT in BEGIN/COMMIT only adds round trips (#56).
 func (c *ContactUseCase) Get(ctx context.Context, request *model.GetContactRequest) (*model.ContactResponse, error) {
-	tx := c.DB.WithContext(ctx).Begin()
-	defer tx.Rollback()
-
 	if err := c.Validate.Struct(request); err != nil {
 		c.Log.WithError(err).Error("error validating request body")
 		return nil, fiber.ErrBadRequest
 	}
 
 	contact := new(entity.Contact)
-	if err := c.ContactRepository.FindByIdAndUserId(tx, contact, request.ID, request.UserId); err != nil {
+	if err := c.ContactRepository.FindByIdAndUserId(c.DB.WithContext(ctx), contact, request.ID, request.UserId); err != nil {
 		c.Log.WithError(err).Error("error getting contact")
 		return nil, fiber.ErrNotFound
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		c.Log.WithError(err).Error("error getting contact")
-		return nil, fiber.ErrInternalServerError
 	}
 
 	return converter.ContactToResponse(contact), nil
@@ -165,22 +159,17 @@ func (c *ContactUseCase) Delete(ctx context.Context, request *model.DeleteContac
 	return nil
 }
 
+// Search pages the caller's contacts. The count and the page query are
+// independent reads, so they run on the pool instead of inside a
+// transaction that would only add BEGIN/COMMIT round trips (#56).
 func (c *ContactUseCase) Search(ctx context.Context, request *model.SearchContactRequest) ([]model.ContactResponse, int64, error) {
-	tx := c.DB.WithContext(ctx).Begin()
-	defer tx.Rollback()
-
 	if err := c.Validate.Struct(request); err != nil {
 		c.Log.WithError(err).Error("error validating request body")
 		return nil, 0, fiber.ErrBadRequest
 	}
 
-	contacts, total, err := c.ContactRepository.Search(tx, request)
+	contacts, total, err := c.ContactRepository.Search(c.DB.WithContext(ctx), request)
 	if err != nil {
-		c.Log.WithError(err).Error("error getting contacts")
-		return nil, 0, fiber.ErrInternalServerError
-	}
-
-	if err := tx.Commit().Error; err != nil {
 		c.Log.WithError(err).Error("error getting contacts")
 		return nil, 0, fiber.ErrInternalServerError
 	}
