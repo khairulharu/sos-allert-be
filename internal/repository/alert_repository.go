@@ -201,6 +201,44 @@ func (a *AlertRepository) ListResponses(ctx context.Context, db *gorm.DB, alertI
 	return out, nil
 }
 
+// ListResponderSummariesByAlertIDs batches the visible responder roster
+// for a page of alerts, joining the display name so the caller does not
+// need a second name lookup per page. Each alert keeps the ListResponses
+// order (responded_at ASC), so the JSON matches the single-alert view.
+func (a *AlertRepository) ListResponderSummariesByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string][]model.ResponderSummary, error) {
+	out := make(map[string][]model.ResponderSummary, len(alertIDs))
+	if len(alertIDs) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		AlertID        string
+		ResponderID    string
+		Name           string
+		DistanceMeters float64
+		ETASeconds     int
+		RespondedAt    int64
+	}
+	if err := db.WithContext(ctx).Table("alert_responses AS r").
+		Select("r.alert_id AS alert_id, r.responder_id AS responder_id, "+
+			"COALESCE(u.name, '') AS name, r.distance_meters AS distance_meters, "+
+			"r.eta_seconds AS eta_seconds, r.responded_at AS responded_at").
+		Joins("LEFT JOIN users AS u ON u.id = r.responder_id").
+		Where("r.alert_id IN ?", alertIDs).
+		Order("r.alert_id ASC, r.responded_at ASC").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.AlertID] = append(out[row.AlertID], model.ResponderSummary{
+			UserID:         row.ResponderID,
+			Name:           row.Name,
+			DistanceMeters: int(row.DistanceMeters + 0.5),
+			ETASeconds:     row.ETASeconds,
+			RespondedAt:    row.RespondedAt,
+		})
+	}
+	return out, nil
+}
+
 // CreateMedia records an uploaded media file.
 func (a *AlertRepository) CreateMedia(ctx context.Context, db *gorm.DB, m *entity.AlertMedia) error {
 	return db.WithContext(ctx).Create(m).Error

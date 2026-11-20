@@ -88,7 +88,8 @@ func (f *fakeRateLimiter) Allow(ctx context.Context, userID string, limit int, w
 }
 
 type fakeUserReader struct {
-	users map[string]*entity.User
+	users          map[string]*entity.User
+	listByIDsCalls int
 }
 
 func (f *fakeUserReader) GetByID(ctx context.Context, id string) (*entity.User, error) {
@@ -99,6 +100,7 @@ func (f *fakeUserReader) GetByID(ctx context.Context, id string) (*entity.User, 
 }
 
 func (f *fakeUserReader) ListByIDs(ctx context.Context, ids []string) (map[string]*entity.User, error) {
+	f.listByIDsCalls++
 	out := make(map[string]*entity.User, len(ids))
 	for _, id := range ids {
 		if u, ok := f.users[id]; ok {
@@ -332,11 +334,12 @@ func TestCancelSOSWithoutPINConfigured(t *testing.T) {
 }
 
 func TestRespondSOSAndDetailMasking(t *testing.T) {
-	uc, _, _, _ := triggerSetup(t)
+	uc, _, alertRepo, _ := triggerSetup(t)
 	uc.Deps.Users = &fakeUserReader{users: map[string]*entity.User{
 		"sender": {ID: "sender", Name: "Jane Doe"},
 		"user-b": {ID: "user-b", Name: "Budi"},
 	}}
+	alertRepo.users = uc.Deps.Users.(*fakeUserReader)
 	hub := &fakeHub{}
 	uc.Deps.Hub = hub
 	created, err := uc.ExecuteWithRequest(context.Background(), "sender", &model.TriggerSOSRequest{}, "")

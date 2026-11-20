@@ -263,10 +263,15 @@ func TestHistoryUsesBatchedQueries(t *testing.T) {
 		t.Fatalf("batch calls = %d/%d, want 1/1 (no per-row queries)",
 			repo.countRespondersBatchCalls, repo.latestBreadcrumbsBatchCalls)
 	}
+	if repo.responderSummariesBatchCalls != 0 || repo.listResponsesCalls != 0 {
+		t.Fatalf("history roster reads = %d/%d, want 0/0",
+			repo.responderSummariesBatchCalls, repo.listResponsesCalls)
+	}
 
 	// A bigger page must not add queries.
 	repo.countRespondersBatchCalls = 0
 	repo.latestBreadcrumbsBatchCalls = 0
+	repo.responderSummariesBatchCalls = 0
 	if _, _, err := uc.ListHistory(context.Background(), &model.SearchAlertHistoryRequest{
 		UserID: "sender", Role: "sent", Page: 1, Size: 100,
 	}); err != nil {
@@ -275,6 +280,9 @@ func TestHistoryUsesBatchedQueries(t *testing.T) {
 	if repo.countRespondersBatchCalls != 1 || repo.latestBreadcrumbsBatchCalls != 1 {
 		t.Fatalf("batch calls for size=100 = %d/%d, want 1/1",
 			repo.countRespondersBatchCalls, repo.latestBreadcrumbsBatchCalls)
+	}
+	if repo.responderSummariesBatchCalls != 0 {
+		t.Fatalf("history roster reads for size=100 = %d, want 0", repo.responderSummariesBatchCalls)
 	}
 }
 
