@@ -3,6 +3,10 @@
 Production run against `https://api.allert.my.id` on **2026-11-20 12:49:53 – 12:51:31 (+08:00)**.
 Traffic is read-only: no SOS trigger, no `/api/sos/classify` (spends STT + LLM tokens), no writes.
 
+This file documents the **baseline** (`0b04ac1`). The re-run after the perf PRs (`94d5cf8`) lives in
+[`rerun-2026-11-22/`](rerun-2026-11-22/README.md): avg **927 → 614 ms**, p95 **1617 → 843 ms**,
+p99 **1658 → 1140 ms**, still 0% failures.
+
 ![latency dashboard](dashboard.png)
 
 ## Workload
