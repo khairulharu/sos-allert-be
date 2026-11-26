@@ -12,7 +12,7 @@ import (
 
 // TokenVerifier resolves a raw session token to the authenticated user.
 // Satisfied by *usecase.UserUseCase. Keeping it an interface lets the
-// middleware be tested without Redis or MySQL.
+// middleware be tested without Redis or PostgreSQL.
 type TokenVerifier interface {
 	Verify(ctx context.Context, request *model.VerifyUserRequest) (*model.Auth, error)
 }

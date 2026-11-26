@@ -1,1 +1,1 @@
-drop table addresses;
+drop table if exists addresses;

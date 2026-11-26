@@ -162,8 +162,9 @@ func (a *AlertRepository) CreateResponse(ctx context.Context, db *gorm.DB, r *en
 	if tx.Error != nil {
 		return tx.Error
 	}
-	// MySQL's ON DUPLICATE KEY UPDATE reports 0 affected rows when the
-	// existing row is left untouched, which is exactly the duplicate case.
+	// ON CONFLICT DO NOTHING reports 0 affected rows when the unique
+	// (alert_id, responder_id) row already exists, which is exactly the
+	// duplicate case.
 	if tx.RowsAffected == 0 {
 		return model.ErrDuplicateResponse
 	}
@@ -335,8 +336,8 @@ func (a *AlertRepository) ListInbox(ctx context.Context, db *gorm.DB, userID str
 // 30-day ephemeral-retention rule from the README.
 func (a *AlertRepository) PurgeBreadcrumbs(ctx context.Context, db *gorm.DB, beforeMs int64) (int64, error) {
 	res := db.WithContext(ctx).Exec(
-		"DELETE b FROM alert_breadcrumbs b JOIN alerts a ON a.id = b.alert_id "+
-			"WHERE b.recorded_at < ? AND a.status IN ('RESOLVED','CANCELLED','EXPIRED')", beforeMs)
+		"DELETE FROM alert_breadcrumbs b USING alerts a "+
+			"WHERE a.id = b.alert_id AND b.recorded_at < ? AND a.status IN ('RESOLVED','CANCELLED','EXPIRED')", beforeMs)
 	if res.Error != nil {
 		return 0, res.Error
 	}
@@ -532,7 +533,7 @@ func (a *AlertRepository) CountRespondersByAlertIDs(ctx context.Context, db *gor
 }
 
 // LatestBreadcrumbsByAlertIDs batches the newest trail point for a page
-// of alerts (one derived-table query, MySQL 5.7+). Ties on recorded_at
+// of alerts (one derived-table query). Ties on recorded_at
 // keep the first row.
 func (a *AlertRepository) LatestBreadcrumbsByAlertIDs(ctx context.Context, db *gorm.DB, alertIDs []string) (map[string]*entity.AlertBreadcrumb, error) {
 	out := make(map[string]*entity.AlertBreadcrumb, len(alertIDs))

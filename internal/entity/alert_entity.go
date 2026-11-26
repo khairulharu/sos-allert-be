@@ -19,7 +19,7 @@ const (
 	EmergencyTypeAccident = "ACCIDENT"
 )
 
-// Alert is the MySQL `alerts` table (alerts v2 schema).
+// Alert is the PostgreSQL `alerts` table (alerts v2 schema).
 type Alert struct {
 	ID                 string   `gorm:"column:id;primaryKey"`
 	SenderID           string   `gorm:"column:sender_id"`
@@ -67,7 +67,7 @@ func (a *Alert) CanTransitionTo(next string) bool {
 }
 
 // AlertBreadcrumb is one recorded position in an incident trajectory
-// (MySQL `alert_breadcrumbs` table).
+// (PostgreSQL `alert_breadcrumbs` table).
 type AlertBreadcrumb struct {
 	ID                int64    `gorm:"column:id;primaryKey;autoIncrement"`
 	AlertID           string   `gorm:"column:alert_id"`
@@ -86,7 +86,7 @@ func (b *AlertBreadcrumb) TableName() string {
 }
 
 // AlertResponse records one responder answering an incident
-// (MySQL `alert_responses` table).
+// (PostgreSQL `alert_responses` table).
 type AlertResponse struct {
 	ID                 string  `gorm:"column:id;primaryKey"`
 	AlertID            string  `gorm:"column:alert_id"`
@@ -103,7 +103,7 @@ func (r *AlertResponse) TableName() string {
 }
 
 // EmergencyContact is a verified Tier-1 contact for SMS/voice fallback
-// (MySQL `emergency_contacts` table). It is separate from the generic
+// (PostgreSQL `emergency_contacts` table). It is separate from the generic
 // `contacts` table, which predates the SOS design.
 type EmergencyContact struct {
 	ID           string `gorm:"column:id;primaryKey"`
@@ -120,7 +120,7 @@ func (c *EmergencyContact) TableName() string {
 }
 
 // AlertMedia records an uploaded incident media file
-// (MySQL `alert_media` table). The bytes live in the configured
+// (PostgreSQL `alert_media` table). The bytes live in the configured
 // storage backend (local disk by default, S3 when configured).
 type AlertMedia struct {
 	ID                  string `gorm:"column:id;primaryKey"`
@@ -141,7 +141,7 @@ func (m *AlertMedia) TableName() string {
 }
 
 // AlertRecipient records one user notified for an incident
-// (MySQL `alert_recipients` table), backing GET /api/sos/inbox.
+// (PostgreSQL `alert_recipients` table), backing GET /api/sos/inbox.
 type AlertRecipient struct {
 	AlertID    string `gorm:"column:alert_id;primaryKey"`
 	UserID     string `gorm:"column:user_id;primaryKey"`

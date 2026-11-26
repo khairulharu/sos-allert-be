@@ -22,7 +22,7 @@ func main() {
 	logger := config.NewLogger(viperConfig)
 	logger.Info("Starting worker service")
 
-	// MySQL is read-only for the worker: it resolves push tokens and the
+	// PostgreSQL is read-only for the worker: it resolves push tokens and the
 	// sender's emergency contacts during fan-out. Startup hard-fails when
 	// the database is unreachable, like cmd/web.
 	db := config.NewDatabase(viperConfig, logger)
@@ -122,7 +122,7 @@ func RunUserConsumer(logger *logrus.Logger, viperConfig *viper.Viper, options me
 }
 
 // RunSOSConsumer fans SOS events out asynchronously. The worker uses the
-// same MySQL connection as cmd/web to load each recipient's FCM/APNs
+// same PostgreSQL connection as cmd/web to load each recipient's FCM/APNs
 // token and the sender's emergency contacts (the SMS fallback), so the
 // Kafka path delivers exactly what the direct path does. FCM/APNs/Twilio
 // credentials still come from config; every channel stays config-gated.

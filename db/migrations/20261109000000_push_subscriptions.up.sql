@@ -1,17 +1,19 @@
--- Browser Web Push subscriptions (VAPID). One row per browser install;
--- the unique endpoint makes re-subscribing from the same browser an
--- upsert that re-points the subscription at the current user.
-CREATE TABLE push_subscriptions (
-    id         VARCHAR(100) NOT NULL,
-    user_id    VARCHAR(100) NOT NULL,
-    endpoint   VARCHAR(512) NOT NULL,
-    p256dh     VARCHAR(255) NOT NULL,
-    auth       VARCHAR(255) NOT NULL,
-    user_agent VARCHAR(255) NULL,
-    created_at BIGINT       NOT NULL,
-    updated_at BIGINT       NOT NULL,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_push_subscriptions_endpoint (endpoint),
-    INDEX idx_push_subscriptions_user (user_id),
-    CONSTRAINT fk_push_subscriptions_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE = InnoDB;
+-- Browser Web Push subscriptions (VAPID). One row per browser install; the
+-- unique endpoint makes re-subscribing from the same browser an upsert that
+-- re-points the subscription at the current user.
+CREATE TABLE push_subscriptions
+(
+    id         varchar(100) not null,
+    user_id    varchar(100) not null,
+    endpoint   varchar(512) not null,
+    p256dh     varchar(255) not null,
+    auth       varchar(255) not null,
+    user_agent varchar(255) null,
+    created_at bigint not null,
+    updated_at bigint not null,
+    primary key (id),
+    constraint uq_push_subscriptions_endpoint unique (endpoint),
+    constraint fk_push_subscriptions_user foreign key (user_id) references users (id) on delete cascade
+);
+
+CREATE INDEX idx_push_subscriptions_user ON push_subscriptions (user_id);

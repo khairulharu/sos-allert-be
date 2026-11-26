@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"strings"
+
 	"golang-clean-architecture/internal/entity"
 	"golang-clean-architecture/internal/model"
 
@@ -41,19 +43,22 @@ func (r *ContactRepository) FilterContact(request *model.SearchContactRequest) f
 	return func(tx *gorm.DB) *gorm.DB {
 		tx = tx.Where("user_id = ?", request.UserId)
 
+		// LOWER() on both sides keeps the search case-insensitive the way
+		// MySQL's default collation made it; PostgreSQL's LIKE is
+		// case-sensitive, so without this "budi" would stop matching "Budi".
 		if name := request.Name; name != "" {
-			name = "%" + name + "%"
-			tx = tx.Where("first_name LIKE ? OR last_name LIKE ?", name, name)
+			name = "%" + strings.ToLower(name) + "%"
+			tx = tx.Where("LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ?", name, name)
 		}
 
 		if phone := request.Phone; phone != "" {
-			phone = "%" + phone + "%"
-			tx = tx.Where("phone LIKE ?", phone)
+			phone = "%" + strings.ToLower(phone) + "%"
+			tx = tx.Where("LOWER(phone) LIKE ?", phone)
 		}
 
 		if email := request.Email; email != "" {
-			email = "%" + email + "%"
-			tx = tx.Where("email LIKE ?", email)
+			email = "%" + strings.ToLower(email) + "%"
+			tx = tx.Where("LOWER(email) LIKE ?", email)
 		}
 
 		return tx

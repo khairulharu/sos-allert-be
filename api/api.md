@@ -71,7 +71,7 @@ Error ditangani global handler:
 | **User & Auth** | `/api/users`, `/api/users/_login`, `/api/users/_current` | Registrasi, login/logout, profil user, set Safe PIN, dan registrasi device token FCM/APNs. |
 | **Contact** | `/api/contacts` | CRUD kontak milik user, pencarian nama/telepon/email, dan pagination. |
 | **Address** | `/api/contacts/{contactId}/addresses` | CRUD alamat yang dimiliki sebuah kontak. |
-| **Location** | `/api/location` | Heartbeat lokasi user ke Redis GEO + histori MySQL, baca posisi terakhir, dan cari responder terdekat untuk peta. |
+| **Location** | `/api/location` | Heartbeat lokasi user ke Redis GEO + histori PostgreSQL, baca posisi terakhir, dan cari responder terdekat untuk peta. |
 | **SOS Incident** | `/api/sos`, `/api/sos/{alertId}` | Trigger insiden, query insiden aktif/detail/inbox, **riwayat paged** (`/api/sos/history`) dan **ringkasan kartu** (`/api/sos/summary`), cancel, acknowledge, resolve, respond (ETA), breadcrumb, dan media bukti. |
 | **Emergency Contact** | `/api/emergency-contacts` | Kontak Tier-1 untuk fallback SMS/voice, terpisah dari tabel kontak biasa. |
 | **Push (Web Push browser)** | `/api/push` | Langganan Web Push browser (VAPID) — kanal push tanpa kredensial Firebase. |
@@ -128,7 +128,7 @@ Field alamat: `street`, `city`, `province`, `postal_code`, `country`.
 |---|---|:---:|---|
 | `GET` | `/api/location` | ✅ | Baca posisi terakhir user dari Redis: `user_id`, `latitude`, `longitude`, `last_seen`, `stale`. `404` jika belum pernah heartbeat. |
 | `GET` | `/api/location/nearby` | ✅ | List responder aktif di sekitar user. Query `radius_m` (default 1000, min 100, max 5000). User yang `last_seen`-nya > 2 menit dan diri sendiri difilter; koordinat dibulatkan ~100 m (`masked: true`), `distance_m` dibulatkan ke kelipatan 100 m terdekat, maksimal 50, urut terdekat. `404` jika user belum punya heartbeat. |
-| `PUT` | `/api/location` | ✅ | Kirim `{ "latitude": number, "longitude": number }`. Menulis Redis GEO + `users:last_seen` dan upsert satu baris histori ke MySQL `locations`. |
+| `PUT` | `/api/location` | ✅ | Kirim `{ "latitude": number, "longitude": number }`. Menulis Redis GEO + `users:last_seen` dan upsert satu baris histori ke PostgreSQL `locations`. |
 
 Kirim heartbeat minimal tiap **2 menit** saat user aktif. User yang
 `users:last_seen`-nya lebih tua dari 2 menit tidak dimasukkan sebagai penerima

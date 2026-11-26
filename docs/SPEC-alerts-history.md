@@ -48,7 +48,7 @@ Konsekuensinya:
 | 6 | `masked`/`resolved_at`/`cancelled_at` bernilai `null` di JSON | Semua bertag `omitempty` di `model.AlertDetailResponse` | Field **absen** (bukan `null`) bila kosong. Contoh JSON di §3 sudah disesuaikan; frontend sudah memakai `a.masked` truthy dan fallback `triggered_at`. |
 | 7 | `page=abc` → `400` | `ctx.QueryInt` mengembalikan default saat parse gagal (pola yang sama di `ContactController.List`) | Angka non-numerik → pakai default; `400` hanya untuk nilai yang berhasil diparse tapi di luar rentang, atau `from_ms`/`to_ms` non-numerik (diparse manual). |
 | 8 | `api/api.md` + `api/api-spec.json` dicopy ke `../frontend/api/` | `frontend/AGENTS.md` memang mewajibkan re-copy ("Last re-copy: …") | Copy tetap dikerjakan sebagai langkah eksplisit + update baris "Last re-copy" (§5.9). Selain itu catat handoff di `docs/api-changes.md`. |
-| 9 | Repository SQL ikut teruji `go test ./...` | Tidak ada harness DB (fake in-memory hanya di usecase/HTTP). `go test ./internal/...` tidak menyentuh MySQL | §5.8 memisahkan: logika (filter/paging/masking/agregasi) diuji lewat fake; SQL diverifikasi manual §7 (opsional: test live di `test/`). |
+| 9 | Repository SQL ikut teruji `go test ./...` | Tidak ada harness DB (fake in-memory hanya di usecase/HTTP). `go test ./internal/...` tidak menyentuh PostgreSQL | §5.8 memisahkan: logika (filter/paging/masking/agregasi) diuji lewat fake; SQL diverifikasi manual §7 (opsional: test live di `test/`). |
 
 ---
 
@@ -457,7 +457,7 @@ FROM alert_responses WHERE alert_id IN (?) GROUP BY alert_id
 ```
 
 - [x] `LatestBreadcrumbsByAlertIDs(ctx, db, alertIDs) (map[string]*entity.AlertBreadcrumb, error)`
-      — pakai `Raw` (derived table, kompatibel MySQL 5.7+/8.x; ekspansi slice
+      — pakai `Raw` (derived table, kompatibel PostgreSQL 9.4+; ekspansi slice
       `IN ?` di `Raw` paling dapat diprediksi):
 
 ```go
@@ -673,7 +673,7 @@ c.App.Get("/api/sos/:alertId", c.SOSController.Get)
 
 ### 5.8 Test
 
-- [x] `internal/usecase/sos_history_test.go` (fake in-memory, tanpa MySQL):
+- [x] `internal/usecase/sos_history_test.go` (fake in-memory, tanpa PostgreSQL):
   - sent history memuat alert `RESOLVED` (regression: "resolved selalu 0");
   - `status=closed` → RESOLVED + CANCELLED + EXPIRED, `active` → TRIGGERED +
     ACKNOWLEDGED;
@@ -700,7 +700,7 @@ c.App.Get("/api/sos/:alertId", c.SOSController.Get)
 - [x] Repository SQL **tidak** tercakup `go test ./internal/...` (tidak ada
       harness DB). Verifikasi lewat §7. Opsional: smoke test live di `test/`
       (pola package itu sudah butuh infra live), di-skip bila `config.json` /
-      MySQL tidak tersedia.
+      PostgreSQL tidak tersedia.
 - [x] `go build ./... && go vet ./... && go test ./internal/... -count=1` hijau.
 
 ### 5.9 Dokumentasi kontrak (wajib)
@@ -827,7 +827,7 @@ Bisa dikerjakan sekarang tanpa blocker teknis. Prasyarat dan batasan:
 
 | Hal | Status |
 |---|---|
-| Skema DB | Cukup 2 index baru; tidak ada kolom baru. Butuh izin `ALTER TABLE` di MySQL (Aiven). |
+| Skema DB | Cukup 2 index baru; tidak ada kolom baru. Butuh izin `ALTER TABLE` di PostgreSQL (Supabase). |
 | Dependency baru | Tidak ada (GORM, Fiber, validator, haversine sudah ada). |
 | Perubahan interface | 8 method baru di `AlertStore` + 2 fake; tidak ada pemanggil lain yang rusak (`AlertSaver` tetap). |
 | Endpoint lama | Tidak berubah perilakunya (`buildDetail` hanya di-refactor ke helper dengan output identik). |

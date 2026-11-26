@@ -2,17 +2,17 @@
 
 Proximity-based emergency dispatch backend written in Go with Fiber. A client reports its position in the background; when someone triggers an SOS, the service stores the incident, finds active users nearby, and fans the alert out to push, SMS, and live-tracking clients while the incident moves through a small state machine.
 
-- **MySQL** keeps the durable data: incidents, breadcrumbs, media metadata, emergency contacts, and push subscriptions.
+- **PostgreSQL** keeps the durable data: incidents, breadcrumbs, media metadata, emergency contacts, and push subscriptions.
 - **Redis** is the operational store: geospatial index, sessions, rate limits, idempotency keys, and the pending audio classification.
 - **Kafka is optional.** When enabled, `cmd/worker` consumes events and becomes the only notifier.
 
-> This file documents behaviour and configuration **names**, never values. Copy `config.json.example` to `config.json` and fill it in locally. `config.json` and `ca.pem` are gitignored; never commit them.
+> This file documents behaviour and configuration **names**, never values. Copy `config.json.example` to `config.json` and fill it in locally. `config.json` is gitignored; never commit it.
 
 ## How an alert flows
 
 1. The client sends `PUT /api/location` at least every two minutes.
 2. The client sends `POST /api/sos`, optionally with a `description` or a recent audio classification.
-3. The alert is committed to MySQL, then recipient search runs on Redis GEO with an adaptive radius (1, 2, or 5 km).
+3. The alert is committed to PostgreSQL, then recipient search runs on Redis GEO with an adaptive radius (1, 2, or 5 km).
 4. A 10-second grace period lets the sender cancel with a safe PIN before anything is sent.
 5. The dispatcher sends Web Push, FCM, APNs, SMS to the sender's emergency contacts, and publishes to Kafka when enabled.
 6. Responders answer with an ETA, stream breadcrumbs over WebSocket, and the alert closes as `RESOLVED`, `CANCELLED`, or `EXPIRED`.
@@ -49,7 +49,7 @@ Legend: ✅ done and unit-tested · 🟡 implemented but not exercised with a re
 
 ### Location
 
-- ✅ **Heartbeat** — `PUT /api/location`; Redis first, MySQL snapshot second.
+- ✅ **Heartbeat** — `PUT /api/location`; Redis first, PostgreSQL snapshot second.
 - ✅ **Read own position** — `GET /api/location` returns the last heartbeat plus a `stale` flag.
 - ✅ **Nearby responders** — `GET /api/location/nearby`; radius 100–5000 m (default 1000), max 50, masked coordinates, stale users dropped.
 
@@ -169,11 +169,11 @@ Two systems hold location data, with different jobs.
 |---|---|---|
 | Redis GEO `users:locations` | member = user id, value = `(longitude, latitude)` | operational index for radius search |
 | Redis Hash `users:last_seen` | user id → epoch milliseconds of the last heartbeat | freshness filter |
-| MySQL `locations` | one row per user (`UNIQUE user_id`) | audit copy of the latest position, not a track |
+| PostgreSQL `locations` | one row per user (`UNIQUE user_id`) | audit copy of the latest position, not a track |
 
 ### Write path
 
-`PUT /api/location` requires both `latitude` and `longitude`. It writes `GEOADD users:locations`, then `HSET users:last_seen`. If either Redis write fails, the heartbeat fails. After Redis succeeds, MySQL upserts the `locations` row; a MySQL failure is only logged and the heartbeat still succeeds.
+`PUT /api/location` requires both `latitude` and `longitude`. It writes `GEOADD users:locations`, then `HSET users:last_seen`. If either Redis write fails, the heartbeat fails. After Redis succeeds, PostgreSQL upserts the `locations` row; a PostgreSQL failure is only logged and the heartbeat still succeeds.
 
 Neither Redis structure has a TTL. Old positions stay, but users whose `last_seen` is older than two minutes are filtered out by every reader, so they stop receiving alerts and disappear from the nearby list without being deleted.
 
@@ -193,9 +193,9 @@ Neither Redis structure has a TTL. Old positions stay, but users whose `last_see
 
 ### Boundaries to keep in mind
 
-- MySQL `locations` is a single latest snapshot per user, not movement history. The trail lives in `alert_breadcrumbs`.
-- Redis is the source of truth for fan-out and the nearby map; MySQL is only the audit copy.
-- Location data is not encrypted by the application, because TLS is not wired into the MySQL or Redis clients.
+- PostgreSQL `locations` is a single latest snapshot per user, not movement history. The trail lives in `alert_breadcrumbs`.
+- Redis is the source of truth for fan-out and the nearby map; PostgreSQL is only the audit copy.
+- Location data is not encrypted by the application. PostgreSQL TLS is set by `database.sslmode` (Supabase requires `require`); Redis has no TLS config.
 
 ## API overview
 
@@ -231,28 +231,36 @@ All responses use `{ "data": ... }`, with `paging` on list endpoints and `{ "err
 
 ## Running locally
 
-Requirements: Go 1.22+, MySQL, Redis 7+. Kafka is optional.
+Requirements: Go 1.22+, PostgreSQL 14+, Redis 7+. Kafka is optional.
 
 ```bash
 cp config.json.example config.json   # fill in local values
-migrate -path db/migrations -database "mysql://DB_USER:DB_PASSWORD@tcp(DB_HOST:DB_PORT)/DB_NAME" up
+# Managed providers need sslmode=require; local Postgres can use sslmode=disable.
+migrate -path db/migrations -database "postgres://DB_USER:DB_PASSWORD@DB_HOST:DB_PORT/DB_NAME?sslmode=require" up
 
 go run cmd/web/main.go      # HTTP API on :3000
 go run cmd/worker/main.go   # Kafka consumers, only needed with Kafka enabled
 go build ./... && go vet ./...
 ```
 
-The web process refuses to start when MySQL or Redis is unreachable. An unreachable Kafka broker does not: producers and consumers retry a few times, then disable themselves, and the web process notifies directly.
+Run `migrate` against a **direct/session** connection (port 5432), not a
+transaction-mode pooler (6543): `migrate` takes an advisory lock that the
+transaction pooler drops. The CLI must be built with the PostgreSQL driver
+(`go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@latest`);
+a build without it fails with `unknown driver postgres`. If the app itself has
+to use port 6543, set `database.params` to `default_query_exec_mode=simple_protocol`.
+
+The web process refuses to start when PostgreSQL or Redis is unreachable. An unreachable Kafka broker does not: producers and consumers retry a few times, then disable themselves, and the web process notifies directly.
 
 ## Production notes
 
 - **Load test baseline**: a read-only k6 run against production (741 requests, 2 → 10 req/s, 0% failures, p95 ≈ 1.6 s) is documented in [`perf/k6/`](perf/k6/README.md) with the dashboard and the raw metric stream. The re-run after the perf PRs ([`perf/k6/rerun-2026-11-22/`](perf/k6/rerun-2026-11-22/README.md)) measures the same mix at avg 927 → 614 ms and p95 1617 → 843 ms, 0% failures.
 - **Behind a proxy**, set `web.proxy_header` (for example `X-Forwarded-For`) and `web.trusted_proxies`. Without it every client appears to come from the proxy, so the per-IP limiter becomes one global bucket.
-- **TLS is not implemented.** The MySQL DSN has no TLS parameter and Redis has no TLS config; terminate TLS at the provider or proxy.
-- **Kafka producer is off by default.** With it on, the worker sends notifications; with it off, the web process does. Both read the same MySQL data, so notifications are not sent twice.
+- **TLS transport.** PostgreSQL TLS is controlled by `database.sslmode` (default `require`; Supabase rejects plaintext). Redis still has no TLS config, so terminate TLS at the provider or a proxy for that hop.
+- **Kafka producer is off by default.** With it on, the worker sends notifications; with it off, the web process does. Both read the same PostgreSQL data, so notifications are not sent twice.
 - **Web Push needs a secure context** (`https://` or `localhost`) and an allowed push-service host.
 - **CORS is locked** to the production origin and the local dev origin in `internal/config/fiber.go`.
-- **Shutdown drains** for 10 seconds. Undispatched grace-period alerts are safe because their due time is in MySQL, not in a timer.
+- **Shutdown drains** for 10 seconds. Undispatched grace-period alerts are safe because their due time is in PostgreSQL, not in a timer.
 - **Metrics** are not public by default; the route only exists when a token is configured.
 
 ## Not implemented

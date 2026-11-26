@@ -141,7 +141,7 @@ type TrackHub interface {
 
 // TriggerSOSDeps groups the optional dependencies of TriggerSOSUseCase.
 // Nil optional fields disable that feature (fail-open, logged) so the
-// use case stays testable without live Redis, MySQL, Kafka or push infra.
+// use case stays testable without live Redis, PostgreSQL, Kafka or push infra.
 type TriggerSOSDeps struct {
 	Validate    *validator.Validate
 	Location    LocationRepository

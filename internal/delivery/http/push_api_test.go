@@ -2,7 +2,7 @@ package http_test
 
 // HTTP tests for the browser Web Push subscription surface: subscribe,
 // list per user, unsubscribe, and the VAPID public-key endpoint. All
-// stores are in-memory, so no MySQL is needed.
+// stores are in-memory, so no PostgreSQL is needed.
 
 import (
 	"context"

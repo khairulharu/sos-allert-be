@@ -1,1 +1,1 @@
-DROP TABLE IF EXISTS push_subscriptions;
+drop table if exists push_subscriptions;

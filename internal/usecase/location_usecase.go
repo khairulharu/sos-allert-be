@@ -21,7 +21,7 @@ const (
 	nearbySearchCount         = 100
 )
 
-// LocationHistoryStore is the MySQL side of location persistence
+// LocationHistoryStore is the PostgreSQL side of location persistence
 // (the historical `locations` table). Satisfied by
 // *repository.LocationRepository.
 type LocationHistoryStore interface {
@@ -61,7 +61,7 @@ func (l *LocationUsecase) UpdateLocation(ctx context.Context, request *model.Upd
 		return false, fiber.ErrInternalServerError
 	}
 
-	// Redis is the operational store used for SOS fan-out. MySQL keeps one
+	// Redis is the operational store used for SOS fan-out. PostgreSQL keeps one
 	// historical row per user; a failure here must not fail the heartbeat.
 	l.syncLocationHistory(ctx, request)
 

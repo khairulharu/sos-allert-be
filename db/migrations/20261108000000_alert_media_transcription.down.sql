@@ -1,4 +1,4 @@
-alter table alert_media
-    drop column transcribed_at,
-    drop column transcription_status,
-    drop column transcript;
+ALTER TABLE alert_media
+    DROP COLUMN IF EXISTS transcript,
+    DROP COLUMN IF EXISTS transcription_status,
+    DROP COLUMN IF EXISTS transcribed_at;

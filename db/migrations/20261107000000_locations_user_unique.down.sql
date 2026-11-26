@@ -1,2 +1,1 @@
-alter table locations
-    drop index uq_locations_user_id;
+DROP INDEX IF EXISTS uq_locations_user_id;

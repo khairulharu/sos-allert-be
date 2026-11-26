@@ -1,1 +1,1 @@
-DROP TABLE IF EXISTS alert_recipients;
+drop table if exists alert_recipients;

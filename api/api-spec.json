@@ -847,7 +847,7 @@
         "tags": [
           "Location API"
         ],
-        "description": "Send a location heartbeat. Coordinates are written to Redis GEO (`users:locations`) and the last-seen timestamp to `users:last_seen`. The same heartbeat upserts one historical row per user into MySQL `locations`. Users older than 2 minutes are excluded from SOS fan-out and the nearby endpoint, so clients should call this at least every 2 minutes while active.",
+        "description": "Send a location heartbeat. Coordinates are written to Redis GEO (`users:locations`) and the last-seen timestamp to `users:last_seen`. The same heartbeat upserts one historical row per user into PostgreSQL `locations`. Users older than 2 minutes are excluded from SOS fan-out and the nearby endpoint, so clients should call this at least every 2 minutes while active.",
         "security": [
           {
             "RawToken": []
