@@ -4,4 +4,9 @@ ca.pem
 Archi.Md
 deploy/runtime/node_modules
 uploads/
+# Local env files: .env* must never be committed. Only the
+# template (.env.example) is allowed through.
+.env
+.env.*
+!.env.example
 
