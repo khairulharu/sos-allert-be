@@ -1,1 +1,1 @@
-drop table contacts;
+drop table if exists contacts;

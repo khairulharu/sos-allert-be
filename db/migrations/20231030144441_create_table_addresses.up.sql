@@ -1,3 +1,5 @@
+-- Addresses belong to one contact. idx_addresses_contact_id replaces the index
+-- MySQL created implicitly for the foreign key.
 create table addresses
 (
     id          varchar(100) not null,
@@ -10,5 +12,7 @@ create table addresses
     created_at  bigint       not null,
     updated_at  bigint       not null,
     primary key (id),
-    foreign key fk_addresses_contact_id (contact_id) references contacts (id)
-) engine = innodb;
+    constraint fk_addresses_contact_id foreign key (contact_id) references contacts (id)
+);
+
+create index idx_addresses_contact_id on addresses (contact_id);

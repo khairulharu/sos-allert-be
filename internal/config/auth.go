@@ -8,7 +8,7 @@ import (
 
 // DefaultTokenTTL is the session lifetime used when auth.token_ttl_hours is
 // unset or invalid. Sessions live in Redis and always expire: the raw token
-// is no longer stored in MySQL.
+// is no longer stored in PostgreSQL.
 const DefaultTokenTTL = 168 * time.Hour
 
 // DefaultSessionCacheTTL is how long a verified token may be reused without

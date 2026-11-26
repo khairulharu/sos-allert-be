@@ -1,3 +1,3 @@
-ALTER TABLE alert_responses
-    DROP INDEX uq_alert_responses_alert_responder,
-    ADD INDEX idx_responses_alert_responder (alert_id, responder_id);
+DROP INDEX IF EXISTS uq_alert_responses_alert_responder;
+
+CREATE INDEX idx_responses_alert_responder ON alert_responses (alert_id, responder_id);

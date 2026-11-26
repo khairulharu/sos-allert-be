@@ -18,7 +18,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// SessionStore keeps authenticated sessions out of MySQL so tokens can expire
+// SessionStore keeps authenticated sessions out of PostgreSQL so tokens can expire
 // and are never stored as plaintext rows. Satisfied by
 // *repository.SessionRepository.
 type SessionStore interface {

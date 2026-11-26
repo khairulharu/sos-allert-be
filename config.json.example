@@ -12,14 +12,16 @@
     "level": 4
   },
   "database": {
-    "username": "avnadmin",
+    "username": "postgres",
     "password": "CHANGE_ME",
     "host": "127.0.0.1",
-    "port": 18770,
-    "name": "defaultdb",
+    "port": 5432,
+    "name": "postgres",
+    "sslmode": "disable",
+    "params": "",
     "pool": {
-      "idle": 10,
-      "max": 100,
+      "idle": 2,
+      "max": 10,
       "lifetime": 300
     }
   },

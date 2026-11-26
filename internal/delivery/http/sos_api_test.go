@@ -2,7 +2,7 @@ package http_test
 
 // Integration tests for the SOS HTTP surface with in-memory stores, so
 // routing, request decoding, status codes and media streaming are
-// covered without MySQL/Redis/Kafka.
+// covered without PostgreSQL/Redis/Kafka.
 
 import (
 	"bytes"
@@ -485,7 +485,7 @@ func TestSOSAPIEndToEnd(t *testing.T) {
 	})
 
 	app := fiber.New()
-	// The real middleware loads the user from MySQL; stub it for the test.
+	// The real middleware loads the user from PostgreSQL; stub it for the test.
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("auth", &model.Auth{ID: strings.Clone(c.Get("X-Test-User"))})
 		return c.Next()

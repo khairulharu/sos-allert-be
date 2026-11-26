@@ -10,7 +10,7 @@ import (
 )
 
 // SessionRepository stores authenticated sessions in Redis instead of the
-// users table, so tokens are never persisted as plaintext in MySQL and can
+// users table, so tokens are never persisted as plaintext in PostgreSQL and can
 // expire. Two keys back one session:
 //
 //	auth:token:<token> -> user id

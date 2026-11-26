@@ -1,1 +1,1 @@
-drop table alerts;
+drop table if exists alerts;

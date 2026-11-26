@@ -46,7 +46,7 @@ func TestNewSOSConfigClassifyLimitDefaultsOn(t *testing.T) {
 }
 
 // The durable grace-period outbox scan interval (#40) defaults to 1 s and
-// is clamped so a misconfiguration cannot poll MySQL in a tight loop.
+// is clamped so a misconfiguration cannot poll PostgreSQL in a tight loop.
 func TestNewSOSConfigDispatchPoll(t *testing.T) {
 	cfg := NewSOSConfig(viper.New())
 	if cfg.DispatchPoll != time.Second {

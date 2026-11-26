@@ -228,7 +228,7 @@ func TestDispatchDueAlertPublishesToKafkaAndMarks(t *testing.T) {
 func TestDispatchDueAlertRecipientLookupFailureStillNotifies(t *testing.T) {
 	uc, alertRepo, notifier, result := triggerWithGrace(t, 10*time.Second)
 	rewindDue(t, alertRepo, result.Alert.ID)
-	alertRepo.recipientsErr = errors.New("mysql down")
+	alertRepo.recipientsErr = errors.New("postgres down")
 	metrics := &fanoutMetrics{}
 	uc.Deps.Metrics = metrics
 

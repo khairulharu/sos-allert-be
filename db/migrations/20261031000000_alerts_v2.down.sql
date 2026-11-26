@@ -1,20 +1,21 @@
-DROP TABLE alert_media;
-DROP TABLE alert_responses;
-DROP TABLE emergency_contacts;
-DROP TABLE alert_breadcrumbs;
+drop table if exists alert_media;
+drop table if exists alert_responses;
+drop table if exists emergency_contacts;
+drop table if exists alert_breadcrumbs;
 
 ALTER TABLE users
-    DROP COLUMN safe_pin_hash,
-    DROP COLUMN fcm_token,
-    DROP COLUMN apns_token;
+    DROP COLUMN IF EXISTS safe_pin_hash,
+    DROP COLUMN IF EXISTS fcm_token,
+    DROP COLUMN IF EXISTS apns_token;
+
+DROP INDEX IF EXISTS idx_alerts_status_triggered_at;
+DROP INDEX IF EXISTS idx_alerts_sender_status;
 
 ALTER TABLE alerts
-    DROP INDEX idx_alerts_sender_status,
-    DROP INDEX idx_alerts_status_triggered_at,
-    DROP COLUMN status,
-    DROP COLUMN emergency_type,
-    DROP COLUMN accuracy_meters,
-    DROP COLUMN battery_percentage,
-    DROP COLUMN cancellation_reason,
-    DROP COLUMN resolved_at,
-    DROP COLUMN cancelled_at;
+    DROP COLUMN IF EXISTS status,
+    DROP COLUMN IF EXISTS emergency_type,
+    DROP COLUMN IF EXISTS accuracy_meters,
+    DROP COLUMN IF EXISTS battery_percentage,
+    DROP COLUMN IF EXISTS cancellation_reason,
+    DROP COLUMN IF EXISTS resolved_at,
+    DROP COLUMN IF EXISTS cancelled_at;

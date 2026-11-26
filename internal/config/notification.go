@@ -137,7 +137,7 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 	}
 	// The durable grace-period outbox is scanned in the web process; 1 s
 	// keeps the extra dispatch latency well inside the notification budget
-	// without polling MySQL in a tight loop. Anything below 100 ms is
+	// without polling PostgreSQL in a tight loop. Anything below 100 ms is
 	// clamped so a misconfiguration cannot hammer the database.
 	poll := v.GetFloat64("sos.dispatch_poll_seconds")
 	if poll <= 0 {
@@ -149,7 +149,7 @@ func NewSOSConfig(v *viper.Viper) *SOSConfig {
 	}
 	// Housekeeping (alert expiry + breadcrumb purge) is a cheap pair of
 	// indexed statements, so a minute is frequent enough to keep the active
-	// set honest without polling MySQL in a tight loop. Anything below one
+	// set honest without polling PostgreSQL in a tight loop. Anything below one
 	// second is clamped for the same reason.
 	housekeeping := v.GetFloat64("sos.housekeeping_interval_seconds")
 	if housekeeping <= 0 {

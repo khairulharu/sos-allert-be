@@ -1,3 +1,3 @@
 ALTER TABLE alerts
-    DROP COLUMN summary,
-    DROP COLUMN severity;
+    DROP COLUMN IF EXISTS severity,
+    DROP COLUMN IF EXISTS summary;

@@ -375,7 +375,7 @@ func TestSOSTrackRejectsSecondSocketPerUser(t *testing.T) {
 }
 
 // Authorize and breadcrumb writes must run on bounded contexts so a slow
-// MySQL cannot pin the socket (#42).
+// PostgreSQL cannot pin the socket (#42).
 func TestSOSTrackBoundsDatabaseCalls(t *testing.T) {
 	hub := tracking.NewHub()
 	authorizer := &fakeWSTrackingAuthorizer{breadcrumbs: make(chan *model.BreadcrumbRequest, 1)}

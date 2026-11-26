@@ -1,4 +1,6 @@
-alter table alert_media
-    add column transcript text null,
-    add column transcription_status varchar(20) not null default 'disabled',
-    add column transcribed_at bigint null;
+-- Audio STT results on the media row. `transcription_status` values:
+-- disabled | pending | done | empty | failed.
+ALTER TABLE alert_media
+    ADD COLUMN transcript TEXT NULL,
+    ADD COLUMN transcription_status VARCHAR(20) NOT NULL DEFAULT 'disabled',
+    ADD COLUMN transcribed_at BIGINT NULL;
